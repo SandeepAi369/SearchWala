@@ -1,0 +1,27 @@
+# ─── Environment (secrets) ───
+.env
+.env.*
+!.env.example
+
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# ─── OS / IDE ───
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ─── Test / temp / deploy scripts (contain local secrets) ───
+t1.py
+debug_response.py
+list_models.py
+create_spaces.py
+deploy_spaces.py
+deploy_v4.py
+test_*.py
