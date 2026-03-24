@@ -1,112 +1,158 @@
-# 🔍 Swift Search Agent
-
-A high-performance, AI-powered search API that combines meta-search engine results with intelligent web scraping and LLM synthesis to deliver comprehensive, citation-backed answers to any query.
+<p align="center">
+  <h1 align="center">🔍 Swift Search Agent</h1>
+  <p align="center">
+    <strong>A high-performance, LLM-agnostic search & data extraction pipeline built for server deployments.</strong>
+  </p>
+  <p align="center">
+    <img src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white" alt="Python 3.10+">
+    <img src="https://img.shields.io/badge/framework-FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
+    <img src="https://img.shields.io/badge/search-SearxNG-blue?logo=searxng&logoColor=white" alt="SearxNG">
+    <img src="https://img.shields.io/badge/extraction-trafilatura-green" alt="trafilatura">
+    <img src="https://img.shields.io/badge/LLM-Agnostic-orange" alt="LLM Agnostic">
+    <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="MIT License">
+  </p>
+</p>
 
 ---
 
-## 🌟 What It Does
+## 🌟 What Is Swift Search Agent?
 
-Swift Search Agent orchestrates a three-phase pipeline:
+Swift Search Agent is a **production-ready API** that automates the entire research pipeline — from searching the web, to extracting clean text from web pages, to synthesizing answers using **any LLM of your choice**.
 
-1. **Meta-Search** — Queries [SearxNG](https://github.com/searxng/searxng) instances to gather search results from multiple engines (DuckDuckGo, Brave, Wikipedia, and more).
-2. **Concurrent Web Scraping** — Scrapes the discovered URLs in parallel using [Trafilatura](https://trafilatura.readthedocs.io/) for clean text extraction, bounded by a semaphore to stay memory-safe.
-3. **LLM Synthesis** — Sends the aggregated context to [Cerebras](https://cerebras.ai/) inference API (with a multi-model fallback cascade) to produce a detailed, well-cited answer.
+It is purpose-built for **server deployments** such as [Hugging Face Spaces](https://huggingface.co/spaces), VPS instances, and cloud platforms, while also running flawlessly on a local machine.
 
-The entire system is stateless, lightweight, and designed to run comfortably on free-tier hosting (512 MB RAM).
+> **🧠 LLM Agnostic by Design:** This agent does **not** lock you into any specific LLM provider. You have complete freedom to connect **any LLM API** (OpenAI, Anthropic, Mistral, Groq, local Ollama, etc.) or **any local model** to process the extracted data. The agent handles the hard part — finding, fetching, and cleaning web content — so your LLM receives high-quality, ready-to-use context.
+
+---
+
+## 🔄 How It Works — Data Flow Pipeline
+
+```
+┌─────────────┐      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+│  User Query │─────▶│   SearxNG    │─────▶│ trafilatura  │─────▶│  Any LLM     │
+│             │      │ (Meta-Search)│      │  (Scraping)  │      │ (Synthesis)  │
+└─────────────┘      └──────────────┘      └──────────────┘      └──────────────┘
+                           │                      │                      │
+                     Fetches URLs           Extracts clean          Generates a
+                     from multiple          text content from       comprehensive,
+                     search engines         each web page           cited answer
+```
+
+### Phase-by-Phase Breakdown
+
+| Phase | Component | What It Does |
+|---|---|---|
+| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries multiple search engines simultaneously (DuckDuckGo, Brave, Wikipedia, and more) to collect a diverse pool of result URLs. |
+| **2. Data Extraction** | [**trafilatura**](https://trafilatura.readthedocs.io/) | Scrapes each discovered URL concurrently and extracts **clean, readable text** — stripping ads, navigation, and boilerplate. This is the core data engine of the pipeline. |
+| **3. LLM Synthesis** | **Your LLM of Choice** | The cleaned, structured text context is sent to whichever LLM you configure. The LLM synthesizes a final, comprehensive answer with inline citations. |
+
+> **Key Insight:** Phases 1 and 2 are fully handled by this agent. Phase 3 is a simple API call that **you control** — swap LLMs anytime without touching the search or scraping logic.
+
+---
+
+## ⚡ Core Dependencies
+
+| Package | Purpose | Install |
+|---|---|---|
+| [**trafilatura**](https://trafilatura.readthedocs.io/) | **Web scraping & text extraction** — the heart of the data pipeline. Converts raw HTML into clean, structured text. | `pip install trafilatura` |
+| [**FastAPI**](https://fastapi.tiangolo.com/) | High-performance async API framework | `pip install fastapi` |
+| [**httpx**](https://www.python-httpx.org/) | Async HTTP client for concurrent requests | `pip install httpx` |
+| [**uvicorn**](https://www.uvicorn.org/) | Lightning-fast ASGI server | `pip install uvicorn[standard]` |
+| [**pydantic**](https://docs.pydantic.dev/) | Data validation via Python type hints | `pip install pydantic` |
+
+**Quick install (all dependencies):**
+
+```bash
+pip install -r requirements.txt
+```
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-┌──────────────┐     ┌────────────────────┐     ┌──────────────┐
-│   User       │────▶│  Swift Scraper API  │────▶│  Cerebras    │
-│   (query)    │     │  (FastAPI + httpx)  │     │  LLM API     │
-└──────────────┘     └────────┬───────────┘     └──────────────┘
-                              │
-                     ┌────────▼───────────┐
-                     │  Private SearxNG   │
-                     │  (Meta-Search)     │
-                     └────────────────────┘
+Swift-Search-Agent/
+├── spaces/
+│   ├── private-searxng/              # SearxNG Docker Space (meta-search backend)
+│   │   ├── Dockerfile
+│   │   ├── run.sh
+│   │   └── settings.yml
+│   └── swift-scraper-api/            # Main API Space (scraping + LLM pipeline)
+│       ├── Dockerfile
+│       ├── app.py
+│       └── requirements.txt
+├── main.py                           # Local dev server (v1)
+├── search.py                         # Local dev server (v2 — 20-instance rotator)
+├── requirements.txt                  # Python dependencies
+├── .env.example                      # Environment variable template
+├── Proxy_Integration_Guide.md        # Optional proxy & IP rotation guide
+├── LICENSE
+└── README.md
 ```
 
-### Two Hugging Face Spaces
+### Two-Service Architecture
 
-| Space | Purpose |
+| Service | Role |
 |---|---|
-| **Private-SearxNG** | A private [SearxNG](https://github.com/searxng/searxng) Docker instance that acts as the meta-search backend. Aggregates results from DuckDuckGo, Brave, Wikipedia, Google, and Bing. |
-| **Swift-Scraper-API** | The main FastAPI service. Receives user queries, calls Private-SearxNG for URLs, scrapes them concurrently, and synthesizes answers via Cerebras LLM. |
+| **Private SearxNG** | A self-hosted [SearxNG](https://github.com/searxng/searxng) instance running as a Docker container. Aggregates search results from multiple engines without rate limits. |
+| **Swift Scraper API** | The main FastAPI service. Receives queries, calls SearxNG for URLs, uses **trafilatura** to extract text from each page concurrently, then forwards the clean context to your configured LLM. |
 
 ---
 
-## 🙏 Credits & Acknowledgements
+## 🚀 Deployment
 
-This project is built on top of and heavily utilizes the following open-source projects and services:
+> **While this agent runs flawlessly on a local machine, its architecture is highly optimized and perfect for server deployments** — including [Hugging Face Spaces](https://huggingface.co/spaces), VPS, Docker, and any cloud platform.
 
-| Project / Service | Description | Link |
-|---|---|---|
-| **SearxNG** | Free, privacy-respecting meta-search engine (AGPL-3.0) | [github.com/searxng/searxng](https://github.com/searxng/searxng) |
-| **FastAPI** | Modern, high-performance Python web framework | [fastapi.tiangolo.com](https://fastapi.tiangolo.com/) |
-| **Trafilatura** | Web scraping and text extraction library | [trafilatura.readthedocs.io](https://trafilatura.readthedocs.io/) |
-| **httpx** | Async HTTP client for Python | [python-httpx.org](https://www.python-httpx.org/) |
-| **Cerebras** | Ultra-fast AI inference API | [cerebras.ai](https://cerebras.ai/) |
-| **Hugging Face Spaces** | Free hosting platform for ML apps | [huggingface.co/spaces](https://huggingface.co/spaces) |
-| **Uvicorn** | Lightning-fast ASGI server | [uvicorn.org](https://www.uvicorn.org/) |
-| **Pydantic** | Data validation using Python type hints | [docs.pydantic.dev](https://docs.pydantic.dev/) |
+### Hosting on Hugging Face Spaces (Recommended)
 
-> **Note:** SearxNG is licensed under [AGPL-3.0](https://github.com/searxng/searxng/blob/master/LICENSE). This project uses SearxNG as a **standalone service** (Docker container) and does not modify or redistribute its source code.
-
----
-
-## 🚀 Hosting on Hugging Face Spaces (Step-by-Step)
-
-### Prerequisites
-
+#### Prerequisites
 - A free [Hugging Face](https://huggingface.co/) account
-- A free [Cerebras](https://cloud.cerebras.ai/) API key
+- An API key for your preferred LLM provider
 
-### Step 1: Create the Private SearxNG Space
+#### Step 1: Deploy Private SearxNG
 
-1. Go to [huggingface.co/new-space](https://huggingface.co/new-space).
-2. Set **Space name** to `Private-SearxNG`.
-3. Select **Docker** as the SDK.
-4. Set visibility to **Public** (required for free tier).
-5. Click **Create Space**.
-6. Upload all files from the `spaces/private-searxng/` folder:
-   - `Dockerfile`
-   - `run.sh`
-   - `settings.yml` — ⚠️ **Change the `secret_key`** to a random string before uploading.
-7. The Space will auto-build and deploy. Wait until the status shows **Running**.
+1. Go to [huggingface.co/new-space](https://huggingface.co/new-space)
+2. Name: `Private-SearxNG` → SDK: **Docker** → Create
+3. Upload all files from `spaces/private-searxng/`
+4. ⚠️ **Change the `secret_key`** in `settings.yml` to a random string before uploading
+5. Wait for status: **Running**
 
-### Step 2: Create the Swift Scraper API Space
+#### Step 2: Deploy Swift Scraper API
 
-1. Create another new Space named `Swift-Scraper-API`.
-2. Select **Docker** as the SDK.
-3. Upload all files from the `spaces/swift-scraper-api/` folder:
-   - `Dockerfile`
-   - `app.py`
-   - `requirements.txt`
-4. In your Space **Settings → Variables and secrets**, add:
-   - `SEARXNG_URL` = `https://YOUR_USERNAME-private-searxng.hf.space` (replace `YOUR_USERNAME` with your HF username)
-5. The Space will auto-build and start serving on port `7860`.
+1. Create another Space: `Swift-Scraper-API` → SDK: **Docker**
+2. Upload all files from `spaces/swift-scraper-api/`
+3. In **Settings → Variables**, set:
+   - `SEARXNG_URL` = `https://YOUR_USERNAME-private-searxng.hf.space`
 
-### Step 3: Test It
-
-Send a POST request to your Swift Scraper API:
+#### Step 3: Test
 
 ```bash
 curl -X POST "https://YOUR_USERNAME-swift-scraper-api.hf.space/search" \
   -H "Content-Type: application/json" \
-  -H "x-api-key: YOUR_CEREBRAS_API_KEY" \
+  -H "x-api-key: YOUR_LLM_API_KEY" \
   -d '{"query": "What is machine learning?"}'
 ```
 
-### Step 4: Keep It Alive (Optional)
+#### Step 4: Keep It Alive (Optional)
 
-Hugging Face Spaces on the free tier go to sleep after inactivity. To prevent this, set up an [UptimeRobot](https://uptimerobot.com/) monitor (free) to ping your Space's `/health` endpoint every 5 minutes:
+Hugging Face free-tier Spaces sleep after inactivity. Set up [UptimeRobot](https://uptimerobot.com/) (free) to ping your `/health` endpoint every 5 minutes to prevent sleep:
 
 ```
 https://YOUR_USERNAME-swift-scraper-api.hf.space/health
+```
+
+### Running Locally
+
+```bash
+# Clone the repo
+git clone https://github.com/SandeepAi369/Swift-Search-Agent.git
+cd Swift-Search-Agent
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the server
+python search.py
 ```
 
 ---
@@ -115,10 +161,10 @@ https://YOUR_USERNAME-swift-scraper-api.hf.space/health
 
 | Variable | Required | Description |
 |---|---|---|
-| `SEARXNG_URL` | No | URL of your SearxNG instance (defaults to the author's private instance) |
-| `PORT` | No | Server port (defaults to `7860` on HF, `8000` locally) |
+| `SEARXNG_URL` | No | URL of your SearxNG instance (defaults to the bundled private instance) |
+| `PORT` | No | Server port (defaults to `7860` on HF Spaces, `8000` locally) |
 
-The Cerebras API key is passed per-request via the `x-api-key` header — it is **never** stored server-side.
+> **Note:** LLM API keys are passed per-request via the `x-api-key` header — they are **never** stored server-side.
 
 ---
 
@@ -128,28 +174,22 @@ For users who want to unlock direct Google/Bing searching through personal proxi
 
 ---
 
-## 📁 Project Structure
+## 🙏 Credits & Acknowledgements
 
-```
-Swift-Search-Agent/
-├── spaces/
-│   ├── private-searxng/          # SearxNG Docker Space
-│   │   ├── Dockerfile
-│   │   ├── run.sh
-│   │   └── settings.yml
-│   └── swift-scraper-api/        # Main API Space
-│       ├── Dockerfile
-│       ├── app.py
-│       └── requirements.txt
-├── main.py                       # Local dev server (v1 — single SearxNG)
-├── search.py                     # Local dev server (v2 — 20-instance rotator)
-├── requirements.txt              # Python dependencies
-├── .env.example                  # Environment variable template
-├── .gitignore
-├── Proxy_Integration_Guide.md    # Optional proxy setup guide
-├── LICENSE
-└── README.md
-```
+This project is built on top of and utilizes the following open-source projects and services:
+
+| Project / Service | Description | Link |
+|---|---|---|
+| **SearxNG** | Privacy-respecting meta-search engine (AGPL-3.0) | [github.com/searxng/searxng](https://github.com/searxng/searxng) |
+| **trafilatura** | Web scraping & text extraction library | [trafilatura.readthedocs.io](https://trafilatura.readthedocs.io/) |
+| **FastAPI** | High-performance Python web framework | [fastapi.tiangolo.com](https://fastapi.tiangolo.com/) |
+| **httpx** | Async HTTP client for Python | [python-httpx.org](https://www.python-httpx.org/) |
+| **Uvicorn** | Lightning-fast ASGI server | [uvicorn.org](https://www.uvicorn.org/) |
+| **Pydantic** | Data validation using Python type hints | [docs.pydantic.dev](https://docs.pydantic.dev/) |
+| **Hugging Face Spaces** | Free hosting platform for ML apps | [huggingface.co/spaces](https://huggingface.co/spaces) |
+| **UptimeRobot** | Free uptime monitoring to prevent HF sleep | [uptimerobot.com](https://uptimerobot.com/) |
+
+> **Note:** SearxNG is licensed under [AGPL-3.0](https://github.com/searxng/searxng/blob/master/LICENSE). This project uses SearxNG as a **standalone service** (Docker container) and does not modify or redistribute its source code.
 
 ---
 
@@ -157,4 +197,4 @@ Swift-Search-Agent/
 
 This project is licensed under the [MIT License](./LICENSE).
 
-SearxNG (used as a service) is independently licensed under [AGPL-3.0](https://github.com/searxng/searxng/blob/master/LICENSE).
+SearxNG (used as a standalone service) is independently licensed under [AGPL-3.0](https://github.com/searxng/searxng/blob/master/LICENSE).
