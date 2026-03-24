@@ -198,3 +198,9 @@ This project is built on top of and utilizes the following open-source projects 
 This project is licensed under the [MIT License](./LICENSE).
 
 SearxNG (used as a standalone service) is independently licensed under [AGPL-3.0](https://github.com/searxng/searxng/blob/master/LICENSE).
+
+---
+
+<p align="center">
+  <strong>Developed & Enhanced by <a href="https://xel-studio.vercel.app/">Sandeep</a></strong>
+</p>
