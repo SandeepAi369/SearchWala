@@ -53,10 +53,11 @@ app.add_middleware(
 # CONSTANTS & TUNABLES
 # ═══════════════════════════════════════════════════════════════
 
-# Our private SearxNG instance on HF Spaces (no rate limits!)
+# SearxNG instance URL — set via environment variable
+# Deploy your own Private-SearxNG Space and set SEARXNG_URL accordingly
 SEARXNG_URL: str = os.environ.get(
     "SEARXNG_URL",
-    "https://sandeepmudhiraj-private-searxng.hf.space",
+    "https://YOUR_USERNAME-private-searxng.hf.space",
 )
 
 MAX_URLS: int = 50                 # hard cap — protects Cerebras context window
