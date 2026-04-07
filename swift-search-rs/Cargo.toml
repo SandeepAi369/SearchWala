@@ -1,0 +1,56 @@
+[package]
+name = "swift-search-rs"
+version = "3.0.0"
+edition = "2021"
+description = "Ultra-fast search & scrape API in Rust — replaces SearxNG + Trafilatura"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP server
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+
+# HTTP client (rustls = pure Rust TLS, no system OpenSSL needed)
+reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "brotli", "deflate", "cookies", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTML parsing & text extraction
+scraper = "0.22"
+ego-tree = "0.9"
+
+# URL handling
+url = "2"
+
+# Regex
+regex = "1"
+
+# Randomization
+rand = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Time
+chrono = "0.4"
+
+# Environment variables
+dotenvy = "0.15"
+
+# Async trait (for engine trait)
+async-trait = "0.1"
+
+# URL encoding/decoding
+urlencoding = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
