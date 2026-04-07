@@ -286,29 +286,8 @@ def initialize_tier(override: Optional[str] = None) -> TierConfig:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ─────────────── SearxNG Configuration ───────────────
-
-SEARXNG_INSTANCES: Final[Tuple[str, ...]] = (
-    "https://search.sapti.me",
-    "https://searxng.site",
-    "https://search.ononoki.org",
-    "https://searx.tiekoetter.com",
-    "https://searx.be",
-    "https://search.bus-hit.me",
-    "https://searx.fmac.xyz",
-    "https://searx.zhenyapav.com",
-    "https://search.hbubli.cc",
-    "https://searx.work",
-    "https://search.mdosch.de",
-    "https://searx.colbster937.dev",
-    "https://searx.namejeff.xyz",
-    "https://search.rowie.at",
-    "https://searx.dresden.network",
-    "https://searx.catfock.com",
-    "https://searx.ox2.fr",
-    "https://searx.mha.fi",
-    "https://priv.au",
-    "https://search.toolforge.org",
-)
+# Imported from centralized config
+from config import SEARXNG_URL, SEARXNG_ENGINES
 
 # ─────────────── Processing Limits ───────────────
 
@@ -545,98 +524,62 @@ def get_random_user_agent() -> str:
 # SECTION 8: META-SEARCH ENGINE (SearxNG)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def search_instance(
-    session: ClientSession,
-    instance_url: str,
-    query: str,
-    max_results: int = 30,
-) -> List[SearchResult]:
+async def meta_search(query: str) -> List[str]:
     """
-    Search a single SearxNG instance.
-    
-    Returns list of SearchResult or empty on failure.
+    Query your private SearxNG instance with explicit engine selection.
+    Engines: duckduckgo, brave, wikipedia, qwant, mojeek
+    No Google, No Bing.
     """
-    search_url = f"{instance_url.rstrip('/')}/search"
+    search_url = f"{SEARXNG_URL.rstrip('/')}/search"
     params = {
         "q": query,
         "format": "json",
         "categories": "general",
         "language": "en-US",
         "safesearch": "0",
+        "engines": SEARXNG_ENGINES,
     }
     
     try:
-        async with session.get(
-            search_url,
-            params=params,
-            headers={
-                "User-Agent": get_random_user_agent(),
-                "Accept": "application/json",
-            },
-        ) as resp:
-            if resp.status != 200:
-                log.debug("Instance %s returned status %d", instance_url, resp.status)
-                return []
-            
-            data = await resp.json()
-            results = []
-            
-            for item in data.get("results", [])[:max_results]:
-                url = item.get("url", "")
-                if url and not should_skip_url(url):
-                    results.append(SearchResult(
-                        url=normalize_url(url),
-                        title=item.get("title", ""),
-                        snippet=item.get("content", ""),
-                    ))
-            
-            log.debug("Instance %s returned %d results", instance_url, len(results))
-            return results
-            
-    except asyncio.TimeoutError:
-        log.debug("Instance %s timed out", instance_url)
+        async with create_http_session(timeout_override=15.0) as session:
+            async with session.get(
+                search_url,
+                params=params,
+                headers={
+                    "User-Agent": get_random_user_agent(),
+                    "Accept": "application/json",
+                },
+            ) as resp:
+                if resp.status != 200:
+                    log.error("SearxNG returned status %d", resp.status)
+                    return []
+                
+                data = await resp.json()
+                
+                # Deduplicate and filter
+                seen_urls: Set[str] = set()
+                unique_urls: List[str] = []
+                
+                for item in data.get("results", []):
+                    url = item.get("url", "")
+                    if url and not should_skip_url(url):
+                        norm = normalize_url(url)
+                        if norm not in seen_urls:
+                            seen_urls.add(norm)
+                            unique_urls.append(norm)
+                
+                # Apply tier limit
+                max_sources = TIER_CFG.max_sources
+                if max_sources > 0 and len(unique_urls) > max_sources:
+                    unique_urls = unique_urls[:max_sources]
+                
+                log.info("Meta-search: %d unique URLs (engines: %s, limit: %s)",
+                         len(unique_urls), SEARXNG_ENGINES, max_sources or "\u221e")
+                return unique_urls
+                
     except Exception as e:
-        log.debug("Instance %s error: %s", instance_url, e)
-    
-    return []
-
-
-async def meta_search(query: str) -> List[str]:
-    """
-    Meta-search across all SearxNG instances concurrently.
-    
-    Returns deduplicated list of URLs, limited by tier config.
-    """
-    async with create_http_session(timeout_override=10.0) as session:
-        # Search all instances concurrently
-        tasks = [
-            search_instance(session, inst, query)
-            for inst in SEARXNG_INSTANCES
-        ]
-        
-        results_lists = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Merge and deduplicate
-        seen_urls: Set[str] = set()
-        unique_urls: List[str] = []
-        
-        for results in results_lists:
-            if isinstance(results, Exception):
-                continue
-            for r in results:
-                if r.url not in seen_urls:
-                    seen_urls.add(r.url)
-                    unique_urls.append(r.url)
-        
-        # Apply tier limit
-        max_sources = TIER_CFG.max_sources
-        if max_sources > 0 and len(unique_urls) > max_sources:
-            unique_urls = unique_urls[:max_sources]
-        
-        log.info("Meta-search found %d unique URLs (limit: %s)", 
-                 len(unique_urls), max_sources or "∞")
-        
-        return unique_urls
+        log.error("Meta-search failed (%s): %s", SEARXNG_URL, e)
+        return []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1095,7 +1038,8 @@ class ConfigResponse(BaseModel):
     version: str
     active_tier: TierInfo
     available_tiers: List[str]
-    searxng_instances: int
+    searxng_url: str
+    searxng_engines: str
     max_html_bytes: int
     max_context_chars: int
 
@@ -1144,7 +1088,8 @@ async def get_config():
         version="2.0.0-extreme",
         active_tier=tier_info,
         available_tiers=["MICRO", "MEDIUM", "BEAST"],
-        searxng_instances=len(SEARXNG_INSTANCES),
+        searxng_url=SEARXNG_URL,
+        searxng_engines=SEARXNG_ENGINES,
         max_html_bytes=MAX_HTML_BYTES,
         max_context_chars=MAX_CONTEXT_CHARS,
     )
@@ -1352,7 +1297,7 @@ if __name__ == "__main__":
     log.info("  Connector Pool: %d connections", TIER_CFG.connector_limit)
     log.info("  DNS Cache: %d entries, %ds TTL", TIER_CFG.dns_cache_size, TIER_CFG.dns_cache_ttl)
     log.info("  aiodns: %s", "ENABLED ✓" if AIODNS_AVAILABLE else "DISABLED ✗")
-    log.info("  SearxNG instances: %d", len(SEARXNG_INSTANCES))
+    log.info("  SearxNG: %s (engines: %s)", SEARXNG_URL, SEARXNG_ENGINES)
     log.info("═" * 60)
     log.info("  Starting server on %s:%d", args.host, args.port)
     log.info("  Workers: %d | Reload: %s", args.workers, args.reload)

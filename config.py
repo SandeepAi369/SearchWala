@@ -142,29 +142,15 @@ TRACKING_PARAMS_TO_REMOVE: frozenset[str] = frozenset({
 })
 
 
-# ─────────────────────────── SearxNG Instances ────────────────────────────
+# ─────────────────────────── SearxNG Configuration ────────────────────────────
+# Single endpoint — your own private SearxNG (local, HF Space, VPS, etc.)
+SEARXNG_URL: str = os.environ.get("SEARXNG_URL", "http://localhost:8080")
 
-SEARXNG_INSTANCES: tuple[str, ...] = (
-    "https://search.sapti.me",
-    "https://searxng.site",
-    "https://search.ononoki.org",
-    "https://searx.tiekoetter.com",
-    "https://searx.be",
-    "https://search.bus-hit.me",
-    "https://searx.fmac.xyz",
-    "https://searx.zhenyapav.com",
-    "https://search.hbubli.cc",
-    "https://searx.work",
-    "https://search.mdosch.de",
-    "https://searx.colbster937.dev",
-    "https://searx.namejeff.xyz",
-    "https://search.rowie.at",
-    "https://searx.dresden.network",
-    "https://searx.catfock.com",
-    "https://searx.ox2.fr",
-    "https://searx.mha.fi",
-    "https://priv.au",
-    "https://search.toolforge.org",
+# Datacenter-friendly engines — NO Google, NO Bing
+# These 5 engines work reliably from any server without CAPTCHA blocks
+SEARXNG_ENGINES: str = os.environ.get(
+    "SEARXNG_ENGINES",
+    "duckduckgo,brave,wikipedia,qwant,mojeek",
 )
 
 
@@ -195,8 +181,9 @@ class SearchConfig:
     # Content quality
     min_text_length: int = 50
     
-    # SearxNG instances
-    searxng_instances: tuple[str, ...] = SEARXNG_INSTANCES
+    # SearxNG endpoint
+    searxng_url: str = SEARXNG_URL
+    searxng_engines: str = SEARXNG_ENGINES
     
     @classmethod
     def auto_detect(cls) -> "SearchConfig":

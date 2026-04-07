@@ -119,29 +119,9 @@ CHUNK_SIZE: Final[int] = 1500              # Target chunk size (chars)
 CHUNK_OVERLAP: Final[int] = 200            # Overlap between chunks
 MIN_TEXT_LENGTH: Final[int] = 100          # Minimum useful text length
 
-# ─────────────── SearxNG Instances ───────────────
-SEARXNG_INSTANCES: Final[Tuple[str, ...]] = (
-    "https://search.sapti.me",
-    "https://searxng.site",
-    "https://search.ononoki.org",
-    "https://searx.tiekoetter.com",
-    "https://searx.be",
-    "https://search.bus-hit.me",
-    "https://searx.fmac.xyz",
-    "https://searx.zhenyapav.com",
-    "https://search.hbubli.cc",
-    "https://searx.work",
-    "https://search.mdosch.de",
-    "https://searx.colbster937.dev",
-    "https://searx.namejeff.xyz",
-    "https://search.rowie.at",
-    "https://searx.dresden.network",
-    "https://searx.catfock.com",
-    "https://searx.ox2.fr",
-    "https://searx.mha.fi",
-    "https://priv.au",
-    "https://search.toolforge.org",
-)
+# ─────────────── SearxNG Configuration ───────────────
+# Imported from centralized config
+from config import SEARXNG_URL, SEARXNG_ENGINES
 
 # ─────────────── HTTP Headers ───────────────
 USER_AGENT: Final[str] = (
@@ -901,62 +881,51 @@ async def process_urls(urls: List[str]) -> List[ExtractionResult]:
 # SECTION 7: SEARXNG META-SEARCH
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _query_searxng_instance(
-    client: httpx.AsyncClient,
-    instance_url: str,
-    query: str,
-) -> List[str]:
-    """Query a single SearxNG instance."""
+async def meta_search(query: str) -> List[str]:
+    """
+    Query your private SearxNG instance with explicit engine selection.
+    Engines: duckduckgo, brave, wikipedia, qwant, mojeek
+    """
     params = {
         "q": query,
         "format": "json",
         "categories": "general",
         "language": "en",
         "pageno": 1,
+        "engines": SEARXNG_ENGINES,
     }
+    
+    search_url = f"{SEARXNG_URL.rstrip('/')}/search"
+    
     try:
-        resp = await client.get(
-            f"{instance_url.rstrip('/')}/search",
-            params=params,
-            headers={"User-Agent": USER_AGENT},
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return [
-            r.get("url", "").strip()
-            for r in data.get("results", [])
-            if r.get("url")
-        ]
-    except Exception as e:
-        log.debug("SearxNG instance %s failed: %s", instance_url, type(e).__name__)
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=15.0,
+        ) as client:
+            resp = await client.get(
+                search_url,
+                params=params,
+                headers={"User-Agent": USER_AGENT},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+            raw_urls = [
+                r.get("url", "").strip()
+                for r in data.get("results", [])
+                if r.get("url")
+            ]
+            unique = deduplicate_urls(raw_urls, MAX_URLS)
+            log.info("Meta-search: %d unique URLs (engines: %s) for: '%s'",
+                     len(unique), SEARXNG_ENGINES, query[:60])
+            return unique
+            
+    except httpx.ConnectError:
+        log.error("Cannot connect to SearxNG at %s", SEARXNG_URL)
         return []
-
-
-async def meta_search(query: str) -> List[str]:
-    """
-    Query multiple SearxNG instances concurrently.
-    Returns deduplicated, validated URLs.
-    """
-    async with httpx.AsyncClient(
-        http2=True,
-        follow_redirects=True,
-        timeout=12.0,
-    ) as client:
-        tasks = [
-            _query_searxng_instance(client, inst, query)
-            for inst in SEARXNG_INSTANCES
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    all_urls: List[str] = []
-    for batch in results:
-        if isinstance(batch, list):
-            all_urls.extend(batch)
-    
-    unique = deduplicate_urls(all_urls, MAX_URLS)
-    log.info("Meta-search: %d unique URLs for query: '%s'", len(unique), query[:60])
-    return unique
+    except Exception as e:
+        log.error("Meta-search failed: %s", e)
+        return []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1102,7 +1071,8 @@ async def get_config():
         "chunk_size": CHUNK_SIZE,
         "chunk_overlap": CHUNK_OVERLAP,
         "min_text_length": MIN_TEXT_LENGTH,
-        "searxng_instances": len(SEARXNG_INSTANCES),
+        "searxng_url": SEARXNG_URL,
+        "searxng_engines": SEARXNG_ENGINES,
     }
 
 
@@ -1209,7 +1179,7 @@ if __name__ == "__main__":
     log.info("Max URLs per query: %d", MAX_URLS)
     log.info("Max HTML per page: %d bytes", MAX_HTML_BYTES)
     log.info("Chunk size: %d chars (overlap: %d)", CHUNK_SIZE, CHUNK_OVERLAP)
-    log.info("SearxNG instances: %d", len(SEARXNG_INSTANCES))
+    log.info("SearxNG: %s (engines: %s)", SEARXNG_URL, SEARXNG_ENGINES)
     log.info("Starting server on port %d...", port)
     log.info("=" * 60)
     

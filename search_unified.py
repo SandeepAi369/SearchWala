@@ -321,78 +321,53 @@ def deduplicate_urls(urls: list[str], max_count: int) -> list[str]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 3: SEARXNG META-SEARCH - Multiple instance querying with rotation
+# SECTION 3: SEARXNG META-SEARCH - Single private instance with engine filtering
 # ═══════════════════════════════════════════════════════════════════════════════
 
-SEARXNG_INSTANCES: tuple[str, ...] = (
-    "https://search.sapti.me",
-    "https://searxng.site",
-    "https://search.ononoki.org",
-    "https://searx.tiekoetter.com",
-    "https://searx.be",
-    "https://search.bus-hit.me",
-    "https://searx.fmac.xyz",
-    "https://searx.zhenyapav.com",
-    "https://search.hbubli.cc",
-    "https://searx.work",
-    "https://search.mdosch.de",
-    "https://searx.colbster937.dev",
-    "https://searx.namejeff.xyz",
-    "https://search.rowie.at",
-    "https://searx.dresden.network",
-    "https://searx.catfock.com",
-    "https://searx.ox2.fr",
-    "https://searx.mha.fi",
-    "https://priv.au",
-    "https://search.toolforge.org",
-)
+# Import from centralized config
+from config import SEARXNG_URL, SEARXNG_ENGINES
 
 _UA = "Mozilla/5.0 (compatible; SwiftSearchBot/2.0)"
 _HEADERS = {"User-Agent": _UA}
 
 
-async def _query_instance(
-    client: httpx.AsyncClient,
-    instance_url: str,
-    query: str,
-) -> list[str]:
-    """Query a single SearxNG instance."""
+async def meta_search(query: str) -> list[str]:
+    """
+    Query your private SearxNG instance with explicit engine selection.
+    
+    Engines: duckduckgo, brave, wikipedia, qwant, mojeek
+    No Google, No Bing — datacenter-friendly, zero CAPTCHA.
+    """
     params = {
         "q": query,
         "format": "json",
         "categories": "general",
         "language": "en",
         "pageno": 1,
+        "engines": SEARXNG_ENGINES,
     }
+    
+    search_url = f"{SEARXNG_URL.rstrip('/')}/search"
+    
     try:
-        resp = await client.get(
-            f"{instance_url.rstrip('/')}/search",
-            params=params,
-            headers=_HEADERS,
-            timeout=8.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return [r.get("url", "").strip() for r in data.get("results", []) if r.get("url")]
-    except Exception as e:
-        log.debug("Instance %s failed: %s", instance_url, e)
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+            resp = await client.get(search_url, params=params, headers=_HEADERS)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            raw_urls = [r.get("url", "").strip() for r in data.get("results", []) if r.get("url")]
+            unique = deduplicate_urls(raw_urls, _CONFIG.max_urls)
+            
+            log.info("Meta-search: %d unique URLs (engines: %s) for: %s",
+                     len(unique), SEARXNG_ENGINES, query[:60])
+            return unique
+            
+    except httpx.ConnectError:
+        log.error("Cannot connect to SearxNG at %s — is it running?", SEARXNG_URL)
         return []
-
-
-async def meta_search(query: str) -> list[str]:
-    """Query multiple SearxNG instances and return deduplicated URLs."""
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        tasks = [_query_instance(client, inst, query) for inst in SEARXNG_INSTANCES]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    all_urls: list[str] = []
-    for batch in results:
-        if isinstance(batch, list):
-            all_urls.extend(batch)
-    
-    unique = deduplicate_urls(all_urls, _CONFIG.max_urls)
-    log.info("Meta-search: %d unique URLs for query: %s", len(unique), query[:60])
-    return unique
+    except Exception as e:
+        log.error("Meta-search failed: %s", e)
+        return []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -683,7 +658,8 @@ async def health():
         "ram_tier": _RAM_TIER.value,
         "quality": _CONFIG.quality.value,
         "semaphore_limit": _CONFIG.semaphore_limit,
-        "searxng_instances": len(SEARXNG_INSTANCES),
+        "searxng_url": SEARXNG_URL,
+        "searxng_engines": SEARXNG_ENGINES,
     }
 
 
@@ -700,7 +676,8 @@ async def get_config():
         "enable_head_check": _CONFIG.enable_head_check,
         "quality": _CONFIG.quality.value,
         "early_stop_threshold": EARLY_STOP_THRESHOLD,
-        "searxng_instances": len(SEARXNG_INSTANCES),
+        "searxng_url": SEARXNG_URL,
+        "searxng_engines": SEARXNG_ENGINES,
     }
 
 
@@ -710,7 +687,7 @@ async def search(body: SearchRequest):
     Main search endpoint — returns raw scraped data.
     
     Pipeline:
-    1. Meta-search via SearxNG (20 instances)
+    1. Meta-search via your private SearxNG (engines: duckduckgo, brave, wikipedia, qwant, mojeek)
     2. Concurrent scraping with streaming + early termination
     3. Raw extracted text returned per source
     """
@@ -723,7 +700,7 @@ async def search(body: SearchRequest):
     if not urls:
         raise HTTPException(
             status_code=404,
-            detail="No search results found. All SearxNG instances may be down.",
+            detail=f"No search results found. Is SearxNG running at {SEARXNG_URL}?",
         )
     sources_found = len(urls)
     
