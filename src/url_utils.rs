@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Swift Search Agent v1.0.0 — URL Utilities
+// Swift Search Agent v3.0 — URL Utilities
 // Advanced URL normalization, deduplication, and filtering
 // ══════════════════════════════════════════════════════════════════════════════
 

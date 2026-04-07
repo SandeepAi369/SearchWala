@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Swift Search Agent v1.0.0 — Search Orchestrator
+// Swift Search Agent v3.0 — Search Orchestrator
 // Full pipeline: Engines → URLs → Scrape → Extract → JSON
 // ══════════════════════════════════════════════════════════════════════════════
 

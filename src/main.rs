@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// ⚡ Swift-Search-Rs v1.0.0
+// ⚡ Swift-Search-Rs v3.0.0
 // ══════════════════════════════════════════════════════════════════════════════
 //
 //  A single compiled Rust binary that:
@@ -80,7 +80,7 @@ async fn health_handler(
     let uptime = state.start_time.elapsed().as_secs();
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: "1.0.0".to_string(),
+        version: "3.0.0".to_string(),
         engines: config::enabled_engines(),
         uptime_seconds: uptime,
     })
@@ -89,7 +89,7 @@ async fn health_handler(
 /// GET /config — Configuration info
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
-        version: "1.0.0".to_string(),
+        version: "3.0.0".to_string(),
         engines: config::enabled_engines(),
         max_urls: config::max_urls(),
         scrape_timeout_secs: config::scrape_timeout_secs(),
@@ -102,7 +102,7 @@ async fn config_handler() -> impl IntoResponse {
 async fn root_handler() -> impl IntoResponse {
     Json(serde_json::json!({
         "name": "Swift-Search-Rs",
-        "version": "1.0.0",
+        "version": "3.0.0",
         "language": "Rust",
         "description": "Ultra-fast native meta-search & scrape API",
         "endpoints": {
@@ -135,7 +135,7 @@ async fn main() {
 
     // Print startup banner
     tracing::info!("═══════════════════════════════════════════════════");
-    tracing::info!("  ⚡ Swift-Search-Rs v1.0.0");
+    tracing::info!("  ⚡ Swift-Search-Rs v3.0.0");
     tracing::info!("  Language: Rust");
     tracing::info!("  Engines: {:?}", engines);
     tracing::info!("  Max URLs: {}", config::max_urls());

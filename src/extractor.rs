@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Swift Search Agent v1.0.0 — Content Extractor
+// Swift Search Agent v3.0 — Content Extractor
 // Replaces Trafilatura: Readability-style heuristic text extraction in pure Rust
 // ══════════════════════════════════════════════════════════════════════════════
 

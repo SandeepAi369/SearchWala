@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Swift Search Agent v1.0.0 — Multi-stage Docker Build
+# Swift Search Agent v3.0 — Multi-stage Docker Build
 # Final image: ~15MB, runs on 512MB VPS or HF Spaces
 # ══════════════════════════════════════════════════════════════════════════════
 

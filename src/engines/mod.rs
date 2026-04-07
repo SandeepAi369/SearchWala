@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Swift Search Agent v1.0.0 — Search Engines Module
+// Swift Search Agent v3.0 — Search Engines Module
 // Native meta-search — NO SearxNG dependency
 // ══════════════════════════════════════════════════════════════════════════════
 
