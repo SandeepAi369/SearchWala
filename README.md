@@ -4,6 +4,7 @@
     <strong>A high-performance, LLM-agnostic search & data extraction pipeline built for server deployments.</strong>
   </p>
   <p align="center">
+    <img src="https://img.shields.io/badge/version-2.0-blueviolet" alt="Version 2.0">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/framework-FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
     <img src="https://img.shields.io/badge/search-SearxNG-blue?logo=searxng&logoColor=white" alt="SearxNG">
@@ -42,9 +43,9 @@ It is purpose-built for **server deployments** such as [Hugging Face Spaces](htt
 
 | Phase | Component | What It Does |
 |---|---|---|
-| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries multiple search engines simultaneously (DuckDuckGo, Brave, Wikipedia, and more) to collect a diverse pool of result URLs. |
-| **2. Data Extraction** | [**trafilatura**](https://trafilatura.readthedocs.io/) | Scrapes each discovered URL concurrently and extracts **clean, readable text** — stripping ads, navigation, and boilerplate. This is the core data engine of the pipeline. |
-| **3. LLM Synthesis** | **Your LLM of Choice** | The cleaned, structured text context is sent to whichever LLM you configure. The LLM synthesizes a final, comprehensive answer with inline citations. |
+| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries **20 public SearxNG instances** using a **shuffle rotator** (batches of 6 concurrent requests) to collect a massive, diverse pool of result URLs. Instances are randomized each request for load distribution. |
+| **2. Data Extraction** | [**trafilatura**](https://trafilatura.readthedocs.io/) | Scrapes up to **60 discovered URLs** concurrently (semaphore-bounded at 12 connections) and extracts **clean, readable text** — stripping ads, navigation, and boilerplate. This is the core data engine of the pipeline. |
+| **3. LLM Synthesis** | **Your LLM of Choice** | The cleaned, structured text context is sent to whichever LLM you configure. The default configuration uses a **2-tier Cerebras cascade** (`gpt-oss-120b → llama3.1-8b`) with automatic fallback. The API response includes the `model_used` field so you always know which model served the answer. |
 
 > **Key Insight:** Phases 1 and 2 are fully handled by this agent. Phase 3 is a simple API call that **you control** — swap LLMs anytime without touching the search or scraping logic.
 
@@ -75,14 +76,16 @@ Swift-Search-Agent/
 ├── spaces/
 │   ├── private-searxng/              # SearxNG Docker Space (meta-search backend)
 │   │   ├── Dockerfile
+│   │   ├── README.md                 # HF Spaces metadata
 │   │   ├── run.sh
 │   │   └── settings.yml
 │   └── swift-scraper-api/            # Main API Space (scraping + LLM pipeline)
 │       ├── Dockerfile
+│       ├── README.md                 # HF Spaces metadata
 │       ├── app.py
 │       └── requirements.txt
-├── main.py                           # Local dev server (v1)
-├── search.py                         # Local dev server (v2 — 20-instance rotator)
+├── main.py                           # Standalone server (single-instance mode)
+├── search.py                         # Production server (v2 — 20-instance shuffle rotator + LLM cascade)
 ├── requirements.txt                  # Python dependencies
 ├── .env.example                      # Environment variable template
 ├── Proxy_Integration_Guide.md        # Optional proxy & IP rotation guide
