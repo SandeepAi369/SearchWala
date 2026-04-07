@@ -17,7 +17,7 @@ PROXIES=http://user:pass@ip1:port,http://user:pass@ip2:port,http://user:pass@ip3
 
 ## 2. Implement the Proxy Loader
 
-In your deployment script (e.g., `spaces/swift-scraper-api/app.py` or `search.py`), add a reliable mechanism to parse the `PROXIES` list at startup:
+In your engine file (e.g., `search_unified.py`, `search_optimized.py`, or `search_ultra.py`), add a reliable mechanism to parse the `PROXIES` list at startup:
 
 ```python
 import os

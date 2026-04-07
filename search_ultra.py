@@ -1126,7 +1126,7 @@ app = FastAPI(
         "Ultra-low latency search, extraction, and LLM synthesis API. "
         "Extreme edition with dynamic RAM auto-tiering and aiohttp stack."
     ),
-    version="3.5.0-extreme",
+    version="2.0.0-extreme",
     docs_url="/docs",
     redoc_url=None,
 )
