@@ -1,8 +1,10 @@
 [package]
 name = "swift-search-rs"
-version = "3.0.0"
+version = "1.0.0"
 edition = "2021"
-description = "Ultra-fast search & scrape API in Rust — replaces SearxNG + Trafilatura"
+description = "Ultra-fast search & scrape API in pure Rust — native multi-engine meta-search + readability extraction"
+authors = ["Sandeep"]
+license = "Apache-2.0"
 
 [dependencies]
 # Async runtime

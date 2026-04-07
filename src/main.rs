@@ -1,10 +1,8 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// ⚡ Swift Search Agent v3.0 — Pure Rust
+// ⚡ Swift-Search-Rs v1.0.0
 // ══════════════════════════════════════════════════════════════════════════════
 //
-//  NO Python. NO SearxNG. NO Trafilatura. NO LXML.
-//
-//  A single compiled binary that:
+//  A single compiled Rust binary that:
 //  1. Queries 5 search engines natively (DuckDuckGo, Brave, Yahoo, Qwant, Mojeek)
 //  2. Deduplicates and normalizes URLs
 //  3. Concurrently scrapes pages with streaming HTTP
@@ -12,7 +10,7 @@
 //  5. Returns raw JSON — zero LLM, bring your own AI
 //
 //  Deploy anywhere: 512MB VPS, HF Spaces, Docker, bare metal.
-//  Peak RAM: ~15-30MB under full load.
+//  Peak RAM: ~22MB under full load.
 //
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -82,7 +80,7 @@ async fn health_handler(
     let uptime = state.start_time.elapsed().as_secs();
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: "3.0.0-rs".to_string(),
+        version: "1.0.0".to_string(),
         engines: config::enabled_engines(),
         uptime_seconds: uptime,
     })
@@ -91,7 +89,7 @@ async fn health_handler(
 /// GET /config — Configuration info
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
-        version: "3.0.0-rs".to_string(),
+        version: "1.0.0".to_string(),
         engines: config::enabled_engines(),
         max_urls: config::max_urls(),
         scrape_timeout_secs: config::scrape_timeout_secs(),
@@ -103,10 +101,10 @@ async fn config_handler() -> impl IntoResponse {
 /// GET / — Root endpoint (for uptime pings)
 async fn root_handler() -> impl IntoResponse {
     Json(serde_json::json!({
-        "name": "Swift Search Agent",
-        "version": "3.0.0-rs",
+        "name": "Swift-Search-Rs",
+        "version": "1.0.0",
         "language": "Rust",
-        "description": "Ultra-fast search & scrape API — NO Python, NO SearxNG, NO LLM",
+        "description": "Ultra-fast native meta-search & scrape API",
         "endpoints": {
             "POST /search": "Search and scrape (body: {\"query\": \"...\"})",
             "GET /health": "Health check",
@@ -137,8 +135,8 @@ async fn main() {
 
     // Print startup banner
     tracing::info!("═══════════════════════════════════════════════════");
-    tracing::info!("  ⚡ Swift Search Agent v3.0.0-rs");
-    tracing::info!("  Language: Rust (zero Python dependency)");
+    tracing::info!("  ⚡ Swift-Search-Rs v1.0.0");
+    tracing::info!("  Language: Rust");
     tracing::info!("  Engines: {:?}", engines);
     tracing::info!("  Max URLs: {}", config::max_urls());
     tracing::info!("  Concurrency: {}", config::concurrency());

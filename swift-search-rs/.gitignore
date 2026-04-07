@@ -1,5 +1,0 @@
-/target
-*.swp
-*.swo
-.env
-test.sh
