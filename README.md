@@ -1,7 +1,7 @@
 <p align="center">
-  <h1 align="center">🔍 Swift Search Agent</h1>
+  <h1 align="center">⚡ Swift Search Agent v2.0</h1>
   <p align="center">
-    <strong>A high-performance, LLM-agnostic search & data extraction pipeline built for server deployments.</strong>
+    <strong>A high-performance, LLM-agnostic search & data extraction pipeline with auto-adaptive RAM tiering.</strong>
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/version-2.0-blueviolet" alt="Version 2.0">
@@ -10,6 +10,7 @@
     <img src="https://img.shields.io/badge/search-SearxNG-blue?logo=searxng&logoColor=white" alt="SearxNG">
     <img src="https://img.shields.io/badge/extraction-trafilatura-green" alt="trafilatura">
     <img src="https://img.shields.io/badge/LLM-Agnostic-orange" alt="LLM Agnostic">
+    <img src="https://img.shields.io/badge/RAM-Auto--Tiered-critical" alt="Auto-Tiered RAM">
     <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="MIT License">
   </p>
 </p>
@@ -20,131 +21,79 @@
 
 Swift Search Agent is a **production-ready API** that automates the entire research pipeline — from searching the web, to extracting clean text from web pages, to synthesizing answers using **any LLM of your choice**.
 
-It is purpose-built for **server deployments** such as [Hugging Face Spaces](https://huggingface.co/spaces), VPS instances, and cloud platforms, while also running flawlessly on a local machine.
+**v2.0** introduces a **multi-engine architecture** with **auto-adaptive RAM tiering** — the agent automatically detects your system's available memory and optimizes its concurrency, buffer sizes, and extraction strategy in real-time.
 
-> **🧠 LLM Agnostic by Design:** This agent does **not** lock you into any specific LLM provider. You have complete freedom to connect **any LLM API** (OpenAI, Anthropic, Mistral, Groq, local Ollama, etc.) or **any local model** to process the extracted data. The agent handles the hard part — finding, fetching, and cleaning web content — so your LLM receives high-quality, ready-to-use context.
+> **🧠 LLM Agnostic by Design:** This agent does **not** lock you into any specific LLM provider. You have complete freedom to connect **any LLM API** (OpenAI, Anthropic, Cerebras, Groq, Gemini, local Ollama, etc.) or **any local model** to process the extracted data. The agent handles the hard part — finding, fetching, and cleaning web content — so your LLM receives high-quality, ready-to-use context.
 
 ---
 
 ## 🔄 How It Works — Data Flow Pipeline
 
 ```
-┌─────────────┐      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-│  User Query │─────▶│   SearxNG    │─────▶│ trafilatura  │─────▶│  Any LLM     │
-│             │      │ (Meta-Search)│      │  (Scraping)  │      │ (Synthesis)  │
-└─────────────┘      └──────────────┘      └──────────────┘      └──────────────┘
-                           │                      │                      │
-                     Fetches URLs           Extracts clean          Generates a
-                     from multiple          text content from       comprehensive,
-                     search engines         each web page           cited answer
+┌─────────────┐      ┌──────────────────┐      ┌──────────────────┐      ┌──────────────┐
+│  User Query │─────▶│     SearxNG      │─────▶│   trafilatura    │─────▶│   Any LLM    │
+│             │      │  (Meta-Search)   │      │  + selectolax    │      │ (Synthesis)  │
+└─────────────┘      │  6-20 instances  │      │  (Extraction)    │      └──────────────┘
+                     └──────────────────┘      └──────────────────┘             │
+                            │                         │                        │
+                     Aggregates URLs            Extracts clean text      Generates a
+                     from multiple             with multi-strategy      comprehensive,
+                     search engines            fallback chain           cited answer
 ```
 
 ### Phase-by-Phase Breakdown
 
-| Phase | Component | What It Does |
+| Phase | Component | Algorithm |
 |---|---|---|
-| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries **20 public SearxNG instances** using a **shuffle rotator** (batches of 6 concurrent requests) to collect a massive, diverse pool of result URLs. Instances are randomized each request for load distribution. |
-| **2. Data Extraction** | [**trafilatura**](https://trafilatura.readthedocs.io/) | Scrapes up to **60 discovered URLs** concurrently (semaphore-bounded at 12 connections) and extracts **clean, readable text** — stripping ads, navigation, and boilerplate. This is the core data engine of the pipeline. |
-| **3. LLM Synthesis** | **Your LLM of Choice** | The cleaned, structured text context is sent to whichever LLM you configure. The default configuration uses a **2-tier Cerebras cascade** (`gpt-oss-120b → llama3.1-8b`) with automatic fallback. The API response includes the `model_used` field so you always know which model served the answer. |
+| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries **6–20 public SearxNG instances** concurrently. Results are deduplicated using **URL normalization** (tracking parameter removal, domain lowercasing, path normalization). Invalid URLs (social media, binary files) are filtered via domain/extension blocklists. |
+| **2. Data Extraction** | [**trafilatura**](https://trafilatura.readthedocs.io/) + [**selectolax**](https://github.com/rushter/selectolax) | **Multi-strategy fallback chain**: (1) trafilatura `bare_extraction` for high-quality heuristic parsing → (2) selectolax Lexbor C-speed DOM parsing → (3) regex-based stripping as ultimate fallback. HTML is **streamed with hard caps** to prevent OOM. Extraction is bounded by `asyncio.Semaphore`. |
+| **3. Context Building** | **StringIO + MD5 Dedup** | Extracted texts are **content-hash deduplicated** (MD5 of first 1000 chars) to eliminate near-identical content. Texts are concatenated using `StringIO` for O(1) amortized string building. **Early termination** stops scraping when 75% of the context buffer is filled. |
+| **4. LLM Synthesis** | **Your LLM of Choice** | The cleaned, structured context is sent to whichever LLM you configure via an **OpenAI-compatible API endpoint**. The LLM synthesizes a final answer with inline `[Source N](url)` citations. |
 
-> **Key Insight:** Phases 1 and 2 are fully handled by this agent. Phase 3 is a simple API call that **you control** — swap LLMs anytime without touching the search or scraping logic.
+> **Key Insight:** Phases 1–3 are fully handled by this agent. Phase 4 is a simple API call that **you control** — swap LLMs anytime without touching the search or scraping logic.
 
 ---
 
-## ⚡ Core Dependencies
-
-| Package | Purpose | Install |
-|---|---|---|
-| [**trafilatura**](https://trafilatura.readthedocs.io/) | **Web scraping & text extraction** — the heart of the data pipeline. Converts raw HTML into clean, structured text. | `pip install trafilatura` |
-| [**FastAPI**](https://fastapi.tiangolo.com/) | High-performance async API framework | `pip install fastapi` |
-| [**httpx**](https://www.python-httpx.org/) | Async HTTP client for concurrent requests | `pip install httpx` |
-| [**uvicorn**](https://www.uvicorn.org/) | Lightning-fast ASGI server | `pip install uvicorn[standard]` |
-| [**pydantic**](https://docs.pydantic.dev/) | Data validation via Python type hints | `pip install pydantic` |
-
-**Quick install (all dependencies):**
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## 🏗️ Architecture
+## 🏗️ Architecture — Multi-Engine Design
 
 ```
 Swift-Search-Agent/
-├── spaces/
-│   ├── private-searxng/              # SearxNG Docker Space (meta-search backend)
-│   │   ├── Dockerfile
-│   │   ├── README.md                 # HF Spaces metadata
-│   │   ├── run.sh
-│   │   └── settings.yml
-│   └── swift-scraper-api/            # Main API Space (scraping + LLM pipeline)
-│       ├── Dockerfile
-│       ├── README.md                 # HF Spaces metadata
-│       ├── app.py
-│       └── requirements.txt
-├── main.py                           # Standalone server (single-instance mode)
-├── search.py                         # Production server (v2 — 20-instance shuffle rotator + LLM cascade)
-├── requirements.txt                  # Python dependencies
-├── .env.example                      # Environment variable template
-├── Proxy_Integration_Guide.md        # Optional proxy & IP rotation guide
+├── config.py                     # Centralized configuration — auto-detects RAM tier
+├── search_unified.py             # 🟢 Unified engine (recommended for most users)
+├── search_optimized.py           # 🔵 Production engine (<60MB peak RAM)
+├── search_ultra.py               # 🔴 Extreme engine (aiohttp + selectolax + DNS caching)
+├── search_legacy.py              # ⚪ Legacy v1 engine (backup reference)
+├── requirements.txt              # Python dependencies
+├── .env.example                  # Environment variable template
+├── Proxy_Integration_Guide.md    # Optional proxy & IP rotation guide
 ├── LICENSE
 └── README.md
 ```
 
-### Two-Service Architecture
+### Engine Comparison
 
-| Service | Role |
-|---|---|
-| **Private SearxNG** | A self-hosted [SearxNG](https://github.com/searxng/searxng) instance running as a Docker container. Aggregates search results from multiple engines without rate limits. |
-| **Swift Scraper API** | The main FastAPI service. Receives queries, calls SearxNG for URLs, uses **trafilatura** to extract text from each page concurrently, then forwards the clean context to your configured LLM. |
+| Engine | File | Best For | Peak RAM | Networking | Extraction | Key Feature |
+|---|---|---|---|---|---|---|
+| 🟢 **Unified** | `search_unified.py` | General purpose | Auto-tiered | `httpx` | trafilatura | Auto RAM detection, early termination, quality scoring |
+| 🔵 **Optimized** | `search_optimized.py` | Low-RAM VPS | <60MB | `httpx` streaming | trafilatura + selectolax + regex | Recursive text chunking, 3-strategy fallback |
+| 🔴 **Ultra** | `search_ultra.py` | Max performance | Tier-based | `aiohttp` + HTTP/2 | selectolax (C-speed) + trafilatura | DNS caching, Beast mode (200 concurrent), CLI args |
+| ⚪ **Legacy** | `search_legacy.py` | Reference/backup | Fixed | `httpx` | trafilatura only | Simple 20-instance rotator |
+
+### RAM Auto-Tiering System
+
+The agents automatically detect your system's available RAM and configure optimal settings:
+
+| Tier | RAM Range | Concurrency | Max URLs | HTML Cap | Context Limit |
+|---|---|---|---|---|---|
+| **Micro** | ≤512MB | 3–5 | 25–50 | 256KB | 50K chars |
+| **Medium** | 512MB–2GB | 8–20 | 50–100 | 768KB | 80K chars |
+| **Large / Beast** | >2GB | 12–200 | 60–∞ | 1MB+ | 100K chars |
+
+> Override with: `SEARCH_RAM_TIER=micro python search_unified.py`
 
 ---
 
-## 🚀 Deployment
-
-> **While this agent runs flawlessly on a local machine, its architecture is highly optimized and perfect for server deployments** — including [Hugging Face Spaces](https://huggingface.co/spaces), VPS, Docker, and any cloud platform.
-
-### Hosting on Hugging Face Spaces (Recommended)
-
-#### Prerequisites
-- A free [Hugging Face](https://huggingface.co/) account
-- An API key for your preferred LLM provider
-
-#### Step 1: Deploy Private SearxNG
-
-1. Go to [huggingface.co/new-space](https://huggingface.co/new-space)
-2. Name: `Private-SearxNG` → SDK: **Docker** → Create
-3. Upload all files from `spaces/private-searxng/`
-4. ⚠️ **Change the `secret_key`** in `settings.yml` to a random string before uploading
-5. Wait for status: **Running**
-
-#### Step 2: Deploy Swift Scraper API
-
-1. Create another Space: `Swift-Scraper-API` → SDK: **Docker**
-2. Upload all files from `spaces/swift-scraper-api/`
-3. In **Settings → Variables**, set:
-   - `SEARXNG_URL` = `https://YOUR_USERNAME-private-searxng.hf.space`
-
-#### Step 3: Test
-
-```bash
-curl -X POST "https://YOUR_USERNAME-swift-scraper-api.hf.space/search" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: YOUR_LLM_API_KEY" \
-  -d '{"query": "What is machine learning?"}'
-```
-
-#### Step 4: Keep It Alive (Optional)
-
-Hugging Face free-tier Spaces sleep after inactivity. Set up [UptimeRobot](https://uptimerobot.com/) (free) to ping your `/health` endpoint every 5 minutes to prevent sleep:
-
-```
-https://YOUR_USERNAME-swift-scraper-api.hf.space/health
-```
-
-### Running Locally
+## ⚡ Quick Start
 
 ```bash
 # Clone the repo
@@ -154,45 +103,96 @@ cd Swift-Search-Agent
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the server
-python search.py
+# Copy environment template
+cp .env.example .env
+
+# Run the recommended engine
+python search_unified.py
+```
+
+### Test the API
+
+```bash
+curl -X POST "http://localhost:8000/search" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: YOUR_LLM_API_KEY" \
+  -d '{"query": "What is machine learning?"}'
+```
+
+### Choose Your Engine
+
+```bash
+# Recommended — auto-adapts to your system
+python search_unified.py
+
+# For extreme low-RAM environments (<60MB peak)
+python search_optimized.py
+
+# Maximum performance with CLI controls
+python search_ultra.py --tier beast --port 8080
 ```
 
 ---
 
 ## ⚙️ Environment Variables
 
-| Variable | Required | Description |
+All variables are **optional** — sensible defaults are built-in.
+
+| Variable | Default | Description |
 |---|---|---|
-| `SEARXNG_URL` | No | URL of your SearxNG instance (defaults to the bundled private instance) |
-| `PORT` | No | Server port (defaults to `7860` on HF Spaces, `8000` locally) |
+| `SEARCH_MODE` | `unified` | Engine mode: `unified` or `separate` |
+| `SEARCH_RAM_TIER` | Auto-detected | Force tier: `micro`, `small`, `medium`, `large` |
+| `SEARCH_QUALITY` | Tier-based | Extraction quality: `high`, `medium`, `fast` |
+| `SEARCH_EARLY_STOP` | `0.75` | Stop scraping when N% of context buffer filled |
+| `LLM_API_URL` | Cerebras endpoint | Any OpenAI-compatible API URL |
+| `LLM_MODEL` | `llama-3.3-70b` | Model name for your LLM provider |
+| `LLM_MAX_TOKENS` | `4096` | Max tokens for LLM response |
+| `LLM_TEMPERATURE` | `0.3` | LLM temperature (0.0–1.0) |
+| `PORT` | `8000` | Server port |
 
 > **Note:** LLM API keys are passed per-request via the `x-api-key` header — they are **never** stored server-side.
 
 ---
 
+## 📦 Core Dependencies
+
+| Package | Purpose | Used By |
+|---|---|---|
+| [**FastAPI**](https://fastapi.tiangolo.com/) | Async API framework | All engines |
+| [**httpx**](https://www.python-httpx.org/) | Async HTTP client | Unified, Optimized, Legacy |
+| [**aiohttp**](https://docs.aiohttp.org/) | High-performance HTTP with HTTP/2 | Ultra engine |
+| [**trafilatura**](https://trafilatura.readthedocs.io/) | Web scraping & text extraction | All engines |
+| [**selectolax**](https://github.com/rushter/selectolax) | C-speed DOM parsing (Lexbor) | Optimized, Ultra |
+| [**psutil**](https://github.com/giampaolo/psutil) | System RAM detection | Ultra, Config |
+| [**aiodns**](https://github.com/saghul/aiodns) | Async DNS resolution | Ultra engine |
+| [**cachetools**](https://github.com/tkem/cachetools) | TTL-based DNS caching | Ultra engine |
+| [**pydantic**](https://docs.pydantic.dev/) | Data validation | All engines |
+| [**uvicorn**](https://www.uvicorn.org/) | ASGI server | All engines |
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
 ## 🔐 Advanced: Proxy & IP Rotation
 
-For users who want to unlock direct Google/Bing searching through personal proxies and IP rotation, see the [`Proxy_Integration_Guide.md`](./Proxy_Integration_Guide.md) for detailed instructions and code examples. This is entirely optional — the agent works perfectly out-of-the-box without any proxies.
+For users who need direct Google/Bing searching through personal proxies and IP rotation, see the [`Proxy_Integration_Guide.md`](./Proxy_Integration_Guide.md) for detailed instructions. This is entirely optional — the agent works perfectly out-of-the-box without any proxies.
 
 ---
 
 ## 🙏 Credits & Acknowledgements
 
-This project is built on top of and utilizes the following open-source projects and services:
-
 | Project / Service | Description | Link |
 |---|---|---|
 | **SearxNG** | Privacy-respecting meta-search engine (AGPL-3.0) | [github.com/searxng/searxng](https://github.com/searxng/searxng) |
 | **trafilatura** | Web scraping & text extraction library | [trafilatura.readthedocs.io](https://trafilatura.readthedocs.io/) |
+| **selectolax** | Lightning-fast HTML parser (Lexbor C backend) | [github.com/rushter/selectolax](https://github.com/rushter/selectolax) |
 | **FastAPI** | High-performance Python web framework | [fastapi.tiangolo.com](https://fastapi.tiangolo.com/) |
-| **httpx** | Async HTTP client for Python | [python-httpx.org](https://www.python-httpx.org/) |
-| **Uvicorn** | Lightning-fast ASGI server | [uvicorn.org](https://www.uvicorn.org/) |
-| **Pydantic** | Data validation using Python type hints | [docs.pydantic.dev](https://docs.pydantic.dev/) |
-| **Hugging Face Spaces** | Free hosting platform for ML apps | [huggingface.co/spaces](https://huggingface.co/spaces) |
-| **UptimeRobot** | Free uptime monitoring to prevent HF sleep | [uptimerobot.com](https://uptimerobot.com/) |
+| **aiohttp** | Async HTTP client/server with HTTP/2 | [docs.aiohttp.org](https://docs.aiohttp.org/) |
+| **psutil** | Cross-platform system monitoring | [github.com/giampaolo/psutil](https://github.com/giampaolo/psutil) |
 
-> **Note:** SearxNG is licensed under [AGPL-3.0](https://github.com/searxng/searxng/blob/master/LICENSE). This project uses SearxNG as a **standalone service** (Docker container) and does not modify or redistribute its source code.
+> **Note:** SearxNG is licensed under [AGPL-3.0](https://github.com/searxng/searxng/blob/master/LICENSE). This project uses SearxNG as a **standalone service** and does not modify or redistribute its source code.
 
 ---
 
