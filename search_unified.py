@@ -1,7 +1,7 @@
 """
 Swift Search Agent v2.0 - Unified Optimized Search API
 ======================================================
-Advanced meta-search + web scraping + LLM synthesis in a single optimized file.
+Advanced meta-search + web scraping API in a single optimized file.
 
 Key Features:
 - Auto-detects RAM tier and optimizes settings automatically
@@ -24,8 +24,6 @@ Environment Variables (all optional):
 - SEARCH_RAM_TIER: "micro", "small", "medium", "large" (auto-detected)
 - SEARCH_QUALITY: "high", "medium", "fast" (tier-based default)
 - SEARCH_EARLY_STOP: 0.75 (stop when 75% context filled)
-- LLM_API_URL: Custom LLM endpoint
-- LLM_MODEL: Custom model name
 - PORT: Server port (default 8000)
 
 Usage:
@@ -57,7 +55,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
 import trafilatura
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -331,8 +329,22 @@ SEARXNG_INSTANCES: tuple[str, ...] = (
     "https://searxng.site",
     "https://search.ononoki.org",
     "https://searx.tiekoetter.com",
-    "https://paulgo.io",
+    "https://searx.be",
+    "https://search.bus-hit.me",
+    "https://searx.fmac.xyz",
+    "https://searx.zhenyapav.com",
+    "https://search.hbubli.cc",
+    "https://searx.work",
     "https://search.mdosch.de",
+    "https://searx.colbster937.dev",
+    "https://searx.namejeff.xyz",
+    "https://search.rowie.at",
+    "https://searx.dresden.network",
+    "https://searx.catfock.com",
+    "https://searx.ox2.fr",
+    "https://searx.mha.fi",
+    "https://priv.au",
+    "https://search.toolforge.org",
 )
 
 _UA = "Mozilla/5.0 (compatible; SwiftSearchBot/2.0)"
@@ -622,96 +634,12 @@ def build_context(results: list[ExtractionResult]) -> tuple[str, list[str]]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 6: LLM SYNTHESIS - Cerebras/OpenAI-compatible API
-# ═══════════════════════════════════════════════════════════════════════════════
-
-CEREBRAS_API_URL = os.environ.get("LLM_API_URL", "https://api.cerebras.ai/v1/chat/completions")
-CEREBRAS_MODEL = os.environ.get("LLM_MODEL", "llama-3.3-70b")
-
-
-def _build_system_prompt() -> str:
-    return (
-        "You are an advanced research assistant. "
-        "Using ONLY the provided source context below, write a comprehensive, "
-        "highly detailed, and well-structured answer to the user's query. "
-        "Include inline citations in the format [Source N](url) where possible. "
-        "If the context is insufficient, state what is known and what could not be verified. "
-        "Do NOT fabricate information beyond what the sources provide."
-    )
-
-
-async def synthesize(
-    query: str,
-    context: str,
-    citations: list[str],
-    api_key: str,
-) -> str:
-    """Call LLM API for synthesis."""
-    if not context.strip():
-        return (
-            "I was unable to extract meaningful content from the search results. "
-            "Please try rephrasing your query or try again later."
-        )
-    
-    payload = {
-        "model": CEREBRAS_MODEL,
-        "messages": [
-            {"role": "system", "content": _build_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"## Query\n{query}\n\n"
-                    f"## Source Context\n{context}\n\n"
-                    "Now write your comprehensive answer with inline citations."
-                ),
-            },
-        ],
-        "temperature": 0.3,
-        "max_tokens": 4096,
-        "stream": False,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.post(
-                CEREBRAS_API_URL,
-                json=payload,
-                headers=headers,
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            answer = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
-            return answer or "The LLM returned an empty response. Please try again."
-            
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            if status == 401:
-                raise HTTPException(status_code=401, detail="Invalid API key.")
-            if status == 429:
-                raise HTTPException(status_code=429, detail="Rate limit hit. Retry later.")
-            raise HTTPException(status_code=502, detail=f"LLM upstream error ({status}).")
-        except Exception as exc:
-            log.error("LLM call failed: %s", exc)
-            raise HTTPException(status_code=502, detail="Failed to reach LLM API.")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 7: FASTAPI APPLICATION - Endpoints and middleware
+# SECTION 6: FASTAPI APPLICATION - Endpoints and middleware
 # ═══════════════════════════════════════════════════════════════════════════════
 
 app = FastAPI(
     title="Swift Search API v2.0",
-    description="Advanced meta-search + scraping + LLM synthesis, optimized for low-RAM VPS",
+    description="Advanced meta-search + web scraping API, optimized for low-RAM VPS",
     version="2.0.0",
     docs_url="/docs",
     redoc_url=None,
@@ -729,12 +657,19 @@ class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000, description="Search query")
 
 
+class SourceResult(BaseModel):
+    url: str
+    title: str
+    extracted_text: str
+    quality_score: float
+    char_count: int
+
+
 class SearchResponse(BaseModel):
     query: str
     sources_found: int
-    sources_scraped: int
-    answer: str
-    citations: list[str]
+    sources_processed: int
+    results: list[SourceResult]
     elapsed_seconds: float
     ram_tier: str
     quality: str
@@ -748,6 +683,7 @@ async def health():
         "ram_tier": _RAM_TIER.value,
         "quality": _CONFIG.quality.value,
         "semaphore_limit": _CONFIG.semaphore_limit,
+        "searxng_instances": len(SEARXNG_INSTANCES),
     }
 
 
@@ -764,17 +700,19 @@ async def get_config():
         "enable_head_check": _CONFIG.enable_head_check,
         "quality": _CONFIG.quality.value,
         "early_stop_threshold": EARLY_STOP_THRESHOLD,
+        "searxng_instances": len(SEARXNG_INSTANCES),
     }
 
 
 @app.post("/search", response_model=SearchResponse)
-async def search(body: SearchRequest, x_api_key: str = Header(..., alias="x-api-key")):
+async def search(body: SearchRequest):
     """
-    Main search endpoint - orchestrates the full pipeline:
-    1. Meta-search via SearxNG (multiple instances)
+    Main search endpoint — returns raw scraped data.
+    
+    Pipeline:
+    1. Meta-search via SearxNG (20 instances)
     2. Concurrent scraping with streaming + early termination
-    3. Context building with content deduplication
-    4. LLM synthesis via Cerebras/compatible API
+    3. Raw extracted text returned per source
     """
     t0 = time.perf_counter()
     query = body.query.strip()
@@ -790,29 +728,37 @@ async def search(body: SearchRequest, x_api_key: str = Header(..., alias="x-api-
     sources_found = len(urls)
     
     # Phase 2: Concurrent Scraping (with early termination)
-    results = await scrape_urls(urls)
-    sources_scraped = sum(1 for r in results if r.char_count >= 50)
-    log.info("Scraped %d / %d URLs", sources_scraped, sources_found)
+    raw_results = await scrape_urls(urls)
+    sources_processed = sum(1 for r in raw_results if r.char_count >= 50)
+    log.info("Scraped %d / %d URLs", sources_processed, sources_found)
     
-    # Phase 3: Build Context
-    context, citations = build_context(results)
+    # Build response with raw extracted text per source
+    results = []
+    for r in raw_results:
+        if r.text and r.char_count >= 50:
+            # Extract title from first line of text
+            lines = r.text.strip().split("\n")
+            title = lines[0][:120] if lines else r.url
+            results.append(SourceResult(
+                url=r.url,
+                title=title,
+                extracted_text=r.text,
+                quality_score=r.quality_score,
+                char_count=r.char_count,
+            ))
     
-    # Phase 4: Synthesize
-    answer = await synthesize(query, context, citations, x_api_key)
-    
-    # Single GC at end (not per-operation)
-    del urls, results, context
+    # Cleanup
+    del urls, raw_results
     gc.collect()
     
     elapsed = round(time.perf_counter() - t0, 2)
-    log.info("━━━ DONE ━━━ elapsed=%.2fs sources=%d/%d", elapsed, sources_scraped, sources_found)
+    log.info("━━━ DONE ━━━ elapsed=%.2fs sources=%d/%d", elapsed, sources_processed, sources_found)
     
     return SearchResponse(
         query=query,
         sources_found=sources_found,
-        sources_scraped=sources_scraped,
-        answer=answer,
-        citations=citations,
+        sources_processed=sources_processed,
+        results=results,
         elapsed_seconds=elapsed,
         ram_tier=_RAM_TIER.value,
         quality=_CONFIG.quality.value,

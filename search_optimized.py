@@ -3,7 +3,7 @@
 Swift Search Agent v2.0 — Production-Grade, <60MB Peak RAM
 =========================================================
 
-A meticulously engineered web search, extraction, and LLM synthesis pipeline
+A meticulously engineered web search and extraction pipeline
 designed for extreme memory efficiency on constrained environments.
 
 Architecture Principles:
@@ -56,7 +56,7 @@ from typing import (
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -114,7 +114,7 @@ SEMAPHORE_LIMIT: Final[int] = 5           # Max concurrent HTML pages in memory
 MAX_URLS: Final[int] = 50                  # Max URLs to process per query
 FETCH_TIMEOUT_SEC: Final[float] = 12.0     # Per-URL timeout (generous for full pages)
 MAX_HTML_BYTES: Final[int] = 2 * 1024 * 1024  # 2MB per page (no truncation)
-MAX_CONTEXT_CHARS: Final[int] = 80_000     # LLM context limit
+MAX_CONTEXT_CHARS: Final[int] = 80_000     # Context buffer limit
 CHUNK_SIZE: Final[int] = 1500              # Target chunk size (chars)
 CHUNK_OVERLAP: Final[int] = 200            # Overlap between chunks
 MIN_TEXT_LENGTH: Final[int] = 100          # Minimum useful text length
@@ -125,18 +125,23 @@ SEARXNG_INSTANCES: Final[Tuple[str, ...]] = (
     "https://searxng.site",
     "https://search.ononoki.org",
     "https://searx.tiekoetter.com",
-    "https://paulgo.io",
+    "https://searx.be",
+    "https://search.bus-hit.me",
+    "https://searx.fmac.xyz",
+    "https://searx.zhenyapav.com",
+    "https://search.hbubli.cc",
+    "https://searx.work",
     "https://search.mdosch.de",
-    "https://search.brave.com",  # Brave also supports JSON API
+    "https://searx.colbster937.dev",
+    "https://searx.namejeff.xyz",
+    "https://search.rowie.at",
+    "https://searx.dresden.network",
+    "https://searx.catfock.com",
+    "https://searx.ox2.fr",
+    "https://searx.mha.fi",
+    "https://priv.au",
+    "https://search.toolforge.org",
 )
-
-# ─────────────── LLM Configuration ───────────────
-LLM_API_URL: Final[str] = os.environ.get(
-    "LLM_API_URL", "https://api.cerebras.ai/v1/chat/completions"
-)
-LLM_MODEL: Final[str] = os.environ.get("LLM_MODEL", "llama-3.3-70b")
-LLM_MAX_TOKENS: Final[int] = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
-LLM_TEMPERATURE: Final[float] = float(os.environ.get("LLM_TEMPERATURE", "0.3"))
 
 # ─────────────── HTTP Headers ───────────────
 USER_AGENT: Final[str] = (
@@ -1020,106 +1025,13 @@ def build_context_from_chunks(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 9: LLM SYNTHESIS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-SYSTEM_PROMPT: Final[str] = """You are an advanced research assistant. Using ONLY the provided source context below, write a comprehensive, highly detailed, and well-structured answer to the user's query.
-
-Guidelines:
-- Include inline citations in the format [Source N](url) where possible
-- If the context is insufficient, state what is known and what could not be verified
-- Do NOT fabricate information beyond what the sources provide
-- Organize your answer with clear sections if the topic warrants it
-- Provide specific details, numbers, and quotes from sources when available"""
-
-
-async def synthesize_with_llm(
-    query: str,
-    context: str,
-    citations: List[str],
-    api_key: str,
-) -> str:
-    """
-    Call LLM API (Cerebras/OpenAI-compatible) for answer synthesis.
-    
-    Memory: Payload is ~5-10KB, response is streamed but not accumulated.
-    """
-    if not context.strip():
-        return (
-            "I was unable to extract meaningful content from the search results. "
-            "Please try rephrasing your query or try again later."
-        )
-    
-    payload = {
-        "model": LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"## Query\n{query}\n\n"
-                    f"## Source Context\n{context}\n\n"
-                    "Now write your comprehensive answer with inline citations."
-                ),
-            },
-        ],
-        "temperature": LLM_TEMPERATURE,
-        "max_tokens": LLM_MAX_TOKENS,
-        "stream": False,
-    }
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            resp = await client.post(
-                LLM_API_URL,
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            
-            answer = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
-            
-            return answer or "The LLM returned an empty response. Please try again."
-        
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            log.error("LLM API error %d: %s", status, e.response.text[:200])
-            
-            if status == 401:
-                raise HTTPException(status_code=401, detail="Invalid API key.")
-            if status == 429:
-                raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
-            raise HTTPException(status_code=502, detail=f"LLM upstream error ({status}).")
-        
-        except Exception as e:
-            log.error("LLM call failed: %s", e)
-            raise HTTPException(status_code=502, detail="Failed to reach LLM API.")
-        
-        finally:
-            # Free payload memory
-            del payload
-            gc.collect()
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 10: FASTAPI APPLICATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
 app = FastAPI(
     title="Swift Search Agent v2.0",
     description=(
-        "Production-grade search, extraction, and LLM synthesis API. "
+        "Production-grade search and extraction API. "
         "Optimized for <60MB peak RAM on constrained environments."
     ),
     version="2.0.0",
@@ -1153,8 +1065,7 @@ class SearchResponse(BaseModel):
     sources_processed: int
     sources_successful: int
     total_chunks: int
-    answer: str
-    citations: List[str]
+    results: List[dict]
     elapsed_seconds: float
 
 
@@ -1191,25 +1102,20 @@ async def get_config():
         "chunk_size": CHUNK_SIZE,
         "chunk_overlap": CHUNK_OVERLAP,
         "min_text_length": MIN_TEXT_LENGTH,
-        "llm_model": LLM_MODEL,
         "searxng_instances": len(SEARXNG_INSTANCES),
     }
 
 
 @app.post("/search", response_model=SearchResponse)
-async def search(
-    body: SearchRequest,
-    x_api_key: str = Header(..., alias="x-api-key"),
-):
+async def search(body: SearchRequest):
     """
-    Main search endpoint.
+    Main search endpoint — returns raw scraped data.
     
     Pipeline:
-    1. Meta-search via SearxNG (multiple instances)
+    1. Meta-search via SearxNG (20 instances)
     2. Concurrent fetch + extraction (semaphore-bounded)
     3. Recursive text chunking
-    4. Context building with deduplication
-    5. LLM synthesis
+    4. Raw extracted text returned per source
     
     Memory: Peak <60MB via semaphore + immediate cleanup.
     """
@@ -1230,33 +1136,33 @@ async def search(
     log.info("Phase 1 complete: %d URLs found", sources_found)
     
     # ─── Phase 2: Concurrent Fetch + Extract + Chunk ───
-    results = await process_urls(urls)
+    raw_results = await process_urls(urls)
     
-    sources_successful = sum(1 for r in results if r.success)
-    total_chunks = sum(len(r.chunks) for r in results)
+    sources_successful = sum(1 for r in raw_results if r.success)
+    total_chunks = sum(len(r.chunks) for r in raw_results)
     
     log.info(
         "Phase 2 complete: %d/%d successful, %d chunks",
-        sources_successful, len(results), total_chunks,
+        sources_successful, len(raw_results), total_chunks,
     )
     
     # Free URLs list
     del urls
     
-    # ─── Phase 3: Build Context ───
-    context, citations = build_context_from_chunks(results)
+    # Build raw results list
+    results = []
+    for r in raw_results:
+        if r.success and r.chunks:
+            results.append({
+                "url": r.url,
+                "title": r.title,
+                "extracted_text": "\n".join(r.chunks),
+                "chunk_count": len(r.chunks),
+                "char_count": r.char_count,
+            })
     
-    log.info("Phase 3 complete: %d char context, %d citations", len(context), len(citations))
-    
-    # Free results (chunks already copied into context)
-    del results
-    gc.collect()
-    
-    # ─── Phase 4: LLM Synthesis ───
-    answer = await synthesize_with_llm(query, context, citations, x_api_key)
-    
-    # Final cleanup
-    del context
+    # Cleanup
+    del raw_results
     gc.collect()
     
     elapsed = round(time.perf_counter() - t0, 2)
@@ -1271,8 +1177,7 @@ async def search(
         sources_processed=sources_found,
         sources_successful=sources_successful,
         total_chunks=total_chunks,
-        answer=answer,
-        citations=citations,
+        results=results,
         elapsed_seconds=elapsed,
     )
 
@@ -1304,7 +1209,7 @@ if __name__ == "__main__":
     log.info("Max URLs per query: %d", MAX_URLS)
     log.info("Max HTML per page: %d bytes", MAX_HTML_BYTES)
     log.info("Chunk size: %d chars (overlap: %d)", CHUNK_SIZE, CHUNK_OVERLAP)
-    log.info("LLM: %s @ %s", LLM_MODEL, LLM_API_URL[:50])
+    log.info("SearxNG instances: %d", len(SEARXNG_INSTANCES))
     log.info("Starting server on port %d...", port)
     log.info("=" * 60)
     

@@ -3,7 +3,7 @@
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║         SWIFT SEARCH AGENT v2.0 — EXTREME MILLISECOND EDITION                ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
-║  Ultra-low latency search, extraction, and LLM synthesis engine              ║
+║  Ultra-low latency search and extraction engine                               ║
 ║  combining dynamic RAM auto-tiering with bleeding-edge async networking      ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
@@ -106,7 +106,7 @@ import trafilatura
 from trafilatura import bare_extraction
 
 # Third-party: Web framework
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -285,29 +285,29 @@ def initialize_tier(override: Optional[str] = None) -> TierConfig:
 # SECTION 4: CONSTANTS — Environment & Fixed Config
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ─────────────── LLM Configuration ───────────────
-
-LLM_API_URL: Final[str] = os.getenv(
-    "GEMINI_API_URL",
-    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-)
-
-LLM_MODEL: Final[str] = os.getenv(
-    "LLM_MODEL",
-    "gemini-2.0-flash",
-)
-
-LLM_MAX_TOKENS: Final[int] = int(os.getenv("LLM_MAX_TOKENS", "12000"))
-LLM_TEMPERATURE: Final[float] = float(os.getenv("LLM_TEMPERATURE", "0.3"))
-
-
 # ─────────────── SearxNG Configuration ───────────────
 
-SEARXNG_INSTANCES: Final[Tuple[str, ...]] = tuple(
-    os.getenv(
-        "SEARXNG_INSTANCES",
-        "https://search.ononoki.org,https://searx.be,https://search.sapti.me",
-    ).split(",")
+SEARXNG_INSTANCES: Final[Tuple[str, ...]] = (
+    "https://search.sapti.me",
+    "https://searxng.site",
+    "https://search.ononoki.org",
+    "https://searx.tiekoetter.com",
+    "https://searx.be",
+    "https://search.bus-hit.me",
+    "https://searx.fmac.xyz",
+    "https://searx.zhenyapav.com",
+    "https://search.hbubli.cc",
+    "https://searx.work",
+    "https://search.mdosch.de",
+    "https://searx.colbster937.dev",
+    "https://searx.namejeff.xyz",
+    "https://search.rowie.at",
+    "https://searx.dresden.network",
+    "https://searx.catfock.com",
+    "https://searx.ox2.fr",
+    "https://searx.mha.fi",
+    "https://priv.au",
+    "https://search.toolforge.org",
 )
 
 # ─────────────── Processing Limits ───────────────
@@ -931,7 +931,7 @@ async def process_urls(urls: List[str]) -> List[ExtractionResult]:
     - Immediate cleanup after each URL
     - GC after batch completion
     """
-    semaphore = asyncio.Semaphore(TIER_CFG.semaphore_limit)
+    semaphore = asyncio.Semaphore(20)
     
     async with create_http_session() as session:
         tasks = [
@@ -1022,98 +1022,6 @@ def build_context_from_chunks(
     return context, citations
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 13: LLM SYNTHESIS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-SYNTHESIS_SYSTEM_PROMPT: Final[str] = """You are an expert research assistant. Your task is to synthesize information from multiple web sources into a comprehensive, accurate answer.
-
-Guidelines:
-1. Use ONLY information from the provided sources
-2. Cite sources using [N] notation
-3. If sources conflict, acknowledge the disagreement
-4. If information is incomplete, say so clearly
-5. Structure your response with clear paragraphs
-6. Be concise but thorough - aim for completeness without unnecessary verbosity
-
-Format your response as:
-- Direct answer to the question
-- Supporting details with citations
-- Any caveats or limitations"""
-
-
-async def synthesize_with_llm(
-    query: str,
-    context: str,
-    citations: List[str],
-    api_key: str,
-) -> str:
-    """
-    Synthesize answer using LLM API.
-    
-    Uses OpenAI-compatible endpoint (Gemini by default).
-    """
-    user_message = f"""Question: {query}
-
-Sources:
-{context}
-
-Please provide a comprehensive answer to the question, citing sources where appropriate using [N] notation."""
-    
-    payload = {
-        "model": LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        "max_tokens": LLM_MAX_TOKENS,
-        "temperature": LLM_TEMPERATURE,
-    }
-    
-    try:
-        async with create_http_session(timeout_override=60.0) as session:
-            async with session.post(
-                LLM_API_URL,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-            ) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    log.error("LLM API error %d: %s", resp.status, error_text[:200])
-                    raise HTTPException(
-                        status_code=502,
-                        detail=f"LLM API error: {resp.status}",
-                    )
-                
-                data = await resp.json()
-                
-                # Extract answer
-                try:
-                    answer = data["choices"][0]["message"]["content"]
-                except (KeyError, IndexError) as e:
-                    log.error("Unexpected LLM response: %s", data)
-                    raise HTTPException(
-                        status_code=502,
-                        detail="Invalid LLM response format",
-                    )
-                
-                # Append citations
-                if citations:
-                    answer += "\n\n**Sources:**\n" + "\n".join(citations[:20])
-                
-                return answer
-                
-    except HTTPException:
-        raise
-    except Exception as e:
-        log.exception("LLM synthesis failed: %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail=f"LLM synthesis failed: {str(e)[:100]}",
-        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1123,7 +1031,7 @@ Please provide a comprehensive answer to the question, citing sources where appr
 app = FastAPI(
     title="Swift Search Agent v2.0",
     description=(
-        "Ultra-low latency search, extraction, and LLM synthesis API. "
+        "Ultra-low latency search and extraction API. "
         "Extreme edition with dynamic RAM auto-tiering and aiohttp stack."
     ),
     version="2.0.0-extreme",
@@ -1158,8 +1066,7 @@ class SearchResponse(BaseModel):
     sources_processed: int
     sources_successful: int
     total_chunks: int
-    answer: str
-    citations: List[str]
+    results: List[dict]
     elapsed_seconds: float
 
 
@@ -1188,8 +1095,6 @@ class ConfigResponse(BaseModel):
     version: str
     active_tier: TierInfo
     available_tiers: List[str]
-    llm_model: str
-    llm_api_url: str
     searxng_instances: int
     max_html_bytes: int
     max_context_chars: int
@@ -1239,8 +1144,6 @@ async def get_config():
         version="2.0.0-extreme",
         active_tier=tier_info,
         available_tiers=["MICRO", "MEDIUM", "BEAST"],
-        llm_model=LLM_MODEL,
-        llm_api_url=LLM_API_URL[:50] + "...",
         searxng_instances=len(SEARXNG_INSTANCES),
         max_html_bytes=MAX_HTML_BYTES,
         max_context_chars=MAX_CONTEXT_CHARS,
@@ -1248,19 +1151,15 @@ async def get_config():
 
 
 @app.post("/search", response_model=SearchResponse)
-async def search(
-    body: SearchRequest,
-    x_api_key: str = Header(..., alias="x-api-key"),
-):
+async def search(body: SearchRequest):
     """
-    Main search endpoint.
+    Main search endpoint — returns raw scraped data.
     
     Pipeline:
-    1. Meta-search via SearxNG (multiple instances)
+    1. Meta-search via SearxNG (20 instances)
     2. Concurrent fetch + extraction (tier-bounded)
     3. Recursive text chunking
-    4. Context building with deduplication
-    5. LLM synthesis
+    4. Raw extracted text returned per source
     
     Memory: Peak varies by tier (MICRO: <60MB, MEDIUM: <200MB, BEAST: <1GB).
     """
@@ -1281,33 +1180,33 @@ async def search(
     log.info("Phase 1 complete: %d URLs found", sources_found)
     
     # ─── Phase 2: Concurrent Fetch + Extract + Chunk ───
-    results = await process_urls(urls)
+    raw_results = await process_urls(urls)
     
-    sources_successful = sum(1 for r in results if r.success)
-    total_chunks = sum(len(r.chunks) for r in results)
+    sources_successful = sum(1 for r in raw_results if r.success)
+    total_chunks = sum(len(r.chunks) for r in raw_results)
     
     log.info(
         "Phase 2 complete: %d/%d successful, %d chunks",
-        sources_successful, len(results), total_chunks,
+        sources_successful, len(raw_results), total_chunks,
     )
     
     # Free URLs list
     del urls
     
-    # ─── Phase 3: Build Context ───
-    context, citations = build_context_from_chunks(results)
+    # Build raw results list
+    results = []
+    for r in raw_results:
+        if r.success and r.chunks:
+            results.append({
+                "url": r.url,
+                "title": r.title,
+                "extracted_text": "\n".join(r.chunks),
+                "chunk_count": len(r.chunks),
+                "char_count": r.char_count,
+            })
     
-    log.info("Phase 3 complete: %d char context, %d citations", len(context), len(citations))
-    
-    # Free results
-    del results
-    gc.collect()
-    
-    # ─── Phase 4: LLM Synthesis ───
-    answer = await synthesize_with_llm(query, context, citations, x_api_key)
-    
-    # Final cleanup
-    del context
+    # Cleanup
+    del raw_results
     gc.collect()
     
     elapsed = round(time.perf_counter() - t0, 2)
@@ -1323,8 +1222,7 @@ async def search(
         sources_processed=sources_found,
         sources_successful=sources_successful,
         total_chunks=total_chunks,
-        answer=answer,
-        citations=citations,
+        results=results,
         elapsed_seconds=elapsed,
     )
 
@@ -1454,7 +1352,6 @@ if __name__ == "__main__":
     log.info("  Connector Pool: %d connections", TIER_CFG.connector_limit)
     log.info("  DNS Cache: %d entries, %ds TTL", TIER_CFG.dns_cache_size, TIER_CFG.dns_cache_ttl)
     log.info("  aiodns: %s", "ENABLED ✓" if AIODNS_AVAILABLE else "DISABLED ✗")
-    log.info("  LLM: %s", LLM_MODEL)
     log.info("  SearxNG instances: %d", len(SEARXNG_INSTANCES))
     log.info("═" * 60)
     log.info("  Starting server on %s:%d", args.host, args.port)
