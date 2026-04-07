@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">⚡ Swift Search Agent v2.0</h1>
   <p align="center">
-    <strong>A high-performance search & data extraction API with auto-adaptive RAM tiering. Pure search + scrape — bring your own LLM.</strong>
+    <strong>A high-performance search & data extraction API powered by your own private SearxNG. Pure search + scrape — bring your own LLM.</strong>
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/version-2.0-blueviolet" alt="Version 2.0">
@@ -31,21 +31,24 @@ Swift Search Agent is a **production-ready API** that automates the search and e
 
 ```
 ┌─────────────┐      ┌──────────────────┐      ┌──────────────────┐      ┌──────────────┐
-│  User Query │─────▶│     SearxNG      │─────▶│   trafilatura    │─────▶│  Raw JSON    │
-│             │      │  (Meta-Search)   │      │  + selectolax    │      │  Response    │
-└─────────────┘      │  20 instances    │      │  (Extraction)    │      └──────────────┘
-                     └──────────────────┘      └──────────────────┘             │
-                            │                         │                        │
-                     Aggregates URLs            Extracts clean text      Returns URLs,
-                     from multiple             with multi-strategy      titles, and raw
-                     search engines            fallback chain           extracted text
+│  User Query │─────▶│  Your Private    │─────▶│   trafilatura    │─────▶│  Raw JSON    │
+│             │      │  SearxNG         │      │  + selectolax    │      │  Response    │
+└─────────────┘      │  (localhost or   │      │  (Extraction)    │      └──────────────┘
+                     │   HF Space)      │      └──────────────────┘             │
+                     └──────────────────┘                                       │
+                            │                                              Returns URLs,
+                     Queries engines:                                      titles, and raw
+                     DuckDuckGo, Brave,                                    extracted text
+                     Wikipedia, Qwant,
+                     Mojeek
+                     (NO Google, NO Bing)
 ```
 
 ### Phase-by-Phase Breakdown
 
 | Phase | Component | Algorithm |
 |---|---|---|
-| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries **20 public SearxNG instances** concurrently with shuffle rotation. Results are deduplicated using **URL normalization** (tracking parameter removal, domain lowercasing, path normalization). Invalid URLs (social media, binary files) are filtered via domain/extension blocklists. |
+| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries your **private SearxNG instance** with explicit engine selection: **DuckDuckGo, Brave, Wikipedia, Qwant, Mojeek** (no Google, no Bing). Results are deduplicated using **URL normalization** (tracking parameter removal, domain lowercasing, path normalization). Invalid URLs (social media, binary files) are filtered via domain/extension blocklists. |
 | **2. Data Extraction** | [**trafilatura**](https://trafilatura.readthedocs.io/) + [**selectolax**](https://github.com/rushter/selectolax) | **Multi-strategy fallback chain**: (1) trafilatura `bare_extraction` for high-quality heuristic parsing → (2) selectolax Lexbor C-speed DOM parsing → (3) regex-based stripping as ultimate fallback. HTML is **streamed with hard caps** to prevent OOM. Extraction is bounded by `asyncio.Semaphore`. |
 | **3. Context Building** | **StringIO + MD5 Dedup** | Extracted texts are **content-hash deduplicated** (MD5 of first 1000 chars) to eliminate near-identical content. **Early termination** stops scraping when 75% of the context buffer is filled. |
 
@@ -88,7 +91,7 @@ The agents automatically detect your system's available RAM and configure optima
 | **Medium** | 512MB–2GB | 8–20 | 50–100 | 768KB | 80K chars |
 | **Large / Beast** | >2GB | 12–200 | 60–∞ | 1MB+ | 100K chars |
 
-> Override with: `SEARCH_RAM_TIER=micro python search_unified.py`
+> Set endpoint with: `SEARXNG_URL=https://your-searxng.hf.space python search_unified.py`
 
 ---
 
@@ -117,6 +120,8 @@ curl -X POST "http://localhost:8000/search" \
   -d '{"query": "What is machine learning?"}'
 ```
 
+> **Note:** You must have a SearxNG instance running. Set `SEARXNG_URL` in your `.env` to point to it (default: `http://localhost:8080`).
+
 ### Choose Your Engine
 
 ```bash
@@ -136,8 +141,8 @@ python search_ultra.py --tier beast --port 8080
 
 All variables are **optional** — sensible defaults are built-in.
 
-| Variable | Default | Description |
-|---|---|---|
+| `SEARXNG_URL` | `http://localhost:8080` | Your private SearxNG endpoint |
+| `SEARXNG_ENGINES` | `duckduckgo,brave,wikipedia,qwant,mojeek` | Search engines to use (no Google/Bing) |
 | `SEARCH_MODE` | `unified` | Engine mode: `unified` or `separate` |
 | `SEARCH_RAM_TIER` | Auto-detected | Force tier: `micro`, `small`, `medium`, `large` |
 | `SEARCH_QUALITY` | Tier-based | Extraction quality: `high`, `medium`, `fast` |
