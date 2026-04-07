@@ -150,7 +150,7 @@ SEARXNG_URL: str = os.environ.get("SEARXNG_URL", "http://localhost:8080")
 # These 5 engines work reliably from any server without CAPTCHA blocks
 SEARXNG_ENGINES: str = os.environ.get(
     "SEARXNG_ENGINES",
-    "duckduckgo,brave,wikipedia,qwant,mojeek",
+    "duckduckgo,brave,yahoo,qwant,mojeek",
 )
 
 

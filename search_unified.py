@@ -335,7 +335,7 @@ async def meta_search(query: str) -> list[str]:
     """
     Query your private SearxNG instance with explicit engine selection.
     
-    Engines: duckduckgo, brave, wikipedia, qwant, mojeek
+    Engines: duckduckgo, brave, yahoo, qwant, mojeek
     No Google, No Bing — datacenter-friendly, zero CAPTCHA.
     """
     params = {
@@ -687,7 +687,7 @@ async def search(body: SearchRequest):
     Main search endpoint — returns raw scraped data.
     
     Pipeline:
-    1. Meta-search via your private SearxNG (engines: duckduckgo, brave, wikipedia, qwant, mojeek)
+    1. Meta-search via your private SearxNG (engines: duckduckgo, brave, yahoo, qwant, mojeek)
     2. Concurrent scraping with streaming + early termination
     3. Raw extracted text returned per source
     """

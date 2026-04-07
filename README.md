@@ -39,7 +39,7 @@ Swift Search Agent is a **production-ready API** that automates the search and e
                             │                                              Returns URLs,
                      Queries engines:                                      titles, and raw
                      DuckDuckGo, Brave,                                    extracted text
-                     Wikipedia, Qwant,
+                     Yahoo, Qwant,
                      Mojeek
                      (NO Google, NO Bing)
 ```
@@ -48,7 +48,7 @@ Swift Search Agent is a **production-ready API** that automates the search and e
 
 | Phase | Component | Algorithm |
 |---|---|---|
-| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries your **private SearxNG instance** with explicit engine selection: **DuckDuckGo, Brave, Wikipedia, Qwant, Mojeek** (no Google, no Bing). Results are deduplicated using **URL normalization** (tracking parameter removal, domain lowercasing, path normalization). Invalid URLs (social media, binary files) are filtered via domain/extension blocklists. |
+| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries your **private SearxNG instance** with explicit engine selection: **DuckDuckGo, Brave, Yahoo, Qwant, Mojeek** (no Google, no Bing). Results are deduplicated using **URL normalization** (tracking parameter removal, domain lowercasing, path normalization). Invalid URLs (social media, binary files) are filtered via domain/extension blocklists. |
 | **2. Data Extraction** | [**trafilatura**](https://trafilatura.readthedocs.io/) + [**selectolax**](https://github.com/rushter/selectolax) | **Multi-strategy fallback chain**: (1) trafilatura `bare_extraction` for high-quality heuristic parsing → (2) selectolax Lexbor C-speed DOM parsing → (3) regex-based stripping as ultimate fallback. HTML is **streamed with hard caps** to prevent OOM. Extraction is bounded by `asyncio.Semaphore`. |
 | **3. Context Building** | **StringIO + MD5 Dedup** | Extracted texts are **content-hash deduplicated** (MD5 of first 1000 chars) to eliminate near-identical content. **Early termination** stops scraping when 75% of the context buffer is filled. |
 
@@ -142,7 +142,7 @@ python search_ultra.py --tier beast --port 8080
 All variables are **optional** — sensible defaults are built-in.
 
 | `SEARXNG_URL` | `http://localhost:8080` | Your private SearxNG endpoint |
-| `SEARXNG_ENGINES` | `duckduckgo,brave,wikipedia,qwant,mojeek` | Search engines to use (no Google/Bing) |
+| `SEARXNG_ENGINES` | `duckduckgo,brave,yahoo,qwant,mojeek` | Search engines to use (no Google/Bing) |
 | `SEARCH_MODE` | `unified` | Engine mode: `unified` or `separate` |
 | `SEARCH_RAM_TIER` | Auto-detected | Force tier: `micro`, `small`, `medium`, `large` |
 | `SEARCH_QUALITY` | Tier-based | Extraction quality: `high`, `medium`, `fast` |

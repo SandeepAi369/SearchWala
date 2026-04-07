@@ -527,7 +527,7 @@ def get_random_user_agent() -> str:
 async def meta_search(query: str) -> List[str]:
     """
     Query your private SearxNG instance with explicit engine selection.
-    Engines: duckduckgo, brave, wikipedia, qwant, mojeek
+    Engines: duckduckgo, brave, yahoo, qwant, mojeek
     No Google, No Bing.
     """
     search_url = f"{SEARXNG_URL.rstrip('/')}/search"

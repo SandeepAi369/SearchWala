@@ -884,7 +884,7 @@ async def process_urls(urls: List[str]) -> List[ExtractionResult]:
 async def meta_search(query: str) -> List[str]:
     """
     Query your private SearxNG instance with explicit engine selection.
-    Engines: duckduckgo, brave, wikipedia, qwant, mojeek
+    Engines: duckduckgo, brave, yahoo, qwant, mojeek
     """
     params = {
         "q": query,
