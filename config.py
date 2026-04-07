@@ -149,25 +149,22 @@ SEARXNG_INSTANCES: tuple[str, ...] = (
     "https://searxng.site",
     "https://search.ononoki.org",
     "https://searx.tiekoetter.com",
-    "https://paulgo.io",
+    "https://searx.be",
+    "https://search.bus-hit.me",
+    "https://searx.fmac.xyz",
+    "https://searx.zhenyapav.com",
+    "https://search.hbubli.cc",
+    "https://searx.work",
     "https://search.mdosch.de",
-)
-
-
-# ─────────────────────────── LLM Configuration ────────────────────────────
-
-@dataclass
-class LLMConfig:
-    """LLM provider configuration."""
-    api_url: str
-    model: str
-    max_tokens: int = 4096
-    temperature: float = 0.3
-
-
-DEFAULT_LLM_CONFIG = LLMConfig(
-    api_url="https://api.cerebras.ai/v1/chat/completions",
-    model="llama-3.3-70b",
+    "https://searx.colbster937.dev",
+    "https://searx.namejeff.xyz",
+    "https://search.rowie.at",
+    "https://searx.dresden.network",
+    "https://searx.catfock.com",
+    "https://searx.ox2.fr",
+    "https://searx.mha.fi",
+    "https://priv.au",
+    "https://search.toolforge.org",
 )
 
 
@@ -187,8 +184,6 @@ class SearchConfig:
     ram_tier: RAMTier = field(default=RAMTier.SMALL)
     tier_config: TierConfig = field(default_factory=lambda: TIER_CONFIGS[RAMTier.SMALL])
     
-    # LLM settings
-    llm: LLMConfig = field(default_factory=lambda: DEFAULT_LLM_CONFIG)
     
     # HTTP settings
     user_agent: str = "Mozilla/5.0 (compatible; SwiftSearchBot/2.0)"
@@ -242,14 +237,6 @@ class SearchConfig:
                 extraction_quality=ExtractionQuality(quality_str),
             )
         
-        # LLM config
-        llm = LLMConfig(
-            api_url=os.environ.get("LLM_API_URL", DEFAULT_LLM_CONFIG.api_url),
-            model=os.environ.get("LLM_MODEL", DEFAULT_LLM_CONFIG.model),
-            max_tokens=int(os.environ.get("LLM_MAX_TOKENS", DEFAULT_LLM_CONFIG.max_tokens)),
-            temperature=float(os.environ.get("LLM_TEMPERATURE", DEFAULT_LLM_CONFIG.temperature)),
-        )
-        
         # Early stop threshold
         early_stop = float(os.environ.get("SEARCH_EARLY_STOP", "0.75"))
         
@@ -257,7 +244,6 @@ class SearchConfig:
             mode=mode,
             ram_tier=tier,
             tier_config=tier_config,
-            llm=llm,
             early_stop_threshold=early_stop,
         )
     

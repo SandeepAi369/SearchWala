@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">⚡ Swift Search Agent v2.0</h1>
   <p align="center">
-    <strong>A high-performance, LLM-agnostic search & data extraction pipeline with auto-adaptive RAM tiering.</strong>
+    <strong>A high-performance search & data extraction API with auto-adaptive RAM tiering. Pure search + scrape — bring your own LLM.</strong>
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/version-2.0-blueviolet" alt="Version 2.0">
@@ -9,7 +9,7 @@
     <img src="https://img.shields.io/badge/framework-FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
     <img src="https://img.shields.io/badge/search-SearxNG-blue?logo=searxng&logoColor=white" alt="SearxNG">
     <img src="https://img.shields.io/badge/extraction-trafilatura-green" alt="trafilatura">
-    <img src="https://img.shields.io/badge/LLM-Agnostic-orange" alt="LLM Agnostic">
+    <img src="https://img.shields.io/badge/output-Raw_Text-orange" alt="Raw Text Output">
     <img src="https://img.shields.io/badge/RAM-Auto--Tiered-critical" alt="Auto-Tiered RAM">
     <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="MIT License">
   </p>
@@ -19,11 +19,11 @@
 
 ## 🌟 What Is Swift Search Agent?
 
-Swift Search Agent is a **production-ready API** that automates the entire research pipeline — from searching the web, to extracting clean text from web pages, to synthesizing answers using **any LLM of your choice**.
+Swift Search Agent is a **production-ready API** that automates the search and extraction pipeline — from searching the web to extracting clean, structured text from web pages. It returns **raw extracted text** that you can feed into **any LLM or processing system** of your choice.
 
 **v2.0** introduces a **multi-engine architecture** with **auto-adaptive RAM tiering** — the agent automatically detects your system's available memory and optimizes its concurrency, buffer sizes, and extraction strategy in real-time.
 
-> **🧠 LLM Agnostic by Design:** This agent does **not** lock you into any specific LLM provider. You have complete freedom to connect **any LLM API** (OpenAI, Anthropic, Cerebras, Groq, Gemini, local Ollama, etc.) or **any local model** to process the extracted data. The agent handles the hard part — finding, fetching, and cleaning web content — so your LLM receives high-quality, ready-to-use context.
+> **🔧 Pure Search & Scrape:** This API handles the hard part — finding, fetching, and cleaning web content. It returns raw extracted text, URLs, and titles. Connect **any LLM** on your client side to process the results however you want.
 
 ---
 
@@ -31,26 +31,25 @@ Swift Search Agent is a **production-ready API** that automates the entire resea
 
 ```
 ┌─────────────┐      ┌──────────────────┐      ┌──────────────────┐      ┌──────────────┐
-│  User Query │─────▶│     SearxNG      │─────▶│   trafilatura    │─────▶│   Any LLM    │
-│             │      │  (Meta-Search)   │      │  + selectolax    │      │ (Synthesis)  │
-└─────────────┘      │  6-20 instances  │      │  (Extraction)    │      └──────────────┘
+│  User Query │─────▶│     SearxNG      │─────▶│   trafilatura    │─────▶│  Raw JSON    │
+│             │      │  (Meta-Search)   │      │  + selectolax    │      │  Response    │
+└─────────────┘      │  20 instances    │      │  (Extraction)    │      └──────────────┘
                      └──────────────────┘      └──────────────────┘             │
                             │                         │                        │
-                     Aggregates URLs            Extracts clean text      Generates a
-                     from multiple             with multi-strategy      comprehensive,
-                     search engines            fallback chain           cited answer
+                     Aggregates URLs            Extracts clean text      Returns URLs,
+                     from multiple             with multi-strategy      titles, and raw
+                     search engines            fallback chain           extracted text
 ```
 
 ### Phase-by-Phase Breakdown
 
 | Phase | Component | Algorithm |
 |---|---|---|
-| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries **6–20 public SearxNG instances** concurrently. Results are deduplicated using **URL normalization** (tracking parameter removal, domain lowercasing, path normalization). Invalid URLs (social media, binary files) are filtered via domain/extension blocklists. |
+| **1. Meta-Search** | [**SearxNG**](https://github.com/searxng/searxng) | Queries **20 public SearxNG instances** concurrently with shuffle rotation. Results are deduplicated using **URL normalization** (tracking parameter removal, domain lowercasing, path normalization). Invalid URLs (social media, binary files) are filtered via domain/extension blocklists. |
 | **2. Data Extraction** | [**trafilatura**](https://trafilatura.readthedocs.io/) + [**selectolax**](https://github.com/rushter/selectolax) | **Multi-strategy fallback chain**: (1) trafilatura `bare_extraction` for high-quality heuristic parsing → (2) selectolax Lexbor C-speed DOM parsing → (3) regex-based stripping as ultimate fallback. HTML is **streamed with hard caps** to prevent OOM. Extraction is bounded by `asyncio.Semaphore`. |
-| **3. Context Building** | **StringIO + MD5 Dedup** | Extracted texts are **content-hash deduplicated** (MD5 of first 1000 chars) to eliminate near-identical content. Texts are concatenated using `StringIO` for O(1) amortized string building. **Early termination** stops scraping when 75% of the context buffer is filled. |
-| **4. LLM Synthesis** | **Your LLM of Choice** | The cleaned, structured context is sent to whichever LLM you configure via an **OpenAI-compatible API endpoint**. The LLM synthesizes a final answer with inline `[Source N](url)` citations. |
+| **3. Context Building** | **StringIO + MD5 Dedup** | Extracted texts are **content-hash deduplicated** (MD5 of first 1000 chars) to eliminate near-identical content. **Early termination** stops scraping when 75% of the context buffer is filled. |
 
-> **Key Insight:** Phases 1–3 are fully handled by this agent. Phase 4 is a simple API call that **you control** — swap LLMs anytime without touching the search or scraping logic.
+> **Key Insight:** The API returns raw extracted text per source (URL, title, text, quality score). You process this data however you want on your client — feed it to an LLM, build a RAG pipeline, or store it in a database.
 
 ---
 
@@ -115,7 +114,6 @@ python search_unified.py
 ```bash
 curl -X POST "http://localhost:8000/search" \
   -H "Content-Type: application/json" \
-  -H "x-api-key: YOUR_LLM_API_KEY" \
   -d '{"query": "What is machine learning?"}'
 ```
 
@@ -144,13 +142,7 @@ All variables are **optional** — sensible defaults are built-in.
 | `SEARCH_RAM_TIER` | Auto-detected | Force tier: `micro`, `small`, `medium`, `large` |
 | `SEARCH_QUALITY` | Tier-based | Extraction quality: `high`, `medium`, `fast` |
 | `SEARCH_EARLY_STOP` | `0.75` | Stop scraping when N% of context buffer filled |
-| `LLM_API_URL` | Cerebras endpoint | Any OpenAI-compatible API URL |
-| `LLM_MODEL` | `llama-3.3-70b` | Model name for your LLM provider |
-| `LLM_MAX_TOKENS` | `4096` | Max tokens for LLM response |
-| `LLM_TEMPERATURE` | `0.3` | LLM temperature (0.0–1.0) |
 | `PORT` | `8000` | Server port |
-
-> **Note:** LLM API keys are passed per-request via the `x-api-key` header — they are **never** stored server-side.
 
 ---
 
