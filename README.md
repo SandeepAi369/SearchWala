@@ -4,7 +4,7 @@
     <strong>Ultra-fast native meta-search & web scraping API — a single Rust binary, 22MB RAM, ~4s per query.</strong>
   </p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-3.0-blueviolet" alt="Version 3.0">
+    <img src="https://img.shields.io/badge/version-1.0.0-blueviolet" alt="Version 1.0.0">
     <img src="https://img.shields.io/badge/language-Rust-orange?logo=rust&logoColor=white" alt="Rust">
     <img src="https://img.shields.io/badge/framework-Axum-blue" alt="Axum">
     <img src="https://img.shields.io/badge/binary-6.1MB-green" alt="6.1MB Binary">
@@ -160,7 +160,7 @@ Search the web and extract article text from results.
 ```json
 {
   "status": "ok",
-  "version": "3.0",
+  "version": "1.0.0",
   "engines": ["duckduckgo", "brave", "yahoo", "qwant", "mojeek"],
   "uptime_seconds": 3600
 }
