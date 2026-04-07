@@ -1,10 +1,13 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Qwant Search Engine — API JSON approach (Qwant has a clean API)
+// Qwant Search Engine — HTML scraping fallback
+// Qwant's internal API is unreliable and undocumented.
+// This implementation scrapes the HTML search results page instead.
 // ══════════════════════════════════════════════════════════════════════════════
 
 use crate::config;
 use crate::models::RawSearchResult;
 use reqwest::Client;
+use scraper::{Html, Selector};
 
 pub struct Qwant;
 
@@ -15,9 +18,9 @@ impl super::SearchEngine for Qwant {
     }
 
     async fn search(&self, client: &Client, query: &str) -> Vec<RawSearchResult> {
-        // Qwant API endpoint (lite/web)
+        // Use Qwant's web interface and scrape the HTML
         let url = format!(
-            "https://api.qwant.com/v3/search/web?q={}&count=20&locale=en_US&offset=0&device=desktop",
+            "https://www.qwant.com/?q={}&t=web",
             urlencoding::encode(query)
         );
         let ua = config::random_user_agent();
@@ -25,10 +28,8 @@ impl super::SearchEngine for Qwant {
         let resp = match client
             .get(&url)
             .header("User-Agent", ua)
-            .header("Accept", "application/json")
+            .header("Accept", "text/html,application/xhtml+xml")
             .header("Accept-Language", "en-US,en;q=0.9")
-            .header("Origin", "https://www.qwant.com")
-            .header("Referer", "https://www.qwant.com/")
             .send()
             .await
         {
@@ -39,45 +40,65 @@ impl super::SearchEngine for Qwant {
             }
         };
 
-        let json: serde_json::Value = match resp.json().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::debug!("Qwant JSON parse failed: {}", e);
-                return vec![];
-            }
+        let html_text = match resp.text().await {
+            Ok(t) => t,
+            Err(_) => return vec![],
         };
 
-        parse_qwant_json(&json)
+        parse_qwant_html(&html_text)
     }
 }
 
-fn parse_qwant_json(json: &serde_json::Value) -> Vec<RawSearchResult> {
+fn parse_qwant_html(html: &str) -> Vec<RawSearchResult> {
+    let document = Html::parse_document(html);
     let mut results = Vec::new();
 
-    // Qwant response: { data: { result: { items: { mainline: [ { items: [...] } ] } } } }
-    let items = json
-        .pointer("/data/result/items/mainline")
-        .and_then(|v| v.as_array());
+    // Qwant renders results in various structures — try multiple selectors
+    let selectors_to_try = [
+        // Modern Qwant layout
+        ("a[data-testid='serp-result-title']", "", ""),
+        // Fallback generic
+        (".result a[href]", ".result__desc", ""),
+    ];
 
-    if let Some(mainline) = items {
-        for group in mainline {
-            if let Some(group_items) = group.get("items").and_then(|v| v.as_array()) {
-                for item in group_items {
-                    let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                    let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                    let desc = item.get("desc").and_then(|v| v.as_str()).unwrap_or("");
+    // Generic approach: find all links that look like search results
+    let a_sel = Selector::parse("a[href]").unwrap();
+    
+    for link in document.select(&a_sel) {
+        let href = match link.value().attr("href") {
+            Some(h) => h,
+            None => continue,
+        };
 
-                    if !url.is_empty() && !title.is_empty() {
-                        results.push(RawSearchResult {
-                            url: url.to_string(),
-                            title: title.to_string(),
-                            snippet: desc.to_string(),
-                            engine: "qwant".to_string(),
-                        });
-                    }
-                }
-            }
+        // Must be external HTTPS link, not Qwant internal
+        if !href.starts_with("https://") || href.contains("qwant.com") {
+            continue;
         }
+
+        // Skip common non-result links
+        if href.contains("google.com") || href.contains("bing.com") {
+            continue;
+        }
+
+        let title = link.text().collect::<String>().trim().to_string();
+        
+        // Only keep links with meaningful titles (>5 chars)
+        if title.len() < 5 {
+            continue;
+        }
+
+        // Avoid duplicate URLs
+        let already_exists = results.iter().any(|r: &RawSearchResult| r.url == href);
+        if already_exists {
+            continue;
+        }
+
+        results.push(RawSearchResult {
+            url: href.to_string(),
+            title,
+            snippet: String::new(),
+            engine: "qwant".to_string(),
+        });
     }
 
     tracing::debug!("Qwant: {} results parsed", results.len());
