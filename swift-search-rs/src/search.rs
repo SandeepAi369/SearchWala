@@ -20,18 +20,32 @@ pub async fn execute_search(query: &str, max_results: Option<usize>) -> SearchRe
 
     tracing::info!("━━━ NEW SEARCH ━━━ query={}", &query[..query.len().min(80)]);
 
-    // ── Phase 1: Meta-Search (query all enabled engines concurrently) ────────
+    // ── Phase 1: Meta-Search (query ALL engines CONCURRENTLY) ─────────────
     let enabled = config::enabled_engines();
     let engine_instances = engines::get_engines(&enabled);
 
     let client = build_search_client();
 
-    // Query all engines — sequential is fine since each is I/O-bound and fast
+    // Fire all engines in parallel — each one is I/O-bound, so this is ~5x faster
+    let search_futures: Vec<_> = engine_instances
+        .iter()
+        .map(|engine| {
+            let client = client.clone();
+            let query = query.to_string();
+            let name = engine.name().to_string();
+            async move {
+                let results = engine.search(&client, &query).await;
+                tracing::info!("  Engine [{}]: {} results", name, results.len());
+                results
+            }
+        })
+        .collect();
+
+    let engine_results = futures::future::join_all(search_futures).await;
+
     let mut all_results: Vec<RawSearchResult> = Vec::new();
-    for engine in &engine_instances {
-        let results = engine.search(&client, query).await;
-        tracing::info!("  Engine [{}]: {} results", engine.name(), results.len());
-        all_results.extend(results);
+    for batch in engine_results {
+        all_results.extend(batch);
     }
 
     let total_raw = all_results.len();
