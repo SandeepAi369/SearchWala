@@ -53,7 +53,7 @@ async fn search_handler(
         ));
     }
 
-    let response = search::execute_search(&query, body.max_results, body.llm).await;
+    let response = search::execute_search(&query, body.max_results, body.focus_mode, body.llm).await;
 
     if response.sources_processed == 0 {
         return Err((

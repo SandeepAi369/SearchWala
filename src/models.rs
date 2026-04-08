@@ -20,6 +20,8 @@ pub struct SearchRequest {
     pub query: String,
     /// Max number of URLs to scrape (default: from config)
     pub max_results: Option<usize>,
+    /// Optional focus mode: reddit | youtube | academic | lite.
+    pub focus_mode: Option<String>,
     /// Optional BYOK LLM config for synthesized answer generation.
     pub llm: Option<LlmConfig>,
 }

@@ -21,12 +21,33 @@ use crate::url_utils;
 pub async fn execute_search(
     query: &str,
     max_results: Option<usize>,
+    focus_mode: Option<String>,
     llm_config: Option<LlmConfig>,
 ) -> SearchResponse {
     let start = std::time::Instant::now();
-    let max_urls = max_results.unwrap_or_else(config::max_urls);
 
-    tracing::info!("NEW SEARCH query={}", &query[..query.len().min(80)]);
+    let normalized_focus = focus_mode
+        .as_deref()
+        .map(|m| m.trim().to_lowercase())
+        .filter(|m| !m.is_empty());
+
+    let is_lite_mode = matches!(normalized_focus.as_deref(), Some("lite"));
+
+    let max_urls = if is_lite_mode {
+        max_results.unwrap_or_else(config::max_urls).min(25)
+    } else {
+        max_results.unwrap_or_else(config::max_urls)
+    };
+
+    let effective_query = apply_focus_mode(query, normalized_focus.as_deref());
+
+    tracing::info!(
+        "NEW SEARCH query={} focus_mode={:?} lite_mode={} max_urls={}",
+        &effective_query[..effective_query.len().min(120)],
+        normalized_focus,
+        is_lite_mode,
+        max_urls
+    );
 
     // --- Phase 1: Meta-search (all engines concurrently) ---------------------
     let enabled = config::enabled_engines();
@@ -37,7 +58,7 @@ pub async fn execute_search(
         .iter()
         .map(|engine| {
             let client = client.clone();
-            let query = query.to_string();
+            let query = effective_query.clone();
             let name = engine.name().to_string();
             async move {
                 let results = engine.search(&client, &query).await;
@@ -105,12 +126,25 @@ pub async fn execute_search(
     };
 
     let mut join_set = JoinSet::new();
+    let scrape_timeout_secs = if is_lite_mode {
+        config::scrape_timeout_secs().min(4)
+    } else {
+        config::scrape_timeout_secs()
+    };
+    let scrape_max_bytes = if is_lite_mode {
+        config::max_html_bytes().min(180_000)
+    } else {
+        config::max_html_bytes()
+    };
+    let min_char_threshold = if is_lite_mode {
+        config::min_text_length().min(400)
+    } else {
+        config::min_text_length()
+    };
 
     for url in unique_urls {
         let sem = semaphore.clone();
         let client = scrape_client.clone();
-        let timeout_secs = config::scrape_timeout_secs();
-        let max_bytes = config::max_html_bytes();
 
         let engine_name = engine_by_url
             .get(&url)
@@ -119,7 +153,15 @@ pub async fn execute_search(
 
         join_set.spawn(async move {
             let _permit = sem.acquire().await.ok()?;
-            match scrape_url(&client, &url, timeout_secs, max_bytes).await {
+            match scrape_url(
+                &client,
+                &url,
+                scrape_timeout_secs,
+                scrape_max_bytes,
+                is_lite_mode,
+            )
+            .await
+            {
                 Some((title, text)) => {
                     let char_count = text.len();
                     Some(SourceResult {
@@ -138,7 +180,7 @@ pub async fn execute_search(
     let mut results: Vec<SourceResult> = Vec::new();
     while let Some(join_result) = join_set.join_next().await {
         match join_result {
-            Ok(Some(result)) if result.char_count >= config::min_text_length() => {
+            Ok(Some(result)) if result.char_count >= min_char_threshold => {
                 if let Some(tx) = maybe_sender.as_ref() {
                     let _ = tx.send(result.clone()).await;
                 }
@@ -195,12 +237,25 @@ pub async fn execute_search(
     }
 }
 
+fn apply_focus_mode(query: &str, focus_mode: Option<&str>) -> String {
+    let base = query.trim();
+    match focus_mode {
+        Some("reddit") => format!("{} site:reddit.com", base),
+        Some("youtube") => format!("{} site:youtube.com", base),
+        Some("academic") => {
+            format!("{} site:edu OR site:gov OR site:nature.com", base)
+        }
+        Some("lite") | _ => base.to_string(),
+    }
+}
+
 /// Scrape a single URL and extract article text.
 async fn scrape_url(
     client: &reqwest::Client,
     url: &str,
     timeout_secs: u64,
     max_bytes: usize,
+    lite_mode: bool,
 ) -> Option<(String, String)> {
     let resp = match client
         .get(url)
@@ -240,7 +295,17 @@ async fn scrape_url(
     let html = String::from_utf8_lossy(html_bytes).to_string();
 
     let title = extractor::extract_title(&html);
-    let text = extractor::extract_article_text(&html);
+    let mut text = extractor::extract_article_text(&html);
+
+    if lite_mode {
+        if text.len() < 120 {
+            return None;
+        }
+        if text.len() > 4_000 {
+            text.truncate(4_000);
+        }
+        return Some((title, text));
+    }
 
     if text.len() < config::min_text_length() {
         return None;
