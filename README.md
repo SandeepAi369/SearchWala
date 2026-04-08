@@ -86,8 +86,8 @@ Swift-Search-Rs/
 
 ```bash
 # Clone
-git clone https://github.com/SandeepAi369/Swift-Search-Agent.git
-cd Swift-Search-Agent
+git clone https://github.com/SandeepAi369/Swift-Search-Rs.git
+cd Swift-Search-Rs
 
 # Build optimized release binary
 cargo build --release
