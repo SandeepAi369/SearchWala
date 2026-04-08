@@ -1,25 +1,27 @@
-// ══════════════════════════════════════════════════════════════════════════════
-// ⚡ Swift-Search-Rs v3.0.0
-// ══════════════════════════════════════════════════════════════════════════════
+// ============================================================================
+// Swift-Search-RS v4.0.0
+// ============================================================================
 //
-//  A single compiled Rust binary that:
-//  1. Queries 5 search engines natively (DuckDuckGo, Brave, Yahoo, Qwant, Mojeek)
-//  2. Deduplicates and normalizes URLs
-//  3. Concurrently scrapes pages with streaming HTTP
-//  4. Extracts article text using Readability heuristics
-//  5. Returns raw JSON — zero LLM, bring your own AI
+// Native Rust meta-search + extraction + optional BYOK LLM synthesis.
 //
-//  Deploy anywhere: 512MB VPS, HF Spaces, Docker, bare metal.
-//  Peak RAM: ~22MB under full load.
+// Pipeline:
+// 1) Query multiple search engines concurrently
+// 2) Deduplicate URLs
+// 3) Concurrently scrape + extract readable text
+// 4) Optionally run token-saver LLM synthesis with strict timeout fallback
 //
-// ══════════════════════════════════════════════════════════════════════════════
+// ============================================================================
 
 mod config;
 mod engines;
 mod extractor;
+mod llm;
 mod models;
 mod search;
 mod url_utils;
+
+use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     extract::Json,
@@ -29,20 +31,14 @@ use axum::{
     Router,
 };
 use tower_http::cors::CorsLayer;
-use std::sync::Arc;
-use std::time::Instant;
 
 use models::*;
-
-// ─── Application State ──────────────────────────────────────────────────────
 
 struct AppState {
     start_time: Instant,
 }
 
-// ─── Endpoints ───────────────────────────────────────────────────────────────
-
-/// POST /search — Main search endpoint
+/// POST /search - Main search endpoint
 async fn search_handler(
     Json(body): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -57,7 +53,7 @@ async fn search_handler(
         ));
     }
 
-    let response = search::execute_search(&query, body.max_results).await;
+    let response = search::execute_search(&query, body.max_results, body.llm).await;
 
     if response.sources_processed == 0 {
         return Err((
@@ -73,23 +69,21 @@ async fn search_handler(
     Ok(Json(response))
 }
 
-/// GET /health — Health check
-async fn health_handler(
-    state: axum::extract::State<Arc<AppState>>,
-) -> impl IntoResponse {
+/// GET /health - Health check
+async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl IntoResponse {
     let uptime = state.start_time.elapsed().as_secs();
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: "3.0.0".to_string(),
+        version: "4.0.0".to_string(),
         engines: config::enabled_engines(),
         uptime_seconds: uptime,
     })
 }
 
-/// GET /config — Configuration info
+/// GET /config - Configuration info
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
-        version: "3.0.0".to_string(),
+        version: "4.0.0".to_string(),
         engines: config::enabled_engines(),
         max_urls: config::max_urls(),
         scrape_timeout_secs: config::scrape_timeout_secs(),
@@ -98,29 +92,25 @@ async fn config_handler() -> impl IntoResponse {
     })
 }
 
-/// GET / — Root endpoint (for uptime pings)
+/// GET / - Root endpoint (for uptime pings)
 async fn root_handler() -> impl IntoResponse {
     Json(serde_json::json!({
-        "name": "Swift-Search-Rs",
-        "version": "3.0.0",
+        "name": "Swift-Search-RS",
+        "version": "4.0.0",
         "language": "Rust",
-        "description": "Ultra-fast native meta-search & scrape API",
+        "description": "Ultra-fast native meta-search & scrape API with optional BYOK LLM synthesis",
         "endpoints": {
-            "POST /search": "Search and scrape (body: {\"query\": \"...\"})",
+            "POST /search": "Search and scrape (body: {\"query\":\"...\",\"llm\":{...optional...}})",
             "GET /health": "Health check",
             "GET /config": "Current configuration"
         }
     }))
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
-
 #[tokio::main]
 async fn main() {
-    // Load .env file if present
     let _ = dotenvy::dotenv();
 
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -133,17 +123,17 @@ async fn main() {
     let port = config::port();
     let engines = config::enabled_engines();
 
-    // Print startup banner
-    tracing::info!("═══════════════════════════════════════════════════");
-    tracing::info!("  ⚡ Swift-Search-Rs v3.0.0");
+    tracing::info!("============================================");
+    tracing::info!("  Swift-Search-RS v4.0.0");
     tracing::info!("  Language: Rust");
     tracing::info!("  Engines: {:?}", engines);
     tracing::info!("  Max URLs: {}", config::max_urls());
     tracing::info!("  Concurrency: {}", config::concurrency());
     tracing::info!("  Scrape timeout: {}s", config::scrape_timeout_secs());
     tracing::info!("  Max HTML: {} bytes", config::max_html_bytes());
+    tracing::info!("  CORS: permissive");
     tracing::info!("  Port: {}", port);
-    tracing::info!("═══════════════════════════════════════════════════");
+    tracing::info!("============================================");
 
     let state = Arc::new(AppState {
         start_time: Instant::now(),
@@ -164,7 +154,5 @@ async fn main() {
         .await
         .expect("Failed to bind address");
 
-    axum::serve(listener, app)
-        .await
-        .expect("Server error");
+    axum::serve(listener, app).await.expect("Server error");
 }
