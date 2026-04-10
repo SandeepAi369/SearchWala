@@ -137,7 +137,16 @@ pub(crate) fn namespaced_model(provider: &str, model: &str) -> String {
     }
 
     let provider = provider.trim().to_lowercase();
-    if provider == "cerebras" {
+    if provider == "cerebras"
+        || provider == "openrouter"
+        || provider == "together"
+        || provider == "fireworks"
+        || provider == "perplexity"
+        || provider == "mistral_api"
+        || provider == "sambanova"
+        || provider == "nvidia_nim"
+        || provider == "azure_openai"
+    {
         return format!("openai::{}", model);
     }
 

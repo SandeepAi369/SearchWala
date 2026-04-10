@@ -9,13 +9,14 @@
     @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
 
     :root {
-      --paper: #050816;
-      --paper-2: #0b1224;
-      --ink: #dbe7ff;
-      --muted: #9fb1d9;
-      --line: rgba(148, 163, 184, 0.25);
-      --panel: rgba(15, 23, 42, 0.72);
-      --accent: #38bdf8;
+      --paper: #020617;
+      --paper-2: #0a0f1f;
+      --ink: #e6eeff;
+      --muted: #a9bbdf;
+      --line: rgba(148, 163, 184, 0.28);
+      --panel: rgba(12, 18, 36, 0.78);
+      --panel-2: rgba(16, 25, 48, 0.92);
+      --accent: #60a5fa;
       --accent-2: #22d3ee;
       --warn: #f59e0b;
       --danger: #f87171;
@@ -26,8 +27,8 @@
       color: var(--ink);
       font-family: "Space Grotesk", "Segoe UI", sans-serif;
       background:
-        radial-gradient(960px 620px at -10% -20%, rgba(14, 165, 233, 0.22), transparent 60%),
-        radial-gradient(920px 540px at 120% -10%, rgba(45, 212, 191, 0.14), transparent 62%),
+        radial-gradient(960px 620px at -10% -20%, rgba(37, 99, 235, 0.24), transparent 60%),
+        radial-gradient(920px 540px at 120% -10%, rgba(34, 211, 238, 0.16), transparent 62%),
         linear-gradient(165deg, var(--paper), var(--paper-2));
     }
 
@@ -37,10 +38,16 @@
       backdrop-filter: blur(8px);
     }
 
+    .glow {
+      box-shadow:
+        inset 0 1px 0 rgba(148, 163, 184, 0.14),
+        0 18px 36px rgba(2, 6, 23, 0.45);
+    }
+
     .panel input,
     .panel select {
-      background: rgba(15, 23, 42, 0.72) !important;
-      border-color: rgba(148, 163, 184, 0.35) !important;
+      background: var(--panel-2) !important;
+      border-color: rgba(148, 163, 184, 0.42) !important;
       color: var(--ink) !important;
     }
 
@@ -59,7 +66,7 @@
 
     [class*="bg-emerald-50"],
     [class*="bg-white"] {
-      background: rgba(15, 23, 42, 0.72) !important;
+      background: var(--panel-2) !important;
     }
 
     [class*="border-emerald"] {
@@ -68,6 +75,10 @@
 
     a {
       color: #7dd3fc !important;
+    }
+
+    button {
+      border-color: rgba(148, 163, 184, 0.35) !important;
     }
 
     .mono {
@@ -102,11 +113,12 @@
 </head>
 <body>
   <main class="max-w-7xl mx-auto px-4 py-8 md:py-12">
-    <section class="panel rounded-3xl p-5 md:p-8 shadow-xl fade-up">
+    <section class="panel glow rounded-3xl p-5 md:p-8 shadow-xl fade-up">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 class="text-2xl md:text-4xl font-bold tracking-tight">Swift-Search-RS Dark Console</h1>
-          <p class="mt-1 text-sm md:text-base text-emerald-900/80">Lite-first search flow with optional research and dedicated LLM routes.</p>
+          <p class="mt-1 text-sm md:text-base text-emerald-900/80">Lite-first search flow with optional research mode and dedicated LLM routes.</p>
+          <p class="mt-2 text-xs text-emerald-900/70">UI Build: 2026-04-10b · Default Focus: Lite</p>
         </div>
         <span id="endpointLabel" class="text-xs md:text-sm px-3 py-1.5 rounded-full border border-emerald-800/25 bg-emerald-50 text-emerald-900">Endpoint: /search</span>
       </div>
@@ -152,12 +164,23 @@
         <div>
           <label class="block text-sm text-emerald-900/80 mb-2">Provider</label>
           <select id="provider" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700">
-            <option value="openai">OpenAI-compatible</option>
-            <option value="cerebras">Cerebras (OpenAI-compatible)</option>
+            <option value="openai" selected>OpenAI</option>
+            <option value="cerebras">Cerebras</option>
             <option value="groq">Groq</option>
             <option value="ollama">Ollama</option>
             <option value="anthropic">Anthropic</option>
             <option value="gemini">Gemini</option>
+            <option value="xai">xAI</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="cohere">Cohere</option>
+            <option value="openrouter">OpenRouter (OpenAI-compatible)</option>
+            <option value="together">Together AI (OpenAI-compatible)</option>
+            <option value="fireworks">Fireworks AI (OpenAI-compatible)</option>
+            <option value="perplexity">Perplexity Sonar (OpenAI-compatible)</option>
+            <option value="mistral_api">Mistral API (OpenAI-compatible)</option>
+            <option value="sambanova">SambaNova (OpenAI-compatible)</option>
+            <option value="nvidia_nim">NVIDIA NIM (OpenAI-compatible)</option>
+            <option value="azure_openai">Azure OpenAI (OpenAI-compatible)</option>
           </select>
         </div>
 
@@ -169,6 +192,13 @@
         <div>
           <label class="block text-sm text-emerald-900/80 mb-2">Base URL (optional)</label>
           <input id="baseUrl" type="text" placeholder="http://localhost:11434/v1" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700" />
+        </div>
+      </div>
+
+      <div id="apiReminder" class="mt-4 hidden rounded-xl border border-amber-400/45 bg-amber-300/10 px-4 py-3 text-sm text-amber-100">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <span>No saved LLM API key detected. Add one to use LLM endpoints.</span>
+          <button id="setApiKeyBtn" type="button" class="px-3 py-1.5 rounded-lg border border-amber-300/60 hover:bg-amber-300/15">Set API Key</button>
         </div>
       </div>
 
@@ -218,8 +248,11 @@
   </main>
 
   <script>
+    const DEFAULT_FOCUS_MODE = "lite";
+    const DEFAULT_LITE_RESULTS = 30;
     const endpointBases = resolveEndpointBases();
     let activeEndpoint = `${endpointBases[0] || "http://127.0.0.1:8000"}/search`;
+    let maxResultsTouched = false;
 
     const dom = {
       queryInput: document.getElementById("queryInput"),
@@ -243,6 +276,8 @@
       answerBox: document.getElementById("answerBox"),
       citationBox: document.getElementById("citationBox"),
       endpointLabel: document.getElementById("endpointLabel"),
+      apiReminder: document.getElementById("apiReminder"),
+      setApiKeyBtn: document.getElementById("setApiKeyBtn"),
     };
 
     function nowMs() {
@@ -264,6 +299,34 @@
 
     function resolveEndpointCandidates(path) {
       return endpointBases.map((base) => `${base}${path}`);
+    }
+
+    const providerPresets = {
+      openai: { runtimeProvider: "openai", baseUrl: "", model: "gpt-4o-mini" },
+      cerebras: { runtimeProvider: "cerebras", baseUrl: "https://api.cerebras.ai/v1", model: "gpt-oss-120b" },
+      groq: { runtimeProvider: "groq", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
+      ollama: { runtimeProvider: "ollama", baseUrl: "http://localhost:11434/v1", model: "llama3" },
+      anthropic: { runtimeProvider: "anthropic", baseUrl: "", model: "claude-3-5-haiku-latest" },
+      gemini: { runtimeProvider: "gemini", baseUrl: "", model: "gemini-2.0-flash" },
+      xai: { runtimeProvider: "xai", baseUrl: "https://api.x.ai/v1", model: "grok-2-latest" },
+      deepseek: { runtimeProvider: "deepseek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat" },
+      cohere: { runtimeProvider: "cohere", baseUrl: "", model: "command-r-plus" },
+      openrouter: { runtimeProvider: "openai", baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-4o-mini" },
+      together: { runtimeProvider: "openai", baseUrl: "https://api.together.xyz/v1", model: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo" },
+      fireworks: { runtimeProvider: "openai", baseUrl: "https://api.fireworks.ai/inference/v1", model: "accounts/fireworks/models/llama-v3p1-70b-instruct" },
+      perplexity: { runtimeProvider: "openai", baseUrl: "https://api.perplexity.ai", model: "sonar-pro" },
+      mistral_api: { runtimeProvider: "openai", baseUrl: "https://api.mistral.ai/v1", model: "mistral-large-latest" },
+      sambanova: { runtimeProvider: "openai", baseUrl: "https://api.sambanova.ai/v1", model: "Meta-Llama-3.1-70B-Instruct" },
+      nvidia_nim: { runtimeProvider: "openai", baseUrl: "https://integrate.api.nvidia.com/v1", model: "meta/llama-3.1-70b-instruct" },
+      azure_openai: { runtimeProvider: "openai", baseUrl: "", model: "gpt-4o-mini" },
+    };
+
+    function selectedProviderKey() {
+      return dom.provider.value.trim() || "openai";
+    }
+
+    function providerPreset() {
+      return providerPresets[selectedProviderKey()] || providerPresets.openai;
     }
 
     function escapeHtml(str) {
@@ -305,35 +368,45 @@
       dom.sourcesList.innerHTML = "";
       dom.answerBox.textContent = "";
       dom.citationBox.innerHTML = "";
-      dom.focusLabel.textContent = dom.focusMode.value || "lite";
+      dom.focusLabel.textContent = dom.focusMode.value || DEFAULT_FOCUS_MODE;
+    }
+
+    function renderApiReminder() {
+      const hasKey = !!dom.apiKey.value.trim();
+      if (hasKey) {
+        dom.apiReminder.classList.add("hidden");
+      } else {
+        dom.apiReminder.classList.remove("hidden");
+      }
     }
 
     function toggleLlmPanel() {
       if (dom.enableLlm.checked) {
         dom.llmPanel.classList.remove("hidden");
         // LLM defaults to lite mode; user can switch back to research manually.
-        if (dom.focusMode.value === "research") {
-          dom.focusMode.value = "lite";
-          dom.focusLabel.textContent = "lite";
+        if (!dom.focusMode.value || dom.focusMode.value === "research") {
+          dom.focusMode.value = DEFAULT_FOCUS_MODE;
+          dom.focusLabel.textContent = DEFAULT_FOCUS_MODE;
         }
       } else {
         dom.llmPanel.classList.add("hidden");
       }
       syncMaxResultsHint();
       applyProviderPreset();
+      renderApiReminder();
     }
 
     function syncMaxResultsHint() {
-      const mode = dom.focusMode.value || "lite";
+      const mode = dom.focusMode.value || DEFAULT_FOCUS_MODE;
       if (mode === "lite") {
         dom.maxResults.placeholder = "Lite default: 30";
-        if (!dom.maxResults.value.trim()) {
-          dom.maxResults.value = "30";
+        if (!dom.maxResults.value.trim() && !maxResultsTouched) {
+          dom.maxResults.value = String(DEFAULT_LITE_RESULTS);
           dom.maxResults.dataset.autofill = "1";
         }
       } else {
         dom.maxResults.placeholder = "Blank = backend default (research/full mode)";
-        if (dom.maxResults.dataset.autofill === "1") {
+        if (!maxResultsTouched || dom.maxResults.dataset.autofill === "1") {
           dom.maxResults.value = "";
           dom.maxResults.dataset.autofill = "";
         }
@@ -341,13 +414,12 @@
     }
 
     function applyProviderPreset() {
-      if (dom.provider.value === "cerebras") {
-        if (!dom.baseUrl.value.trim()) {
-          dom.baseUrl.value = "https://api.cerebras.ai/v1";
-        }
-        if (!dom.model.value.trim() || dom.model.value.trim().toLowerCase() === "llama3") {
-          dom.model.value = "gpt-oss-120b";
-        }
+      const preset = providerPreset();
+      if (preset.baseUrl && !dom.baseUrl.value.trim()) {
+        dom.baseUrl.value = preset.baseUrl;
+      }
+      if (!dom.model.value.trim()) {
+        dom.model.value = preset.model;
       }
     }
 
@@ -455,12 +527,12 @@
     function parseMaxResults(focusMode) {
       const raw = dom.maxResults.value.trim();
       if (!raw) {
-        return focusMode === "lite" ? 30 : null;
+        return focusMode === "lite" ? DEFAULT_LITE_RESULTS : null;
       }
 
       const parsed = Number(raw);
       if (!Number.isFinite(parsed)) {
-        return focusMode === "lite" ? 30 : null;
+        return focusMode === "lite" ? DEFAULT_LITE_RESULTS : null;
       }
 
       return Math.max(5, Math.min(900, Math.floor(parsed)));
@@ -473,7 +545,7 @@
         return;
       }
 
-      const focusMode = dom.focusMode.value || "lite";
+      const focusMode = dom.focusMode.value || DEFAULT_FOCUS_MODE;
       const maxResults = parseMaxResults(focusMode);
 
       dom.focusLabel.textContent = focusMode;
@@ -489,7 +561,7 @@
 
         const phaseAStart = nowMs();
         const phaseAMax = focusMode === "lite"
-          ? Math.min(maxResults ?? 30, 35)
+          ? Math.min(maxResults ?? DEFAULT_LITE_RESULTS, 35)
           : maxResults;
         const phaseAPayload = basePayload(query, focusMode, phaseAMax);
         const phaseA = await postSearch("/search", phaseAPayload);
@@ -510,7 +582,9 @@
         }
 
         const apiKey = dom.apiKey.value.trim();
-        const provider = dom.provider.value.trim() || "openai";
+        const selectedProvider = selectedProviderKey();
+        const preset = providerPreset();
+        const provider = preset.runtimeProvider;
         const model = dom.model.value.trim();
         const baseUrl = dom.baseUrl.value.trim();
 
@@ -532,15 +606,15 @@
           timeout_ms: 45000,
         };
 
-        if (provider === "cerebras" && !baseUrl) {
-          llm.base_url = "https://api.cerebras.ai/v1";
-        } else if (baseUrl) {
+        if (baseUrl) {
           llm.base_url = baseUrl;
+        } else if (preset.baseUrl) {
+          llm.base_url = preset.baseUrl;
         }
 
         const llmPath = focusMode === "research" ? "/search/research-llm" : "/search/lite-llm";
         const llmMax = llmPath === "/search/lite-llm"
-          ? Math.min(maxResults ?? 30, 35)
+          ? Math.min(maxResults ?? DEFAULT_LITE_RESULTS, 35)
           : maxResults;
 
         const phaseBPayload = {
@@ -564,6 +638,10 @@
 
         const citations = Array.isArray(phaseB.search_results) ? phaseB.search_results : sources;
         renderCitations(citations);
+        localStorage.setItem("swift_llm_provider", selectedProvider);
+        localStorage.setItem("swift_llm_model", model);
+        localStorage.setItem("swift_llm_base_url", llm.base_url || "");
+        localStorage.setItem("swift_llm_api_key", apiKey);
       } catch (err) {
         dom.searchStatus.textContent = "error";
         dom.llmStatus.textContent = "error";
@@ -575,21 +653,60 @@
       }
     }
 
+    function loadSavedSettings() {
+      const savedProvider = localStorage.getItem("swift_llm_provider");
+      const savedModel = localStorage.getItem("swift_llm_model");
+      const savedBaseUrl = localStorage.getItem("swift_llm_base_url");
+      const savedApiKey = localStorage.getItem("swift_llm_api_key");
+
+      if (savedProvider && Array.from(dom.provider.options).some((opt) => opt.value === savedProvider)) {
+        dom.provider.value = savedProvider;
+      }
+      if (savedModel) dom.model.value = savedModel;
+      if (savedBaseUrl) dom.baseUrl.value = savedBaseUrl;
+      if (savedApiKey) dom.apiKey.value = savedApiKey;
+
+      dom.focusMode.value = DEFAULT_FOCUS_MODE;
+
+      if (savedApiKey) {
+        dom.enableLlm.checked = true;
+      }
+    }
+
     dom.enableLlm.addEventListener("change", toggleLlmPanel);
     dom.focusMode.addEventListener("change", () => {
-      dom.focusLabel.textContent = dom.focusMode.value || "lite";
+      dom.focusLabel.textContent = dom.focusMode.value || DEFAULT_FOCUS_MODE;
       syncMaxResultsHint();
+      localStorage.setItem("swift_focus_mode", dom.focusMode.value || DEFAULT_FOCUS_MODE);
     });
-    dom.provider.addEventListener("change", applyProviderPreset);
+    dom.provider.addEventListener("change", () => {
+      if (!dom.baseUrl.value.trim() || providerPresets[dom.provider.value]?.baseUrl) {
+        dom.baseUrl.value = "";
+      }
+      applyProviderPreset();
+    });
+    dom.maxResults.addEventListener("input", () => {
+      maxResultsTouched = true;
+      dom.maxResults.dataset.autofill = "";
+      localStorage.setItem("swift_max_results", dom.maxResults.value.trim());
+    });
+    dom.apiKey.addEventListener("input", renderApiReminder);
+    dom.setApiKeyBtn.addEventListener("click", () => {
+      dom.enableLlm.checked = true;
+      toggleLlmPanel();
+      dom.apiKey.focus();
+    });
     dom.runBtn.addEventListener("click", runBenchmark);
     dom.clearBtn.addEventListener("click", setIdle);
     dom.queryInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") runBenchmark();
     });
 
+    loadSavedSettings();
     toggleLlmPanel();
     syncMaxResultsHint();
     applyProviderPreset();
+    renderApiReminder();
     setIdle();
   </script>
 </body>
