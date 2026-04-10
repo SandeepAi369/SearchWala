@@ -3,88 +3,122 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Swift-Search-RS v4 Benchmark Console</title>
+  <title>Swift-Search-RS Benchmark Console</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
+    @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
     :root {
-      --bg-a: #06131f;
-      --bg-b: #0e2a3a;
-      --panel: rgba(5, 17, 27, 0.75);
-      --line: rgba(149, 184, 201, 0.28);
-      --good: #5eead4;
-      --warn: #fcd34d;
-      --bad: #fda4af;
-      --ink: #e2edf3;
-      --muted: #9fb8c5;
-      --accent: #4ade80;
-      --accent-2: #22d3ee;
+      --paper: #f8faf6;
+      --paper-2: #ecf7ef;
+      --ink: #153128;
+      --muted: #3c5b4f;
+      --line: rgba(21, 49, 40, 0.16);
+      --panel: rgba(255, 255, 255, 0.78);
+      --accent: #0ea36d;
+      --accent-2: #0f766e;
+      --warn: #b45309;
+      --danger: #b91c1c;
     }
 
     body {
-      background:
-        radial-gradient(1200px 600px at 85% -20%, rgba(34, 211, 238, 0.22), transparent 60%),
-        radial-gradient(900px 540px at -20% 10%, rgba(74, 222, 128, 0.2), transparent 55%),
-        linear-gradient(160deg, var(--bg-a), var(--bg-b));
-      color: var(--ink);
       min-height: 100vh;
-      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(900px 520px at -10% -20%, rgba(20, 184, 166, 0.16), transparent 60%),
+        radial-gradient(900px 480px at 115% -10%, rgba(16, 185, 129, 0.12), transparent 60%),
+        linear-gradient(165deg, var(--paper), var(--paper-2));
     }
 
-    .glass {
+    .panel {
       background: var(--panel);
       border: 1px solid var(--line);
       backdrop-filter: blur(8px);
     }
 
+    .mono {
+      font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .fade-up {
+      animation: fadeUp 520ms ease-out both;
+    }
+
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
     .pulse {
-      animation: pulse 1.4s infinite;
+      animation: pulse 1.2s infinite;
     }
 
     @keyframes pulse {
-      0% { opacity: 0.4; }
+      0% { opacity: 0.45; }
       50% { opacity: 1; }
-      100% { opacity: 0.4; }
+      100% { opacity: 0.45; }
     }
   </style>
 </head>
 <body>
-  <main class="max-w-6xl mx-auto px-4 py-8 md:py-12">
-    <section class="glass rounded-2xl p-5 md:p-8 shadow-2xl">
-      <div class="flex flex-wrap items-center justify-between gap-3">
+  <main class="max-w-7xl mx-auto px-4 py-8 md:py-12">
+    <section class="panel rounded-3xl p-5 md:p-8 shadow-xl fade-up">
+      <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 class="text-2xl md:text-4xl font-bold tracking-tight">Swift-Search-RS Benchmark Console</h1>
-          <p class="text-sm md:text-base text-slate-300 mt-1">Perplexica-style A/B flow: fast sources first, LLM synthesis second.</p>
+          <h1 class="text-2xl md:text-4xl font-bold tracking-tight">Swift-Search-RS Research Console</h1>
+          <p class="mt-1 text-sm md:text-base text-emerald-900/80">Source-first benchmark flow: instant sources, optional cited LLM synthesis.</p>
         </div>
-        <span class="text-xs md:text-sm px-3 py-1 rounded-full border border-cyan-300/40 text-cyan-200">Endpoint: http://localhost:8000/search\</span\>
+        <span class="text-xs md:text-sm px-3 py-1.5 rounded-full border border-emerald-800/25 bg-emerald-50 text-emerald-900">Endpoint: http://localhost:8000/search</span>
       </div>
 
       <div class="mt-6 grid grid-cols-1 lg:grid-cols-12 gap-4">
         <div class="lg:col-span-8">
-          <label class="block text-sm text-slate-300 mb-2">Search Query</label>
-          <input id="queryInput" type="text" placeholder="Ask anything..." class="w-full rounded-xl px-4 py-3 bg-slate-950/70 border border-slate-600/60 focus:outline-none focus:ring-2 focus:ring-cyan-400" />
+          <label class="block text-sm text-emerald-900/80 mb-2">Search Query</label>
+          <input id="queryInput" type="text" placeholder="Ask a focused question..." class="w-full rounded-xl px-4 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
         </div>
 
         <div class="lg:col-span-4">
-          <label class="block text-sm text-slate-300 mb-2">Focus Mode</label>
-          <select id="focusMode" class="w-full rounded-xl px-3 py-3 bg-slate-950/70 border border-slate-600/60 focus:outline-none focus:ring-2 focus:ring-cyan-400">
-            <option value="">General</option>
+          <label class="block text-sm text-emerald-900/80 mb-2">Focus Mode</label>
+          <select id="focusMode" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-emerald-600">
+            <option value="research" selected>Research</option>
             <option value="academic">Academic</option>
             <option value="reddit">Reddit / Forum</option>
             <option value="youtube">YouTube</option>
-            <option value="lite">Lite (LLM Plugin Mode)</option>
+            <option value="lite">Lite</option>
           </select>
         </div>
       </div>
 
-      <div class="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
         <div>
-          <label class="block text-sm text-slate-300 mb-2">API Key (BYOK)</label>
-          <input id="apiKey" type="password" placeholder="sk-..." class="w-full rounded-xl px-3 py-3 bg-slate-950/70 border border-slate-600/60 focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+          <label class="block text-sm text-emerald-900/80 mb-2">Max Results</label>
+          <input id="maxResults" type="number" value="30" min="5" max="200" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+        </div>
+
+        <div class="md:col-span-2 flex items-end">
+          <label class="inline-flex items-center gap-3 text-sm font-medium text-emerald-950 cursor-pointer select-none">
+            <input id="enableLlm" type="checkbox" class="h-5 w-5 rounded border-emerald-900/20" />
+            Enable LLM Best-Answer Synthesis (with source citations)
+          </label>
+        </div>
+      </div>
+
+      <div id="llmPanel" class="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 hidden">
+        <div>
+          <label class="block text-sm text-emerald-900/80 mb-2">API Key (BYOK)</label>
+          <input id="apiKey" type="password" placeholder="sk-..." class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700" />
         </div>
 
         <div>
-          <label class="block text-sm text-slate-300 mb-2">Provider</label>
-          <select id="provider" class="w-full rounded-xl px-3 py-3 bg-slate-950/70 border border-slate-600/60 focus:outline-none focus:ring-2 focus:ring-emerald-400">
+          <label class="block text-sm text-emerald-900/80 mb-2">Provider</label>
+          <select id="provider" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700">
             <option value="openai">OpenAI-compatible</option>
             <option value="groq">Groq</option>
             <option value="ollama">Ollama</option>
@@ -94,70 +128,70 @@
         </div>
 
         <div>
-          <label class="block text-sm text-slate-300 mb-2">Model</label>
-          <input id="model" type="text" value="llama3" placeholder="llama-3-8b-instruct / llama3" class="w-full rounded-xl px-3 py-3 bg-slate-950/70 border border-slate-600/60 focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+          <label class="block text-sm text-emerald-900/80 mb-2">Model</label>
+          <input id="model" type="text" value="llama3" placeholder="llama3 / gpt-4o-mini" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700" />
         </div>
 
         <div>
-          <label class="block text-sm text-slate-300 mb-2">Base URL (optional)</label>
-          <input id="baseUrl" type="text" placeholder="http://localhost:11434/v1" class="w-full rounded-xl px-3 py-3 bg-slate-950/70 border border-slate-600/60 focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+          <label class="block text-sm text-emerald-900/80 mb-2">Base URL (optional)</label>
+          <input id="baseUrl" type="text" placeholder="http://localhost:11434/v1" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700" />
         </div>
       </div>
-
-      <p class="text-xs text-slate-400 mt-2">Tip: For local Ollama, set Provider=ollama, Model=llama3 and Base URL=http://localhost:11434/v1</p>
 
       <div class="mt-5 flex flex-wrap gap-3">
-        <button id="runBtn" class="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold">Run Benchmark</button>
-        <button id="clearBtn" class="px-5 py-3 rounded-xl border border-slate-500/60 hover:border-slate-300 text-slate-200">Clear</button>
+        <button id="runBtn" class="px-5 py-3 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-semibold">Run</button>
+        <button id="clearBtn" class="px-5 py-3 rounded-xl border border-emerald-900/25 hover:border-emerald-900/40 text-emerald-950">Clear</button>
       </div>
     </section>
 
-    <section class="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4">
-      <article class="glass rounded-2xl p-4">
-        <h2 class="text-lg font-semibold">Search/Scrape Metrics</h2>
-        <div class="mt-3 space-y-2 text-sm">
-          <p>Phase A latency: <span id="searchMs" class="font-mono text-cyan-300">-</span></p>
-          <p>Sources returned: <span id="sourceCount" class="font-mono text-cyan-300">-</span></p>
-          <p>Focus mode: <span id="focusLabel" class="font-mono text-cyan-300">general</span></p>
-          <p>Status: <span id="searchStatus" class="font-mono">idle</span></p>
+    <section class="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4 fade-up" style="animation-delay: 120ms;">
+      <article class="panel rounded-2xl p-4">
+        <h2 class="text-lg font-semibold">Search Phase</h2>
+        <div class="mt-3 space-y-1.5 text-sm">
+          <p>Latency: <span id="searchMs" class="mono text-teal-800">-</span></p>
+          <p>Focus: <span id="focusLabel" class="mono text-teal-800">research</span></p>
+          <p>Status: <span id="searchStatus" class="mono">idle</span></p>
         </div>
       </article>
 
-      <article class="glass rounded-2xl p-4">
-        <h2 class="text-lg font-semibold">LLM Metrics</h2>
-        <div class="mt-3 space-y-2 text-sm">
-          <p>Phase B latency: <span id="llmMs" class="font-mono text-emerald-300">-</span></p>
-          <p>LLM status: <span id="llmStatus" class="font-mono">idle</span></p>
-          <p>Error: <span id="llmError" class="font-mono text-rose-300">none</span></p>
+      <article class="panel rounded-2xl p-4">
+        <h2 class="text-lg font-semibold">LLM Phase</h2>
+        <div class="mt-3 space-y-1.5 text-sm">
+          <p>Latency: <span id="llmMs" class="mono text-teal-800">-</span></p>
+          <p>Status: <span id="llmStatus" class="mono">idle</span></p>
+          <p>Error: <span id="llmError" class="mono text-red-800">none</span></p>
         </div>
       </article>
 
-      <article class="glass rounded-2xl p-4">
-        <h2 class="text-lg font-semibold">Benchmark Note</h2>
-        <p class="text-sm text-slate-300 mt-3">UI performs two calls: first source fetch (no LLM) for instant source rendering, then LLM synthesis call. This gives direct A/B timing for backend search latency vs. answer generation latency.</p>
+      <article class="panel rounded-2xl p-4">
+        <h2 class="text-lg font-semibold">Behavior</h2>
+        <p class="mt-3 text-sm text-emerald-950/80">Without LLM, this console returns fast source links and snippets only. With LLM enabled, it runs a second synthesis step for a best-answer response with citations.</p>
       </article>
     </section>
 
-    <section class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <article class="glass rounded-2xl p-4 min-h-[360px]">
-        <h3 class="text-xl font-semibold">Sources (Instant)</h3>
+    <section class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4 fade-up" style="animation-delay: 220ms;">
+      <article class="panel rounded-2xl p-4 min-h-[360px]">
+        <h3 class="text-xl font-semibold">Source Trail</h3>
         <ul id="sourcesList" class="mt-3 space-y-2 text-sm"></ul>
       </article>
 
-      <article class="glass rounded-2xl p-4 min-h-[360px]">
-        <h3 class="text-xl font-semibold">LLM Synthesis</h3>
-        <div id="answerBox" class="mt-3 text-sm leading-7 whitespace-pre-wrap text-slate-100"></div>
+      <article class="panel rounded-2xl p-4 min-h-[360px]">
+        <h3 class="text-xl font-semibold">Best Answer</h3>
+        <div id="answerBox" class="mt-3 text-sm leading-7 whitespace-pre-wrap"></div>
         <div id="citationBox" class="mt-4 flex flex-wrap gap-2"></div>
       </article>
     </section>
   </main>
 
   <script>
-    const endpoint = "http://localhost:8000/search"\;
+    const endpoint = "http://localhost:8000/search";
 
     const dom = {
       queryInput: document.getElementById("queryInput"),
       focusMode: document.getElementById("focusMode"),
+      maxResults: document.getElementById("maxResults"),
+      enableLlm: document.getElementById("enableLlm"),
+      llmPanel: document.getElementById("llmPanel"),
       apiKey: document.getElementById("apiKey"),
       provider: document.getElementById("provider"),
       model: document.getElementById("model"),
@@ -165,7 +199,6 @@
       runBtn: document.getElementById("runBtn"),
       clearBtn: document.getElementById("clearBtn"),
       searchMs: document.getElementById("searchMs"),
-      sourceCount: document.getElementById("sourceCount"),
       focusLabel: document.getElementById("focusLabel"),
       searchStatus: document.getElementById("searchStatus"),
       llmMs: document.getElementById("llmMs"),
@@ -181,7 +214,7 @@
     }
 
     function escapeHtml(str) {
-      return str
+      return String(str || "")
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;")
@@ -191,7 +224,6 @@
 
     function setIdle() {
       dom.searchMs.textContent = "-";
-      dom.sourceCount.textContent = "-";
       dom.searchStatus.textContent = "idle";
       dom.llmMs.textContent = "-";
       dom.llmStatus.textContent = "idle";
@@ -199,22 +231,32 @@
       dom.sourcesList.innerHTML = "";
       dom.answerBox.textContent = "";
       dom.citationBox.innerHTML = "";
+      dom.focusLabel.textContent = dom.focusMode.value || "research";
+    }
+
+    function toggleLlmPanel() {
+      if (dom.enableLlm.checked) {
+        dom.llmPanel.classList.remove("hidden");
+      } else {
+        dom.llmPanel.classList.add("hidden");
+      }
     }
 
     function renderSources(items) {
       dom.sourcesList.innerHTML = "";
       if (!items || items.length === 0) {
-        dom.sourcesList.innerHTML = '<li class="text-slate-400">No sources found.</li>';
+        dom.sourcesList.innerHTML = '<li class="text-emerald-950/70">No sources found.</li>';
         return;
       }
 
       for (const [idx, item] of items.entries()) {
         const li = document.createElement("li");
-        li.className = "p-3 rounded-xl border border-slate-600/60 bg-slate-950/40";
+        li.className = "p-3 rounded-xl border border-emerald-900/15 bg-white/75";
+        const snippet = (item.snippet || "").slice(0, 260);
         li.innerHTML = `
-          <div class="text-xs text-slate-400">#${idx + 1} • ${escapeHtml(item.engine || "unknown")}</div>
-          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="text-cyan-300 hover:text-cyan-200 font-medium break-all">${escapeHtml(item.title || item.url)}</a>
-          <p class="text-slate-300 mt-1">${escapeHtml((item.snippet || "").slice(0, 220))}</p>
+          <div class="text-xs text-emerald-900/70">#${idx + 1} • ${escapeHtml(item.engine || "unknown")}</div>
+          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="text-teal-800 hover:text-teal-900 font-medium break-all">${escapeHtml(item.title || item.url)}</a>
+          <p class="text-emerald-950/80 mt-1">${escapeHtml(snippet)}</p>
         `;
         dom.sourcesList.appendChild(li);
       }
@@ -222,12 +264,15 @@
 
     function renderCitations(items) {
       dom.citationBox.innerHTML = "";
-      for (const [idx, item] of items.slice(0, 8).entries()) {
+      if (!items || items.length === 0) {
+        return;
+      }
+      for (const [idx, item] of items.slice(0, 10).entries()) {
         const a = document.createElement("a");
         a.href = item.url;
         a.target = "_blank";
         a.rel = "noopener";
-        a.className = "px-2 py-1 rounded-md text-xs border border-cyan-300/40 text-cyan-200 hover:bg-cyan-400/10";
+        a.className = "px-2 py-1 rounded-md text-xs border border-teal-900/25 text-teal-900 hover:bg-teal-50";
         a.textContent = `[${idx + 1}] ${item.engine || "source"}`;
         dom.citationBox.appendChild(a);
       }
@@ -256,6 +301,14 @@
       return data;
     }
 
+    function basePayload(query, focusMode, maxResults) {
+      return {
+        query,
+        max_results: maxResults,
+        focus_mode: focusMode,
+      };
+    }
+
     async function runBenchmark() {
       const query = dom.queryInput.value.trim();
       if (!query) {
@@ -263,100 +316,105 @@
         return;
       }
 
-      const focus_mode = dom.focusMode.value || null;
-      const apiKey = dom.apiKey.value.trim();
-      const provider = dom.provider.value.trim();
-      const model = dom.model.value.trim();
-      const baseUrl = dom.baseUrl.value.trim();
+      const focusMode = dom.focusMode.value || "research";
+      const maxResultsInput = Number(dom.maxResults.value || 30);
+      const maxResults = Number.isFinite(maxResultsInput)
+        ? Math.max(5, Math.min(200, Math.floor(maxResultsInput)))
+        : 30;
 
-      dom.focusLabel.textContent = focus_mode || "general";
+      dom.focusLabel.textContent = focusMode;
       dom.runBtn.disabled = true;
       dom.runBtn.classList.add("opacity-60", "cursor-not-allowed");
-      dom.answerBox.innerHTML = '<span class="pulse text-emerald-300">Preparing benchmark pipeline...</span>';
       dom.sourcesList.innerHTML = "";
       dom.citationBox.innerHTML = "";
       dom.llmError.textContent = "none";
+      dom.answerBox.innerHTML = '<span class="pulse text-teal-800">Running search phase...</span>';
 
       try {
-        dom.searchStatus.textContent = "running phase A";
+        dom.searchStatus.textContent = "running";
 
         const phaseAStart = nowMs();
-        const phaseAPayload = {
-          query,
-          max_results: focus_mode === "lite" ? 25 : 10,
-          focus_mode,
-        };
-
+        const phaseAPayload = basePayload(query, focusMode, focusMode === "lite" ? Math.min(maxResults, 25) : maxResults);
         const phaseA = await postSearch(phaseAPayload);
         const phaseAms = Math.round(nowMs() - phaseAStart);
 
         const sources = Array.isArray(phaseA.search_results) ? phaseA.search_results : [];
         renderSources(sources);
+
         dom.searchMs.textContent = `${phaseAms} ms`;
-        dom.sourceCount.textContent = String(sources.length);
-        dom.searchStatus.textContent = "phase A complete";
+        dom.searchStatus.textContent = "complete";
 
-        // Immediately show source panel, then run LLM phase.
-        dom.answerBox.innerHTML = '<span class="pulse text-cyan-300">Sources ready. Running LLM synthesis...</span>';
-
-        if (!apiKey || !model) {
-          dom.llmStatus.textContent = "skipped (missing API key/model)";
-          dom.answerBox.textContent = "LLM phase skipped. Provide API key + model to benchmark synthesis.";
+        if (!dom.enableLlm.checked) {
+          dom.llmStatus.textContent = "disabled";
+          dom.llmMs.textContent = "-";
+          dom.answerBox.textContent = "LLM is disabled. Source Trail contains the direct search output (links + snippets).";
           renderCitations(sources);
           return;
         }
 
-        dom.llmStatus.textContent = "running phase B";
-        const phaseBStart = nowMs();
+        const apiKey = dom.apiKey.value.trim();
+        const provider = dom.provider.value.trim();
+        const model = dom.model.value.trim();
+        const baseUrl = dom.baseUrl.value.trim();
+
+        if (!apiKey || !model) {
+          dom.llmStatus.textContent = "skipped";
+          dom.llmError.textContent = "Missing API key or model";
+          dom.answerBox.textContent = "LLM enabled but missing credentials. Fill API key + model to generate cited synthesis.";
+          renderCitations(sources);
+          return;
+        }
+
+        dom.llmStatus.textContent = "running";
+        dom.answerBox.innerHTML = '<span class="pulse text-teal-800">Running LLM synthesis...</span>';
 
         const llm = {
           provider,
           api_key: apiKey,
           model,
-          timeout_ms: 9000,
+          timeout_ms: 0,
         };
         if (baseUrl) {
           llm.base_url = baseUrl;
         }
 
         const phaseBPayload = {
-          query,
-          max_results: focus_mode === "lite" ? 25 : 10,
-          focus_mode,
+          ...basePayload(query, focusMode, focusMode === "lite" ? Math.min(maxResults, 25) : maxResults),
           llm,
         };
 
+        const phaseBStart = nowMs();
         const phaseB = await postSearch(phaseBPayload);
         const phaseBms = Math.round(nowMs() - phaseBStart);
 
         dom.llmMs.textContent = `${phaseBms} ms`;
-        dom.llmStatus.textContent = "phase B complete";
+        dom.llmStatus.textContent = phaseB.llm_error ? "fallback" : "complete";
+        dom.llmError.textContent = phaseB.llm_error || "none";
 
-        const llmError = phaseB.llm_error;
-        if (llmError) {
-          dom.llmError.textContent = llmError;
-        }
-
-        const answer = phaseB.llm_answer || "No LLM answer returned.";
+        const answer = phaseB.llm_answer || "No LLM answer returned. Using source-only fallback.";
         dom.answerBox.textContent = answer;
-        renderCitations(Array.isArray(phaseB.search_results) ? phaseB.search_results : sources);
+
+        const citations = Array.isArray(phaseB.search_results) ? phaseB.search_results : sources;
+        renderCitations(citations);
       } catch (err) {
         dom.searchStatus.textContent = "error";
         dom.llmStatus.textContent = "error";
         dom.llmError.textContent = err.message || String(err);
-        dom.answerBox.textContent = `Benchmark failed: ${err.message || err}`;
+        dom.answerBox.textContent = `Request failed: ${err.message || err}`;
       } finally {
         dom.runBtn.disabled = false;
         dom.runBtn.classList.remove("opacity-60", "cursor-not-allowed");
       }
     }
 
+    dom.enableLlm.addEventListener("change", toggleLlmPanel);
     dom.runBtn.addEventListener("click", runBenchmark);
     dom.clearBtn.addEventListener("click", setIdle);
     dom.queryInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") runBenchmark();
     });
 
+    toggleLlmPanel();
     setIdle();
   </script>
 </body>

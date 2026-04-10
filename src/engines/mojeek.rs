@@ -1,13 +1,16 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Mojeek Search Engine — HTML scraping (privacy-focused, no tracking)
+// Mojeek Search Engine — Multi-page HTML scraping (privacy-focused)
+// Fixed selectors to match actual Mojeek 2025+ HTML structure
 // ══════════════════════════════════════════════════════════════════════════════
 
-use crate::config;
 use crate::models::RawSearchResult;
 use reqwest::Client;
 use scraper::{Html, Selector};
+use std::collections::HashSet;
 
 pub struct Mojeek;
+
+const PAGES: usize = 5;
 
 #[async_trait::async_trait]
 impl super::SearchEngine for Mojeek {
@@ -16,33 +19,49 @@ impl super::SearchEngine for Mojeek {
     }
 
     async fn search(&self, client: &Client, query: &str) -> Vec<RawSearchResult> {
-        let url = format!(
-            "https://www.mojeek.com/search?q={}",
-            urlencoding::encode(query)
-        );
-        let ua = config::random_user_agent();
+        let mut all_results = Vec::new();
+        let mut seen_urls: HashSet<String> = HashSet::new();
 
-        let resp = match client
-            .get(&url)
-            .header("User-Agent", ua)
-            .header("Accept", "text/html,application/xhtml+xml")
-            .header("Accept-Language", "en-US,en;q=0.9")
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!("Mojeek request failed: {}", e);
-                return vec![];
+        for page in 1..=PAGES {
+            let url = format!(
+                "https://www.mojeek.com/search?q={}&s={}",
+                urlencoding::encode(query),
+                (page - 1) * 10 + 1
+            );
+
+            let req = crate::config::apply_browser_headers(client
+                .get(&url), &url);
+            let resp = match req
+                .header("Accept", "text/html,application/xhtml+xml")
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!("Mojeek page {} request failed: {}", page, e);
+                    break;
+                }
+            };
+
+            let html_text = match resp.text().await {
+                Ok(t) => t,
+                Err(_) => break,
+            };
+
+            let page_results = parse_mojeek_html(&html_text);
+            if page_results.is_empty() {
+                break;
             }
-        };
 
-        let html_text = match resp.text().await {
-            Ok(t) => t,
-            Err(_) => return vec![],
-        };
+            for r in page_results {
+                if seen_urls.insert(r.url.clone()) {
+                    all_results.push(r);
+                }
+            }
+        }
 
-        parse_mojeek_html(&html_text)
+        tracing::info!("Mojeek total: {} results", all_results.len());
+        all_results
     }
 }
 
@@ -50,13 +69,19 @@ fn parse_mojeek_html(html: &str) -> Vec<RawSearchResult> {
     let document = Html::parse_document(html);
     let mut results = Vec::new();
 
-    // Mojeek uses <ul class="results-standard"> <li> for each result
-    // Each li has a.title for the link and p.s for the description
-    let result_selector = Selector::parse("ul.results-standard li, .result-col").unwrap();
-    let title_selector = Selector::parse("a.ob, a.title, h2 a").unwrap();
-    let desc_selector = Selector::parse("p.s, .result-desc").unwrap();
+    // Mojeek 2025 structure:
+    // <ul class="results-standard">
+    //   <li class="r1">
+    //     <a class="ob" href="...">...</a>      ← URL source  
+    //     <h2><a class="title" href="...">Title</a></h2>  ← title
+    //     <p class="s">snippet text</p>         ← snippet
+    //   </li>
+    // </ul>
+    let li_selector = Selector::parse("ul.results-standard li").unwrap();
+    let title_selector = Selector::parse("a.title, h2 a").unwrap();
+    let snippet_selector = Selector::parse("p.s").unwrap();
 
-    for element in document.select(&result_selector) {
+    for element in document.select(&li_selector) {
         let link = match element.select(&title_selector).next() {
             Some(a) => a,
             None => continue,
@@ -67,7 +92,6 @@ fn parse_mojeek_html(html: &str) -> Vec<RawSearchResult> {
             _ => continue,
         };
 
-        // Skip Mojeek's own links
         if href.contains("mojeek.com") {
             continue;
         }
@@ -78,7 +102,7 @@ fn parse_mojeek_html(html: &str) -> Vec<RawSearchResult> {
         }
 
         let snippet = element
-            .select(&desc_selector)
+            .select(&snippet_selector)
             .next()
             .map(|s| s.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
@@ -91,6 +115,5 @@ fn parse_mojeek_html(html: &str) -> Vec<RawSearchResult> {
         });
     }
 
-    tracing::debug!("Mojeek: {} results parsed", results.len());
     results
 }

@@ -82,14 +82,19 @@ pub fn dedup_key(url: &str) -> String {
         Ok(parsed) => {
             let host = parsed.host_str().unwrap_or("");
             let path = parsed.path().trim_end_matches('/');
-            format!("{}{}", host.to_lowercase(), path.to_lowercase())
+            let query = parsed.query().unwrap_or("");
+            if query.is_empty() {
+                format!("{}{}", host.to_lowercase(), path.to_lowercase())
+            } else {
+                format!("{}{}?{}", host.to_lowercase(), path.to_lowercase(), query)
+            }
         }
         Err(_) => url.to_lowercase(),
     }
 }
 
 /// Deduplicate a list of URLs, preserving order, limited to max_count
-pub fn deduplicate(urls: Vec<String>, max_count: usize) -> Vec<String> {
+pub fn deduplicate(urls: Vec<String>, max_count: usize, focus_mode: Option<&str>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut unique = Vec::new();
 
@@ -100,8 +105,19 @@ pub fn deduplicate(urls: Vec<String>, max_count: usize) -> Vec<String> {
             None => continue,
         };
 
+        // Check focus mode overrides
+        let mut bypass_skip = false;
+        if let Some(mode) = focus_mode {
+            let lower_mode = mode.to_lowercase();
+            if lower_mode == "reddit" && url.contains("reddit.com") {
+                bypass_skip = true;
+            } else if lower_mode == "youtube" && (url.contains("youtube.com") || url.contains("youtu.be")) {
+                bypass_skip = true;
+            }
+        }
+
         // Skip blocked URLs
-        if should_skip(&url) {
+        if !bypass_skip && should_skip(&url) {
             continue;
         }
 
