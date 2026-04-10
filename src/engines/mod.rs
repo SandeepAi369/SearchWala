@@ -1,5 +1,6 @@
 // ============================================================================
-// Swift Search RS v4.0 - Search Engines Module
+// Swift Search RS v4.1 - Search Engines Module
+// 90+ engines: specialized parsers + generic HTML scraping + JSON APIs
 // ============================================================================
 
 pub mod brave;
@@ -8,6 +9,7 @@ pub mod generic;
 pub mod mojeek;
 pub mod qwant;
 pub mod startpage;
+pub mod wiby;
 pub mod wikipedia;
 pub mod yahoo;
 
@@ -34,6 +36,7 @@ pub fn get_engines(enabled: &[String]) -> Vec<Box<dyn SearchEngine>> {
             "mojeek" => engines.push(Box::new(mojeek::Mojeek)),
             "startpage" => engines.push(Box::new(startpage::Startpage)),
             "wikipedia" => engines.push(Box::new(wikipedia::Wikipedia)),
+            "wiby" => engines.push(Box::new(wiby::Wiby)),
             _ => {
                 if let Some(spec) = generic::spec_for(name) {
                     engines.push(Box::new(generic::GenericEngine::new(name, spec)));
@@ -47,6 +50,8 @@ pub fn get_engines(enabled: &[String]) -> Vec<Box<dyn SearchEngine>> {
     engines
 }
 
+/// Generate query variations for snowball search.
+/// Research mode uses all 3 variants; this maximizes source diversity.
 pub fn generate_query_variations(query: &str) -> Vec<String> {
     let base = query.trim();
     if base.is_empty() {

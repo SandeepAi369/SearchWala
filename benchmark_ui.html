@@ -3,256 +3,486 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Swift-Search-RS Benchmark Console</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <title>Swift-Search-RS · Research Console</title>
+  <meta name="description" content="Ultra-fast meta-search engine with 90+ engines and LLM synthesis" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
-    @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
-
     :root {
       --paper: #020617;
       --paper-2: #0a0f1f;
       --ink: #e6eeff;
-      --muted: #a9bbdf;
-      --line: rgba(148, 163, 184, 0.28);
-      --panel: rgba(12, 18, 36, 0.78);
+      --muted: #7b8db5;
+      --line: rgba(148, 163, 184, 0.18);
+      --panel: rgba(12, 18, 36, 0.82);
       --panel-2: rgba(16, 25, 48, 0.92);
       --accent: #60a5fa;
       --accent-2: #22d3ee;
+      --success: #34d399;
       --warn: #f59e0b;
       --danger: #f87171;
+      --gradient-1: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      --gradient-2: linear-gradient(135deg, #22d3ee, #3b82f6);
     }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       min-height: 100vh;
       color: var(--ink);
-      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+      font-family: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
       background:
-        radial-gradient(960px 620px at -10% -20%, rgba(37, 99, 235, 0.24), transparent 60%),
-        radial-gradient(920px 540px at 120% -10%, rgba(34, 211, 238, 0.16), transparent 62%),
+        radial-gradient(960px 620px at -10% -20%, rgba(37, 99, 235, 0.15), transparent 60%),
+        radial-gradient(920px 540px at 120% -10%, rgba(34, 211, 238, 0.09), transparent 62%),
         linear-gradient(165deg, var(--paper), var(--paper-2));
+      -webkit-font-smoothing: antialiased;
     }
 
+    .container { max-width: 1280px; margin: 0 auto; padding: 24px 16px; }
+
+    /* ── Glass Panel ── */
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
-      backdrop-filter: blur(8px);
-    }
-
-    .glow {
+      border-radius: 20px;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
       box-shadow:
-        inset 0 1px 0 rgba(148, 163, 184, 0.14),
-        0 18px 36px rgba(2, 6, 23, 0.45);
+        inset 0 1px 0 rgba(148, 163, 184, 0.08),
+        0 18px 40px rgba(2, 6, 23, 0.5);
     }
 
-    .panel input,
-    .panel select {
-      background: var(--panel-2) !important;
-      border-color: rgba(148, 163, 184, 0.42) !important;
-      color: var(--ink) !important;
+    /* ── Inputs ── */
+    input, select, textarea {
+      font-family: inherit;
+      font-size: 14px;
+      background: var(--panel-2);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 12px;
+      color: var(--ink);
+      padding: 12px 14px;
+      width: 100%;
+      outline: none;
+      transition: border-color 0.25s, box-shadow 0.25s;
+    }
+    input::placeholder { color: var(--muted); }
+    input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.15);
     }
 
-    .panel input::placeholder {
-      color: #93a8d5 !important;
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    a { color: var(--accent); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--accent-2); }
+
+    .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+    /* ── Grid ── */
+    .grid { display: grid; gap: 16px; }
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+    .grid-12 { grid-template-columns: repeat(12, 1fr); }
+    @media (max-width: 768px) {
+      .grid-2, .grid-3, .grid-4, .grid-12 { grid-template-columns: 1fr; }
     }
 
-    [class*="text-emerald"],
-    [class*="text-teal"] {
-      color: var(--ink) !important;
-    }
+    .col-span-8 { grid-column: span 8; }
+    .col-span-4 { grid-column: span 4; }
+    .col-span-3 { grid-column: span 3; }
+    .col-span-6 { grid-column: span 6; }
+    @media (max-width: 768px) { .col-span-8, .col-span-4, .col-span-3, .col-span-6 { grid-column: span 1; } }
 
-    [class*="text-red"] {
-      color: var(--danger) !important;
-    }
-
-    [class*="bg-emerald-50"],
-    [class*="bg-white"] {
-      background: var(--panel-2) !important;
-    }
-
-    [class*="border-emerald"] {
-      border-color: rgba(148, 163, 184, 0.35) !important;
-    }
-
-    a {
-      color: #7dd3fc !important;
-    }
-
-    button {
-      border-color: rgba(148, 163, 184, 0.35) !important;
-    }
-
-    .mono {
-      font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    }
-
-    .fade-up {
-      animation: fadeUp 520ms ease-out both;
-    }
-
+    /* ── Animations ── */
     @keyframes fadeUp {
-      from {
-        opacity: 0;
-        transform: translateY(8px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
     }
-
-    .pulse {
-      animation: pulse 1.2s infinite;
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
     }
-
+    @keyframes slideDown {
+      from { opacity: 0; max-height: 0; transform: translateY(-8px); }
+      to { opacity: 1; max-height: 800px; transform: translateY(0); }
+    }
     @keyframes pulse {
-      0% { opacity: 0.45; }
+      0%, 100% { opacity: 0.4; }
       50% { opacity: 1; }
-      100% { opacity: 0.45; }
     }
+    @keyframes shimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    @keyframes breathe {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0); }
+      50% { box-shadow: 0 0 20px 4px rgba(96, 165, 250, 0.15); }
+    }
+    @keyframes typewriter {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .fade-up { animation: fadeUp 520ms ease-out both; }
+    .fade-in { animation: fadeIn 400ms ease-out both; }
+    .slide-down { animation: slideDown 400ms ease-out both; overflow: hidden; }
+    .pulse { animation: pulse 1.4s ease-in-out infinite; }
+    .breathe { animation: breathe 2s ease-in-out infinite; }
+
+    .shimmer-bg {
+      background: linear-gradient(90deg, transparent 0%, rgba(96,165,250,0.08) 50%, transparent 100%);
+      background-size: 200% 100%;
+      animation: shimmer 2s linear infinite;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(96, 165, 250, 0.3);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    /* ── Buttons ── */
+    .btn-primary {
+      background: var(--gradient-1);
+      color: white;
+      font-weight: 600;
+      font-size: 14px;
+      border: none;
+      border-radius: 12px;
+      padding: 12px 28px;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.25s, opacity 0.2s;
+      position: relative;
+      overflow: hidden;
+    }
+    .btn-primary::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.08) 50%, transparent 60%);
+      background-size: 200% 100%;
+      animation: shimmer 3s linear infinite;
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(59, 130, 246, 0.35); }
+    .btn-primary:active { transform: translateY(0); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 24px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .btn-secondary:hover { border-color: rgba(148, 163, 184, 0.4); color: var(--ink); }
+
+    .btn-icon {
+      background: rgba(96, 165, 250, 0.1);
+      border: 1px solid rgba(96, 165, 250, 0.2);
+      border-radius: 10px;
+      padding: 8px 14px;
+      color: var(--accent);
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .btn-icon:hover { background: rgba(96, 165, 250, 0.2); border-color: rgba(96, 165, 250, 0.4); }
+    .btn-icon:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Badge ── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 500;
+      background: rgba(96, 165, 250, 0.12);
+      color: var(--accent);
+      border: 1px solid rgba(96, 165, 250, 0.15);
+    }
+    .badge-success { background: rgba(52, 211, 153, 0.12); color: var(--success); border-color: rgba(52, 211, 153, 0.15); }
+    .badge-warn { background: rgba(245, 158, 11, 0.12); color: var(--warn); border-color: rgba(245, 158, 11, 0.15); }
+    .badge-danger { background: rgba(248, 113, 113, 0.12); color: var(--danger); border-color: rgba(248, 113, 113, 0.15); }
+
+    /* ── Stats ── */
+    .stat-card { text-align: center; padding: 16px; }
+    .stat-value { font-size: 1.2rem; font-weight: 600; color: var(--accent-2); }
+    .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; }
+
+    /* ── Source Cards ── */
+    .source-card {
+      border: 1px solid var(--line);
+      background: rgba(16, 25, 48, 0.5);
+      border-radius: 14px;
+      padding: 14px 16px;
+      transition: border-color 0.25s, background 0.25s, transform 0.2s;
+      animation: fadeUp 400ms ease-out both;
+    }
+    .source-card:hover {
+      border-color: rgba(96, 165, 250, 0.3);
+      background: rgba(16, 25, 48, 0.8);
+      transform: translateY(-1px);
+    }
+
+    /* ── Answer Box ── */
+    .answer-box {
+      line-height: 1.85;
+      font-size: 14px;
+      white-space: pre-wrap;
+      color: var(--ink);
+    }
+    .answer-box .word {
+      display: inline;
+      animation: typewriter 200ms ease-out both;
+    }
+
+    /* ── Citation Pills ── */
+    .citation-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 12px;
+      border-radius: 10px;
+      font-size: 12px;
+      border: 1px solid rgba(96, 165, 250, 0.2);
+      color: var(--accent);
+      transition: all 0.2s;
+      text-decoration: none;
+    }
+    .citation-pill:hover { background: rgba(96, 165, 250, 0.1); border-color: rgba(96, 165, 250, 0.35); transform: translateY(-1px); }
+
+    /* ── Loading States ── */
+    .skeleton {
+      background: linear-gradient(90deg, rgba(30,40,70,0.4) 25%, rgba(60,80,120,0.3) 50%, rgba(30,40,70,0.4) 75%);
+      background-size: 400% 100%;
+      animation: shimmer 1.8s linear infinite;
+      border-radius: 8px;
+      height: 16px;
+      margin-bottom: 8px;
+    }
+    .skeleton.h-20 { height: 20px; }
+    .skeleton.w-60 { width: 60%; }
+    .skeleton.w-80 { width: 80%; }
+    .skeleton.w-40 { width: 40%; }
+
+    .search-progress {
+      height: 3px;
+      background: var(--panel-2);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 16px;
+    }
+    .search-progress .bar {
+      height: 100%;
+      background: var(--gradient-2);
+      border-radius: 4px;
+      transition: width 0.5s ease-out;
+    }
+
+    /* ── Model Dropdown ── */
+    .model-select-wrapper { position: relative; }
+    .model-select-wrapper .fetch-indicator {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    .hidden { display: none !important; }
+    .flex { display: flex; }
+    .flex-wrap { flex-wrap: wrap; }
+    .items-center { align-items: center; }
+    .items-end { align-items: flex-end; }
+    .justify-between { justify-content: space-between; }
+    .gap-2 { gap: 8px; }
+    .gap-3 { gap: 12px; }
+    .gap-4 { gap: 16px; }
+    .mt-3 { margin-top: 12px; }
+    .mt-4 { margin-top: 16px; }
+    .mt-5 { margin-top: 20px; }
+    .mb-2 { margin-bottom: 8px; }
+    .p-5 { padding: 20px; }
+    .p-6 { padding: 24px; }
+    .text-sm { font-size: 14px; }
+    .text-xs { font-size: 12px; }
+    .font-bold { font-weight: 700; }
+    .font-semibold { font-weight: 600; }
+    .tracking-tight { letter-spacing: -0.02em; }
   </style>
 </head>
 <body>
-  <main class="max-w-7xl mx-auto px-4 py-8 md:py-12">
-    <section class="panel glow rounded-3xl p-5 md:p-8 shadow-xl fade-up">
-      <div class="flex flex-wrap items-start justify-between gap-3">
+  <main class="container">
+
+    <!-- ══ SEARCH CONTROLS ══ -->
+    <section id="controlPanel" class="panel p-6 fade-up">
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 class="text-2xl md:text-4xl font-bold tracking-tight">Swift-Search-RS Dark Console</h1>
-          <p class="mt-1 text-sm md:text-base text-emerald-900/80">Lite-first search flow with optional research mode and dedicated LLM routes.</p>
-          <p class="mt-2 text-xs text-emerald-900/70">UI Build: 2026-04-10b · Default Focus: Lite</p>
+          <h1 style="font-size:1.6rem" class="font-bold tracking-tight">Swift-Search-RS</h1>
+          <p class="text-xs" style="color:var(--muted);margin-top:4px">Ultra-fast meta-search engine · v4.1 · 90+ engines</p>
         </div>
-        <span id="endpointLabel" class="text-xs md:text-sm px-3 py-1.5 rounded-full border border-emerald-800/25 bg-emerald-50 text-emerald-900">Endpoint: /search</span>
+        <span id="endpointLabel" class="badge mono text-xs">Endpoint: /search</span>
       </div>
 
-      <div class="mt-6 grid grid-cols-1 lg:grid-cols-12 gap-4">
-        <div class="lg:col-span-8">
-          <label class="block text-sm text-emerald-900/80 mb-2">Search Query</label>
-          <input id="queryInput" type="text" placeholder="Ask a focused question..." class="w-full rounded-xl px-4 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+      <div class="grid grid-12 mt-4">
+        <div class="col-span-8">
+          <label>Search Query</label>
+          <input id="queryInput" type="text" placeholder="Ask anything..." />
         </div>
-
-        <div class="lg:col-span-4">
-          <label class="block text-sm text-emerald-900/80 mb-2">Focus Mode</label>
-          <select id="focusMode" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-emerald-600">
-            <option value="research">Research</option>
+        <div class="col-span-4">
+          <label>Focus Mode</label>
+          <select id="focusMode">
+            <option value="lite" selected>Lite (Fast)</option>
+            <option value="research">Research (Deep)</option>
             <option value="academic">Academic</option>
             <option value="reddit">Reddit / Forum</option>
             <option value="youtube">YouTube</option>
-            <option value="lite" selected>Lite</option>
           </select>
         </div>
       </div>
 
-      <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="grid grid-3 mt-3">
         <div>
-          <label class="block text-sm text-emerald-900/80 mb-2">Max Results</label>
-          <input id="maxResults" type="number" value="" min="5" max="900" placeholder="Lite default: 30 | Research: blank = full" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+          <label>Max Results</label>
+          <input id="maxResults" type="number" value="" min="5" max="900" placeholder="Auto" />
         </div>
-
-        <div class="md:col-span-2 flex items-end">
-          <label class="inline-flex items-center gap-3 text-sm font-medium text-emerald-950 cursor-pointer select-none">
-            <input id="enableLlm" type="checkbox" class="h-5 w-5 rounded border-emerald-900/20" />
-            Enable LLM Best-Answer Synthesis (with source citations)
+        <div class="flex items-end" style="grid-column:span 2">
+          <label style="cursor:pointer;display:flex;align-items:center;gap:8px;padding-bottom:12px">
+            <input id="enableLlm" type="checkbox" style="width:18px;height:18px;accent-color:var(--accent)" />
+            <span style="font-size:14px;color:var(--ink);text-transform:none;letter-spacing:0">Enable LLM Synthesis</span>
           </label>
         </div>
       </div>
 
-      <div id="llmPanel" class="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 hidden">
-        <div>
-          <label class="block text-sm text-emerald-900/80 mb-2">API Key (BYOK)</label>
-          <input id="apiKey" type="password" placeholder="sk-..." class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700" />
-        </div>
-
-        <div>
-          <label class="block text-sm text-emerald-900/80 mb-2">Provider</label>
-          <select id="provider" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700">
-            <option value="openai" selected>OpenAI</option>
-            <option value="cerebras">Cerebras</option>
-            <option value="groq">Groq</option>
-            <option value="ollama">Ollama</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="gemini">Gemini</option>
-            <option value="xai">xAI</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="cohere">Cohere</option>
-            <option value="openrouter">OpenRouter (OpenAI-compatible)</option>
-            <option value="together">Together AI (OpenAI-compatible)</option>
-            <option value="fireworks">Fireworks AI (OpenAI-compatible)</option>
-            <option value="perplexity">Perplexity Sonar (OpenAI-compatible)</option>
-            <option value="mistral_api">Mistral API (OpenAI-compatible)</option>
-            <option value="sambanova">SambaNova (OpenAI-compatible)</option>
-            <option value="nvidia_nim">NVIDIA NIM (OpenAI-compatible)</option>
-            <option value="azure_openai">Azure OpenAI (OpenAI-compatible)</option>
-          </select>
-        </div>
-
-        <div>
-          <label class="block text-sm text-emerald-900/80 mb-2">Model</label>
-          <input id="model" type="text" value="llama3" placeholder="llama3 / gpt-4o-mini" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700" />
-        </div>
-
-        <div>
-          <label class="block text-sm text-emerald-900/80 mb-2">Base URL (optional)</label>
-          <input id="baseUrl" type="text" placeholder="http://localhost:11434/v1" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700" />
+      <!-- LLM Config Panel (animated slide) -->
+      <div id="llmPanel" class="hidden mt-3">
+        <div class="grid grid-4 gap-3">
+          <div>
+            <label>Provider</label>
+            <select id="provider">
+              <option value="cerebras" selected>Cerebras</option>
+              <option value="groq">Groq</option>
+              <option value="openai">OpenAI</option>
+              <option value="openai_compatible">OpenAI Compatible</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="gemini">Gemini</option>
+              <option value="xai">xAI (Grok)</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="cohere">Cohere</option>
+              <option value="ollama">Ollama (Local)</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="together">Together AI</option>
+              <option value="fireworks">Fireworks AI</option>
+              <option value="perplexity">Perplexity</option>
+              <option value="mistral_api">Mistral</option>
+              <option value="sambanova">SambaNova</option>
+              <option value="nvidia_nim">NVIDIA NIM</option>
+              <option value="azure_openai">Azure OpenAI</option>
+            </select>
+          </div>
+          <div>
+            <label>API Key</label>
+            <input id="apiKey" type="password" placeholder="sk-..." />
+          </div>
+          <div>
+            <label>Base URL</label>
+            <input id="baseUrl" type="text" placeholder="https://api.provider.com/v1" />
+          </div>
+          <div class="model-select-wrapper">
+            <label>Model
+              <button id="fetchModelsBtn" class="btn-icon" style="margin-left:8px;padding:3px 8px;font-size:10px" title="Fetch available models from provider">
+                ⟳ Fetch
+              </button>
+            </label>
+            <select id="modelSelect" style="display:none">
+              <option value="">Select a model...</option>
+            </select>
+            <input id="modelInput" type="text" value="llama-3.3-70b-versatile" placeholder="model name" />
+            <span id="fetchIndicator" class="fetch-indicator hidden"><span class="spinner"></span></span>
+          </div>
         </div>
       </div>
 
-      <div id="apiReminder" class="mt-4 hidden rounded-xl border border-amber-400/45 bg-amber-300/10 px-4 py-3 text-sm text-amber-100">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <span>No saved LLM API key detected. Add one to use LLM endpoints.</span>
-          <button id="setApiKeyBtn" type="button" class="px-3 py-1.5 rounded-lg border border-amber-300/60 hover:bg-amber-300/15">Set API Key</button>
-        </div>
+      <!-- Progress bar -->
+      <div id="progressBar" class="search-progress hidden mt-4">
+        <div class="bar" style="width:0%"></div>
       </div>
 
-      <div class="mt-5 flex flex-wrap gap-3">
-        <button id="runBtn" class="px-5 py-3 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-semibold">Run</button>
-        <button id="clearBtn" class="px-5 py-3 rounded-xl border border-emerald-900/25 hover:border-emerald-900/40 text-emerald-950">Clear</button>
+      <div class="flex gap-3 mt-4">
+        <button id="runBtn" class="btn-primary">⚡ Search</button>
+        <button id="clearBtn" class="btn-secondary">Clear</button>
       </div>
     </section>
 
-    <section class="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4 fade-up" style="animation-delay: 120ms;">
-      <article class="panel rounded-2xl p-4">
-        <h2 class="text-lg font-semibold">Search Phase</h2>
-        <div class="mt-3 space-y-1.5 text-sm">
-          <p>Latency: <span id="searchMs" class="mono text-teal-800">-</span></p>
-          <p>Focus: <span id="focusLabel" class="mono text-teal-800">lite</span></p>
-          <p>Status: <span id="searchStatus" class="mono">idle</span></p>
-        </div>
-      </article>
-
-      <article class="panel rounded-2xl p-4">
-        <h2 class="text-lg font-semibold">LLM Phase</h2>
-        <div class="mt-3 space-y-1.5 text-sm">
-          <p>Latency: <span id="llmMs" class="mono text-teal-800">-</span></p>
-          <p>Status: <span id="llmStatus" class="mono">idle</span></p>
-          <p>Error: <span id="llmError" class="mono text-red-800">none</span></p>
-        </div>
-      </article>
-
-      <article class="panel rounded-2xl p-4">
-        <h2 class="text-lg font-semibold">Behavior</h2>
-        <p class="mt-3 text-sm text-emerald-950/80">Default mode is Lite. Research mode can run uncapped by leaving Max Results blank. LLM uses dedicated routes: Lite LLM and Research LLM.</p>
-      </article>
+    <!-- ══ STATS BAR ══ -->
+    <section class="grid grid-4 mt-4 fade-up" style="animation-delay:80ms">
+      <div class="panel stat-card">
+        <div id="searchMs" class="stat-value mono">-</div>
+        <div class="stat-label">Search Time</div>
+      </div>
+      <div class="panel stat-card">
+        <div id="searchStatus" class="stat-value mono" style="font-size:0.9rem">idle</div>
+        <div class="stat-label">Pipeline</div>
+      </div>
+      <div class="panel stat-card">
+        <div id="llmMs" class="stat-value mono">-</div>
+        <div class="stat-label">LLM Time</div>
+      </div>
+      <div class="panel stat-card">
+        <div id="llmStatus" class="stat-value mono" style="font-size:0.9rem">idle</div>
+        <div class="stat-label">LLM Status</div>
+      </div>
     </section>
 
-    <section class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4 fade-up" style="animation-delay: 220ms;">
-      <article class="panel rounded-2xl p-4 min-h-[360px]">
-        <h3 class="text-xl font-semibold">Source Trail</h3>
-        <ul id="sourcesList" class="mt-3 space-y-2 text-sm"></ul>
+    <!-- ══ SOURCES + ANSWER ══ -->
+    <section class="grid grid-2 mt-4 fade-up" style="animation-delay:160ms">
+      <!-- Sources Panel -->
+      <article class="panel p-5" style="min-height:380px">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-semibold" style="font-size:1.05rem">Sources</h3>
+          <span id="sourceCount" class="badge">0 results</span>
+        </div>
+        <div id="sourcesList" style="max-height:620px;overflow-y:auto;padding-right:4px">
+          <div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">Run a search to see results</div>
+        </div>
       </article>
 
-      <article class="panel rounded-2xl p-4 min-h-[360px]">
-        <h3 class="text-xl font-semibold">Best Answer</h3>
-        <div id="answerBox" class="mt-3 text-sm leading-7 whitespace-pre-wrap"></div>
-        <div id="citationBox" class="mt-4 flex flex-wrap gap-2"></div>
+      <!-- Answer Panel -->
+      <article class="panel p-5" style="min-height:380px">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-semibold" style="font-size:1.05rem">Answer</h3>
+          <span id="focusLabel" class="badge">lite</span>
+        </div>
+        <div id="answerBox" class="answer-box" style="min-height:200px"></div>
+        <div id="llmError" class="hidden mt-3 text-xs mono" style="color:var(--danger)"></div>
+        <div id="citationBox" class="flex flex-wrap gap-2 mt-4"></div>
       </article>
     </section>
   </main>
 
   <script>
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Swift-Search-RS v4.1 Frontend
+    // ═══════════════════════════════════════════════════════════════════════════
+
     const DEFAULT_FOCUS_MODE = "lite";
     const DEFAULT_LITE_RESULTS = 30;
     const endpointBases = resolveEndpointBases();
     let activeEndpoint = `${endpointBases[0] || "http://127.0.0.1:8000"}/search`;
     let maxResultsTouched = false;
+    let fetchedModels = [];
 
     const dom = {
       queryInput: document.getElementById("queryInput"),
@@ -262,10 +492,14 @@
       llmPanel: document.getElementById("llmPanel"),
       apiKey: document.getElementById("apiKey"),
       provider: document.getElementById("provider"),
-      model: document.getElementById("model"),
+      modelInput: document.getElementById("modelInput"),
+      modelSelect: document.getElementById("modelSelect"),
       baseUrl: document.getElementById("baseUrl"),
       runBtn: document.getElementById("runBtn"),
       clearBtn: document.getElementById("clearBtn"),
+      fetchModelsBtn: document.getElementById("fetchModelsBtn"),
+      fetchIndicator: document.getElementById("fetchIndicator"),
+      progressBar: document.getElementById("progressBar"),
       searchMs: document.getElementById("searchMs"),
       focusLabel: document.getElementById("focusLabel"),
       searchStatus: document.getElementById("searchStatus"),
@@ -273,37 +507,30 @@
       llmStatus: document.getElementById("llmStatus"),
       llmError: document.getElementById("llmError"),
       sourcesList: document.getElementById("sourcesList"),
+      sourceCount: document.getElementById("sourceCount"),
       answerBox: document.getElementById("answerBox"),
       citationBox: document.getElementById("citationBox"),
       endpointLabel: document.getElementById("endpointLabel"),
-      apiReminder: document.getElementById("apiReminder"),
-      setApiKeyBtn: document.getElementById("setApiKeyBtn"),
     };
 
-    function nowMs() {
-      return performance.now();
-    }
+    function nowMs() { return performance.now(); }
 
     function resolveEndpointBases() {
-      const candidates = [];
-
-      if (window.location.origin && window.location.origin !== "null") {
-        candidates.push(window.location.origin);
-      }
-
-      candidates.push("http://127.0.0.1:8000");
-      candidates.push("http://localhost:8000");
-
-      return Array.from(new Set(candidates));
+      const c = [];
+      if (window.location.origin && window.location.origin !== "null") c.push(window.location.origin);
+      c.push("http://127.0.0.1:8000");
+      c.push("http://localhost:8000");
+      return Array.from(new Set(c));
     }
 
     function resolveEndpointCandidates(path) {
-      return endpointBases.map((base) => `${base}${path}`);
+      return endpointBases.map(b => `${b}${path}`);
     }
 
     const providerPresets = {
       openai: { runtimeProvider: "openai", baseUrl: "", model: "gpt-4o-mini" },
-      cerebras: { runtimeProvider: "cerebras", baseUrl: "https://api.cerebras.ai/v1", model: "gpt-oss-120b" },
+      openai_compatible: { runtimeProvider: "openai_compatible", baseUrl: "", model: "" },
+      cerebras: { runtimeProvider: "cerebras", baseUrl: "https://api.cerebras.ai/v1", model: "llama-3.3-70b" },
       groq: { runtimeProvider: "groq", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
       ollama: { runtimeProvider: "ollama", baseUrl: "http://localhost:11434/v1", model: "llama3" },
       anthropic: { runtimeProvider: "anthropic", baseUrl: "", model: "claude-3-5-haiku-latest" },
@@ -321,91 +548,125 @@
       azure_openai: { runtimeProvider: "openai", baseUrl: "", model: "gpt-4o-mini" },
     };
 
-    function selectedProviderKey() {
-      return dom.provider.value.trim() || "openai";
-    }
-
-    function providerPreset() {
-      return providerPresets[selectedProviderKey()] || providerPresets.openai;
-    }
+    function selectedProviderKey() { return dom.provider.value.trim() || "cerebras"; }
+    function providerPreset() { return providerPresets[selectedProviderKey()] || providerPresets.cerebras; }
 
     function escapeHtml(str) {
-      return String(str || "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
+      return String(str || "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
     }
 
-    function cleanDisplayText(str, maxLen = 4000) {
+    function cleanDisplayText(str, maxLen = 8000) {
       let out = String(str || "");
-
-      // Remove chain-of-thought style wrappers often returned by some models.
       out = out.replace(/<think>[\s\S]*?<\/think>/gi, "");
       out = out.replace(/<\|[^|]+\|>/g, "");
-
-      // Remove accidental SSE-like prefixes if they leak through.
       out = out.replace(/^data:\s*/gim, "");
-
-      // Keep printable text only.
       out = out.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
-
       out = out.trim();
-      if (out.length > maxLen) {
-        out = out.slice(0, maxLen) + "...";
-      }
+      if (out.length > maxLen) out = out.slice(0, maxLen) + "...";
       return out;
     }
 
+    function getEffectiveModel() {
+      if (dom.modelSelect.style.display !== "none" && dom.modelSelect.value) {
+        return dom.modelSelect.value;
+      }
+      return dom.modelInput.value.trim();
+    }
+
+    // ═══ Progress Animation ═══
+    let progressInterval = null;
+    function startProgress() {
+      dom.progressBar.classList.remove("hidden");
+      const bar = dom.progressBar.querySelector(".bar");
+      bar.style.width = "0%";
+      let pct = 0;
+      progressInterval = setInterval(() => {
+        pct += Math.random() * 8;
+        if (pct > 92) pct = 92;
+        bar.style.width = `${pct}%`;
+      }, 600);
+    }
+    function finishProgress() {
+      clearInterval(progressInterval);
+      const bar = dom.progressBar.querySelector(".bar");
+      bar.style.width = "100%";
+      setTimeout(() => { dom.progressBar.classList.add("hidden"); bar.style.width = "0%"; }, 800);
+    }
+
+    // ═══ Skeleton Loading ═══
+    function showSourceSkeleton() {
+      dom.sourcesList.innerHTML = "";
+      for (let i = 0; i < 5; i++) {
+        const div = document.createElement("div");
+        div.className = "source-card";
+        div.style.animationDelay = `${i * 80}ms`;
+        div.innerHTML = `
+          <div class="skeleton w-40" style="height:12px;margin-bottom:8px"></div>
+          <div class="skeleton w-80" style="height:14px;margin-bottom:6px"></div>
+          <div class="skeleton w-60" style="height:12px"></div>
+        `;
+        dom.sourcesList.appendChild(div);
+      }
+    }
+
+    function showAnswerLoading() {
+      dom.answerBox.innerHTML = `
+        <div class="flex items-center gap-3" style="padding:24px 0">
+          <span class="spinner"></span>
+          <span style="color:var(--accent);font-size:14px" class="pulse">Searching 90+ engines...</span>
+        </div>
+      `;
+    }
+
+    function showLlmGenerating() {
+      dom.answerBox.innerHTML = `
+        <div class="flex items-center gap-3" style="padding:24px 0">
+          <span class="spinner"></span>
+          <span style="color:var(--accent-2);font-size:14px" class="pulse">Synthesizing answer from sources...</span>
+        </div>
+      `;
+    }
+
+    // ═══ UI State Management ═══
     function setIdle() {
       dom.endpointLabel.textContent = `Endpoint: ${activeEndpoint}`;
       dom.searchMs.textContent = "-";
       dom.searchStatus.textContent = "idle";
+      dom.searchStatus.style.color = "var(--accent-2)";
       dom.llmMs.textContent = "-";
       dom.llmStatus.textContent = "idle";
-      dom.llmError.textContent = "none";
-      dom.sourcesList.innerHTML = "";
+      dom.llmStatus.style.color = "var(--accent-2)";
+      dom.llmError.textContent = "";
+      dom.llmError.classList.add("hidden");
+      dom.sourcesList.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">Run a search to see results</div>';
+      dom.sourceCount.textContent = "0 results";
       dom.answerBox.textContent = "";
       dom.citationBox.innerHTML = "";
       dom.focusLabel.textContent = dom.focusMode.value || DEFAULT_FOCUS_MODE;
     }
 
-    function renderApiReminder() {
-      const hasKey = !!dom.apiKey.value.trim();
-      if (hasKey) {
-        dom.apiReminder.classList.add("hidden");
-      } else {
-        dom.apiReminder.classList.remove("hidden");
-      }
-    }
-
     function toggleLlmPanel() {
       if (dom.enableLlm.checked) {
         dom.llmPanel.classList.remove("hidden");
-        // LLM defaults to lite mode; user can switch back to research manually.
-        if (!dom.focusMode.value || dom.focusMode.value === "research") {
-          dom.focusMode.value = DEFAULT_FOCUS_MODE;
-          dom.focusLabel.textContent = DEFAULT_FOCUS_MODE;
-        }
+        dom.llmPanel.classList.add("slide-down");
       } else {
         dom.llmPanel.classList.add("hidden");
+        dom.llmPanel.classList.remove("slide-down");
       }
       syncMaxResultsHint();
       applyProviderPreset();
-      renderApiReminder();
     }
 
     function syncMaxResultsHint() {
       const mode = dom.focusMode.value || DEFAULT_FOCUS_MODE;
       if (mode === "lite") {
-        dom.maxResults.placeholder = "Lite default: 30";
+        dom.maxResults.placeholder = "Default: 30";
         if (!dom.maxResults.value.trim() && !maxResultsTouched) {
           dom.maxResults.value = String(DEFAULT_LITE_RESULTS);
           dom.maxResults.dataset.autofill = "1";
         }
       } else {
-        dom.maxResults.placeholder = "Blank = backend default (research/full mode)";
+        dom.maxResults.placeholder = "Auto (uncapped)";
         if (!maxResultsTouched || dom.maxResults.dataset.autofill === "1") {
           dom.maxResults.value = "";
           dom.maxResults.dataset.autofill = "";
@@ -415,59 +676,122 @@
 
     function applyProviderPreset() {
       const preset = providerPreset();
-      if (preset.baseUrl && !dom.baseUrl.value.trim()) {
-        dom.baseUrl.value = preset.baseUrl;
-      }
-      if (!dom.model.value.trim()) {
-        dom.model.value = preset.model;
-      }
+      if (preset.baseUrl && !dom.baseUrl.value.trim()) dom.baseUrl.value = preset.baseUrl;
+      if (!getEffectiveModel() && preset.model) dom.modelInput.value = preset.model;
     }
 
+    // ═══ Render Functions ═══
     function renderSources(items) {
       dom.sourcesList.innerHTML = "";
       if (!items || items.length === 0) {
-        dom.sourcesList.innerHTML = '<li class="text-emerald-950/70">No sources found.</li>';
+        dom.sourcesList.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">No sources found</div>';
+        dom.sourceCount.textContent = "0 results";
         return;
       }
 
+      dom.sourceCount.textContent = `${items.length} results`;
+      dom.sourceCount.className = "badge badge-success";
+
       for (const [idx, item] of items.entries()) {
-        const li = document.createElement("li");
-        li.className = "p-3 rounded-xl border border-emerald-900/15 bg-white/75";
-        const rawSnippet = item.snippet || item.extracted_text || "";
-        const snippet = cleanDisplayText(rawSnippet, 260);
-        const title = cleanDisplayText(item.title || item.url, 180);
+        const div = document.createElement("div");
+        div.className = "source-card";
+        div.style.animationDelay = `${idx * 40}ms`;
+        const snippet = cleanDisplayText(item.snippet || "", 200);
+        const title = cleanDisplayText(item.title || item.url, 140);
         const url = String(item.url || "").trim();
-        li.innerHTML = `
-          <div class="text-xs text-emerald-900/70">#${idx + 1} • ${escapeHtml(item.engine || "unknown")}</div>
-          <a href="${escapeHtml(url)}" target="_blank" rel="noopener" class="text-teal-800 hover:text-teal-900 font-medium break-all">${escapeHtml(title)}</a>
-          <p class="text-emerald-950/80 mt-1">${escapeHtml(snippet)}</p>
+
+        div.innerHTML = `
+          <div class="flex items-center gap-2" style="margin-bottom:6px">
+            <span style="color:var(--muted);font-size:10px;font-weight:500">#${idx + 1}</span>
+            <span class="badge" style="font-size:10px">${escapeHtml(item.engine || "unknown")}</span>
+          </div>
+          <a href="${escapeHtml(url)}" target="_blank" rel="noopener" style="font-size:13px;font-weight:500;word-break:break-word;line-height:1.4">${escapeHtml(title)}</a>
+          ${snippet ? `<p style="color:var(--muted);font-size:12px;margin-top:5px;line-height:1.5">${escapeHtml(snippet)}</p>` : ""}
         `;
-        dom.sourcesList.appendChild(li);
+        dom.sourcesList.appendChild(div);
       }
     }
 
     function renderCitations(items) {
       dom.citationBox.innerHTML = "";
-      if (!items || items.length === 0) {
-        return;
-      }
-      for (const [idx, item] of items.slice(0, 10).entries()) {
+      if (!items || items.length === 0) return;
+      for (const [idx, item] of items.slice(0, 15).entries()) {
         if (!item || !item.url) continue;
         const a = document.createElement("a");
         a.href = item.url;
         a.target = "_blank";
         a.rel = "noopener";
-        a.className = "px-2 py-1 rounded-md text-xs border border-teal-900/25 text-teal-900 hover:bg-teal-50";
+        a.className = "citation-pill";
+        a.style.animationDelay = `${idx * 50}ms`;
+        a.classList.add("fade-up");
         a.textContent = `[${idx + 1}] ${item.engine || "source"}`;
         dom.citationBox.appendChild(a);
       }
     }
 
+    // ═══ Dynamic Model Fetcher ═══
+    async function fetchModels() {
+      const apiKey = dom.apiKey.value.trim();
+      const baseUrl = dom.baseUrl.value.trim();
+
+      if (!apiKey || !baseUrl) {
+        alert("Enter an API Key and Base URL first to fetch models.");
+        return;
+      }
+
+      dom.fetchIndicator.classList.remove("hidden");
+      dom.fetchModelsBtn.disabled = true;
+
+      try {
+        const candidates = resolveEndpointCandidates("/api/models");
+        let lastErr = "No endpoint";
+
+        for (const endpoint of candidates) {
+          try {
+            const res = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ api_key: apiKey, base_url: baseUrl }),
+            });
+            const data = await res.json();
+
+            if (data.models && Array.isArray(data.models) && data.models.length > 0) {
+              fetchedModels = data.models;
+
+              // Populate dropdown
+              dom.modelSelect.innerHTML = `<option value="">Select a model (${data.models.length} available)</option>`;
+              for (const m of data.models) {
+                const opt = document.createElement("option");
+                opt.value = m;
+                opt.textContent = m;
+                dom.modelSelect.appendChild(opt);
+              }
+
+              // Show dropdown, hide text input
+              dom.modelSelect.style.display = "";
+              dom.modelInput.style.display = "none";
+              dom.modelSelect.classList.add("fade-in");
+              return;
+            } else if (data.error) {
+              lastErr = data.error;
+            }
+          } catch (e) {
+            lastErr = e.message;
+          }
+        }
+        alert(`Could not fetch models: ${lastErr}`);
+      } finally {
+        dom.fetchIndicator.classList.add("hidden");
+        dom.fetchModelsBtn.disabled = false;
+      }
+    }
+
+    // ═══ API Call Helper ═══
     async function postSearch(path, payload) {
       let lastError = new Error("No working API endpoint found");
-      const endpointCandidates = resolveEndpointCandidates(path);
+      const candidates = resolveEndpointCandidates(path);
 
-      for (const endpoint of endpointCandidates) {
+      for (const endpoint of candidates) {
         try {
           const res = await fetch(endpoint, {
             method: "POST",
@@ -480,22 +804,17 @@
           try {
             data = text ? JSON.parse(text) : {};
           } catch {
-            // Some users open UI from a static host/path where /search returns HTML instead of JSON.
             if (text.trim().startsWith("<!doctype html") || text.trim().startsWith("<html")) {
-              lastError = new Error(`Endpoint ${endpoint} returned HTML instead of JSON`);
+              lastError = new Error(`Endpoint ${endpoint} returned HTML`);
               continue;
             }
-            lastError = new Error(`Invalid JSON response from ${endpoint} (status ${res.status})`);
+            lastError = new Error(`Invalid JSON from ${endpoint}`);
             continue;
           }
 
           if (!res.ok) {
-            const msg = data?.error || `Request failed with ${res.status}`;
-            // Try next endpoint for common local-host mismatches.
-            if (res.status === 404 || res.status === 405) {
-              lastError = new Error(msg);
-              continue;
-            }
+            const msg = data?.error || `Request failed (${res.status})`;
+            if (res.status === 404 || res.status === 405) { lastError = new Error(msg); continue; }
             throw new Error(msg);
           }
 
@@ -507,206 +826,204 @@
           continue;
         }
       }
-
       throw lastError;
     }
 
     function basePayload(query, focusMode, maxResults) {
-      const payload = {
-        query,
-        focus_mode: focusMode,
-      };
-
-      if (typeof maxResults === "number" && Number.isFinite(maxResults) && maxResults > 0) {
-        payload.max_results = maxResults;
-      }
-
+      const payload = { query, focus_mode: focusMode };
+      if (typeof maxResults === "number" && Number.isFinite(maxResults) && maxResults > 0) payload.max_results = maxResults;
       return payload;
     }
 
     function parseMaxResults(focusMode) {
       const raw = dom.maxResults.value.trim();
-      if (!raw) {
-        return focusMode === "lite" ? DEFAULT_LITE_RESULTS : null;
-      }
-
+      if (!raw) return focusMode === "lite" ? DEFAULT_LITE_RESULTS : null;
       const parsed = Number(raw);
-      if (!Number.isFinite(parsed)) {
-        return focusMode === "lite" ? DEFAULT_LITE_RESULTS : null;
-      }
-
+      if (!Number.isFinite(parsed)) return focusMode === "lite" ? DEFAULT_LITE_RESULTS : null;
       return Math.max(5, Math.min(900, Math.floor(parsed)));
     }
 
+    // ═══ Main Search Flow ═══
     async function runBenchmark() {
       const query = dom.queryInput.value.trim();
-      if (!query) {
-        alert("Enter a query first.");
-        return;
-      }
+      if (!query) { dom.queryInput.focus(); return; }
 
       const focusMode = dom.focusMode.value || DEFAULT_FOCUS_MODE;
       const maxResults = parseMaxResults(focusMode);
 
       dom.focusLabel.textContent = focusMode;
+      dom.focusLabel.className = "badge";
       dom.runBtn.disabled = true;
-      dom.runBtn.classList.add("opacity-60", "cursor-not-allowed");
-      dom.sourcesList.innerHTML = "";
       dom.citationBox.innerHTML = "";
-      dom.llmError.textContent = "none";
-      dom.answerBox.innerHTML = '<span class="pulse text-teal-800">Running search phase...</span>';
+      dom.llmError.textContent = "";
+      dom.llmError.classList.add("hidden");
+
+      showSourceSkeleton();
+      showAnswerLoading();
+      startProgress();
 
       try {
-        dom.searchStatus.textContent = "running";
+        dom.searchStatus.textContent = "searching";
+        dom.searchStatus.style.color = "var(--accent)";
 
-        const phaseAStart = nowMs();
-        const phaseAMax = focusMode === "lite"
-          ? Math.min(maxResults ?? DEFAULT_LITE_RESULTS, 35)
-          : maxResults;
-        const phaseAPayload = basePayload(query, focusMode, phaseAMax);
-        const phaseA = await postSearch("/search", phaseAPayload);
-        const phaseAms = Math.round(nowMs() - phaseAStart);
-
-        const sources = Array.isArray(phaseA.search_results) ? phaseA.search_results : [];
-        renderSources(sources);
-
-        dom.searchMs.textContent = `${phaseAms} ms`;
-        dom.searchStatus.textContent = "complete";
-
-        if (!dom.enableLlm.checked) {
-          dom.llmStatus.textContent = "disabled";
-          dom.llmMs.textContent = "-";
-          dom.answerBox.textContent = "LLM is disabled. Source Trail contains the direct search output (links + snippets).";
-          renderCitations(sources);
-          return;
-        }
-
+        const useLlm = dom.enableLlm.checked;
         const apiKey = dom.apiKey.value.trim();
-        const selectedProvider = selectedProviderKey();
+        const model = getEffectiveModel();
+        const baseUrl = dom.baseUrl.value.trim();
         const preset = providerPreset();
         const provider = preset.runtimeProvider;
-        const model = dom.model.value.trim();
-        const baseUrl = dom.baseUrl.value.trim();
 
-        if (!apiKey || !model) {
-          dom.llmStatus.textContent = "skipped";
-          dom.llmError.textContent = "Missing API key or model";
-          dom.answerBox.textContent = "LLM enabled but missing credentials. Fill API key + model to generate cited synthesis.";
+        // Build payload
+        const phaseMax = focusMode === "lite" ? Math.min(maxResults ?? DEFAULT_LITE_RESULTS, 35) : maxResults;
+        const payload = basePayload(query, focusMode, phaseMax);
+
+        // Include LLM config in the SAME request if enabled
+        if (useLlm && apiKey && model) {
+          const llm = { provider, api_key: apiKey, model, timeout_ms: 45000 };
+          if (baseUrl) llm.base_url = baseUrl;
+          else if (preset.baseUrl) llm.base_url = preset.baseUrl;
+          payload.llm = llm;
+        }
+
+        const phaseStart = nowMs();
+
+        // Use the appropriate endpoint
+        let endpoint = "/search";
+        if (useLlm && apiKey && model) {
+          endpoint = focusMode === "research" ? "/search/research-llm" : "/search/lite-llm";
+        }
+
+        dom.searchStatus.textContent = "scraping";
+
+        const response = await postSearch(endpoint, payload);
+        const elapsed = Math.round(nowMs() - phaseStart);
+
+        finishProgress();
+
+        // Render sources
+        const sources = Array.isArray(response.search_results) ? response.search_results : [];
+        renderSources(sources);
+        dom.searchMs.textContent = `${(elapsed / 1000).toFixed(1)}s`;
+
+        // Render LLM answer
+        if (response.llm_answer) {
+          dom.searchStatus.textContent = "done";
+          dom.searchStatus.style.color = "var(--success)";
+          dom.llmStatus.textContent = "done";
+          dom.llmStatus.style.color = "var(--success)";
+          dom.llmMs.textContent = `${(elapsed / 1000).toFixed(1)}s`;
+
+          const answer = cleanDisplayText(response.llm_answer, 12000);
+          animateAnswer(answer);
           renderCitations(sources);
-          return;
+        } else if (response.llm_error) {
+          dom.searchStatus.textContent = "done";
+          dom.searchStatus.style.color = "var(--success)";
+          dom.llmStatus.textContent = "error";
+          dom.llmStatus.style.color = "var(--danger)";
+          dom.llmError.textContent = response.llm_error;
+          dom.llmError.classList.remove("hidden");
+          dom.answerBox.textContent = "LLM synthesis failed. Sources shown on the left.";
+          renderCitations(sources);
+        } else {
+          dom.searchStatus.textContent = "done";
+          dom.searchStatus.style.color = "var(--success)";
+          dom.llmStatus.textContent = useLlm ? "skip" : "off";
+          dom.llmStatus.style.color = "var(--muted)";
+          dom.answerBox.textContent = useLlm ? "No LLM answer returned." : "LLM disabled. Sources shown on the left.";
+          renderCitations(sources);
         }
 
-        dom.llmStatus.textContent = "running";
-        dom.answerBox.innerHTML = '<span class="pulse text-teal-800">Running LLM synthesis...</span>';
-
-        const llm = {
-          provider,
-          api_key: apiKey,
-          model,
-          timeout_ms: 45000,
-        };
-
-        if (baseUrl) {
-          llm.base_url = baseUrl;
-        } else if (preset.baseUrl) {
-          llm.base_url = preset.baseUrl;
-        }
-
-        const llmPath = focusMode === "research" ? "/search/research-llm" : "/search/lite-llm";
-        const llmMax = llmPath === "/search/lite-llm"
-          ? Math.min(maxResults ?? DEFAULT_LITE_RESULTS, 35)
-          : maxResults;
-
-        const phaseBPayload = {
-          ...basePayload(query, focusMode, llmMax),
-          llm,
-        };
-
-        const phaseBStart = nowMs();
-        const phaseB = await postSearch(llmPath, phaseBPayload);
-        const phaseBms = Math.round(nowMs() - phaseBStart);
-
-        dom.llmMs.textContent = `${phaseBms} ms`;
-        dom.llmStatus.textContent = phaseB.llm_error ? "fallback" : "complete";
-        dom.llmError.textContent = phaseB.llm_error || "none";
-
-        const answer = cleanDisplayText(
-          phaseB.llm_answer || "No LLM answer returned. Using source-only fallback.",
-          12000
-        );
-        dom.answerBox.textContent = answer;
-
-        const citations = Array.isArray(phaseB.search_results) ? phaseB.search_results : sources;
-        renderCitations(citations);
-        localStorage.setItem("swift_llm_provider", selectedProvider);
+        // Save settings
+        localStorage.setItem("swift_llm_provider", selectedProviderKey());
         localStorage.setItem("swift_llm_model", model);
-        localStorage.setItem("swift_llm_base_url", llm.base_url || "");
+        localStorage.setItem("swift_llm_base_url", baseUrl || preset.baseUrl || "");
         localStorage.setItem("swift_llm_api_key", apiKey);
       } catch (err) {
+        finishProgress();
         dom.searchStatus.textContent = "error";
+        dom.searchStatus.style.color = "var(--danger)";
         dom.llmStatus.textContent = "error";
+        dom.llmStatus.style.color = "var(--danger)";
         dom.llmError.textContent = err.message || String(err);
-        dom.answerBox.textContent = `Request failed: ${err.message || err}`;
+        dom.llmError.classList.remove("hidden");
+        dom.answerBox.textContent = `Error: ${err.message || err}`;
+        dom.sourcesList.innerHTML = '<div style="color:var(--danger);font-size:13px;padding:20px 0;text-align:center">Search failed. Check server logs.</div>';
       } finally {
         dom.runBtn.disabled = false;
-        dom.runBtn.classList.remove("opacity-60", "cursor-not-allowed");
       }
     }
 
+    // ═══ Typewriter Answer Animation ═══
+    function animateAnswer(text) {
+      dom.answerBox.innerHTML = "";
+      const lines = text.split("\n");
+      let wordIndex = 0;
+
+      for (const line of lines) {
+        if (line.trim() === "") {
+          dom.answerBox.appendChild(document.createElement("br"));
+          continue;
+        }
+        const lineDiv = document.createElement("div");
+        lineDiv.style.marginBottom = "4px";
+
+        const words = line.split(/(\s+)/);
+        for (const word of words) {
+          const span = document.createElement("span");
+          span.textContent = word;
+          span.style.animation = `typewriter 150ms ease-out ${wordIndex * 15}ms both`;
+          lineDiv.appendChild(span);
+          if (word.trim()) wordIndex++;
+        }
+
+        dom.answerBox.appendChild(lineDiv);
+      }
+    }
+
+    // ═══ Init ═══
     function loadSavedSettings() {
-      const savedProvider = localStorage.getItem("swift_llm_provider");
-      const savedModel = localStorage.getItem("swift_llm_model");
-      const savedBaseUrl = localStorage.getItem("swift_llm_base_url");
-      const savedApiKey = localStorage.getItem("swift_llm_api_key");
-
-      if (savedProvider && Array.from(dom.provider.options).some((opt) => opt.value === savedProvider)) {
-        dom.provider.value = savedProvider;
-      }
-      if (savedModel) dom.model.value = savedModel;
-      if (savedBaseUrl) dom.baseUrl.value = savedBaseUrl;
-      if (savedApiKey) dom.apiKey.value = savedApiKey;
-
+      const sp = localStorage.getItem("swift_llm_provider");
+      const sm = localStorage.getItem("swift_llm_model");
+      const su = localStorage.getItem("swift_llm_base_url");
+      const sk = localStorage.getItem("swift_llm_api_key");
+      if (sp && Array.from(dom.provider.options).some(o => o.value === sp)) dom.provider.value = sp;
+      if (sm) dom.modelInput.value = sm;
+      if (su) dom.baseUrl.value = su;
+      if (sk) { dom.apiKey.value = sk; dom.enableLlm.checked = true; }
       dom.focusMode.value = DEFAULT_FOCUS_MODE;
-
-      if (savedApiKey) {
-        dom.enableLlm.checked = true;
-      }
     }
 
+    // Events
     dom.enableLlm.addEventListener("change", toggleLlmPanel);
     dom.focusMode.addEventListener("change", () => {
       dom.focusLabel.textContent = dom.focusMode.value || DEFAULT_FOCUS_MODE;
       syncMaxResultsHint();
-      localStorage.setItem("swift_focus_mode", dom.focusMode.value || DEFAULT_FOCUS_MODE);
     });
     dom.provider.addEventListener("change", () => {
-      if (!dom.baseUrl.value.trim() || providerPresets[dom.provider.value]?.baseUrl) {
-        dom.baseUrl.value = "";
-      }
+      // Reset model inputs when provider changes
+      dom.modelSelect.style.display = "none";
+      dom.modelInput.style.display = "";
+      dom.modelInput.value = "";
+      dom.baseUrl.value = "";
+      fetchedModels = [];
       applyProviderPreset();
     });
-    dom.maxResults.addEventListener("input", () => {
-      maxResultsTouched = true;
-      dom.maxResults.dataset.autofill = "";
-      localStorage.setItem("swift_max_results", dom.maxResults.value.trim());
+    dom.modelSelect.addEventListener("change", () => {
+      if (dom.modelSelect.value) {
+        dom.modelInput.value = dom.modelSelect.value;
+      }
     });
-    dom.apiKey.addEventListener("input", renderApiReminder);
-    dom.setApiKeyBtn.addEventListener("click", () => {
-      dom.enableLlm.checked = true;
-      toggleLlmPanel();
-      dom.apiKey.focus();
-    });
+    dom.maxResults.addEventListener("input", () => { maxResultsTouched = true; dom.maxResults.dataset.autofill = ""; });
+    dom.fetchModelsBtn.addEventListener("click", fetchModels);
     dom.runBtn.addEventListener("click", runBenchmark);
     dom.clearBtn.addEventListener("click", setIdle);
-    dom.queryInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") runBenchmark();
-    });
+    dom.queryInput.addEventListener("keydown", e => { if (e.key === "Enter") runBenchmark(); });
 
     loadSavedSettings();
     toggleLlmPanel();
     syncMaxResultsHint();
     applyProviderPreset();
-    renderApiReminder();
     setIdle();
   </script>
 </body>

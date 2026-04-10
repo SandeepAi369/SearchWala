@@ -1,3 +1,8 @@
+// ============================================================================
+// Swift Search Agent v4.1 - Streaming Search (SSE)
+// Mirrors search.rs fixes: scrape client, retry on 403/429, research mode
+// ============================================================================
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Semaphore};
@@ -25,7 +30,6 @@ pub fn execute_stream_search(
 ) -> ReceiverStream<Result<Event, Infallible>> {
     let (tx, rx) = mpsc::channel(200);
     
-    // Spawn background task taking ownership of everything
     tokio::spawn(async move {
         let start = std::time::Instant::now();
         let _ = tx.send(Ok(Event::default().data(serde_json::json!({"type": "info", "text": "Starting Swift Meta-Search Pipeline..."}).to_string()))).await;
@@ -35,6 +39,7 @@ pub fn execute_stream_search(
             .map(|m| m.trim().to_lowercase())
             .filter(|m| !m.is_empty());
         let is_lite_mode = matches!(normalized_focus.as_deref(), Some("lite"));
+        let is_research_mode = matches!(normalized_focus.as_deref(), Some("research"));
         let llm_enabled = llm_config.is_some();
         let use_ranked_chunk_path = is_lite_mode;
         let max_urls = if is_lite_mode {
@@ -42,6 +47,9 @@ pub fn execute_stream_search(
         } else {
             max_results.unwrap_or_else(config::max_urls).min(900)
         };
+
+        // Research mode sends more chunks to LLM
+        let llm_top_k: usize = if is_research_mode { 50 } else { 25 };
 
         // Copilot execution inline
         let mut effective_query = apply_focus_mode(&query, normalized_focus.as_deref());
@@ -174,16 +182,20 @@ pub fn execute_stream_search(
             if let Some(sc_rx) = llm_rx {
                 let tx_sse = tx.clone();
                 let q_for_llm = query.clone();
+                let research = is_research_mode;
                 tokio::spawn(async move {
-                    llm::summarize_from_stream_sse(q_for_llm, cfg, sc_rx, tx_sse).await;
+                    llm::summarize_from_stream_sse(q_for_llm, cfg, sc_rx, tx_sse, research).await;
                 });
             }
         }
 
         let mut join_set = tokio::task::JoinSet::new();
-        let scrape_timeout_secs = if is_lite_mode { config::scrape_timeout_secs().min(4) } else { config::scrape_timeout_secs() };
+        let scrape_timeout_secs = if is_lite_mode { config::scrape_timeout_secs().min(8) } else { config::scrape_timeout_secs() };
         let scrape_max_bytes = if is_lite_mode { config::max_html_bytes().min(180_000) } else { config::max_html_bytes() };
-        let mut min_char_threshold = if is_lite_mode { config::min_text_length().min(400) } else { config::min_text_length() };
+        let mut min_char_threshold = config::min_text_length();
+        if is_lite_mode {
+            min_char_threshold = min_char_threshold.max(100);
+        }
         if matches!(normalized_focus.as_deref(), Some("youtube") | Some("reddit")) { min_char_threshold = 10; }
 
         for url in unique_urls {
@@ -223,7 +235,7 @@ pub fn execute_stream_search(
         }
 
         let ranked_results = if use_ranked_chunk_path {
-            ranking::rank_top_chunks(&effective_query, &scraped_results, 25)
+            ranking::rank_top_chunks(&effective_query, &scraped_results, llm_top_k)
         } else {
             Vec::new()
         };
@@ -232,7 +244,7 @@ pub fn execute_stream_search(
             let llm_inputs = if use_ranked_chunk_path {
                 ranked_results.clone()
             } else {
-                ranking::rank_top_chunks(&effective_query, &scraped_results, 25)
+                ranking::rank_top_chunks(&effective_query, &scraped_results, llm_top_k)
             };
 
             for item in llm_inputs {
@@ -276,6 +288,10 @@ fn apply_focus_mode(query: &str, focus_mode: Option<&str>) -> String {
     }
 }
 
+// =============================================================================
+// Scrape Pipeline — with retry on 403/429/503
+// =============================================================================
+
 async fn scrape_url(
     client: &reqwest::Client,
     url: &str,
@@ -284,6 +300,46 @@ async fn scrape_url(
     lite_mode: bool,
     focus_mode: Option<&str>,
 ) -> Option<(String, String)> {
+    match scrape_url_inner(client, url, timeout_secs, max_bytes, focus_mode).await {
+        ScrapeResult::Ok(title, text) => {
+            let mut text = text;
+            if lite_mode {
+                if text.len() < 120 { return None; }
+                if text.len() > 4_000 { text.truncate(4_000); }
+            }
+            Some((title, text))
+        }
+        ScrapeResult::Blocked => {
+            let delay = config::random_jitter_ms(200, 500);
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            match scrape_url_inner(client, url, timeout_secs, max_bytes, focus_mode).await {
+                ScrapeResult::Ok(title, mut text) => {
+                    if lite_mode {
+                        if text.len() < 120 { return None; }
+                        if text.len() > 4_000 { text.truncate(4_000); }
+                    }
+                    Some((title, text))
+                }
+                _ => None,
+            }
+        }
+        ScrapeResult::Skip => None,
+    }
+}
+
+enum ScrapeResult {
+    Ok(String, String),
+    Blocked,
+    Skip,
+}
+
+async fn scrape_url_inner(
+    client: &reqwest::Client,
+    url: &str,
+    timeout_secs: u64,
+    max_bytes: usize,
+    focus_mode: Option<&str>,
+) -> ScrapeResult {
     let mut target_url = url.to_string();
 
     if matches!(focus_mode, Some("reddit"))
@@ -296,29 +352,33 @@ async fn scrape_url(
     }
 
     let mut req = config::apply_browser_headers(client.get(&target_url), &target_url)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9")
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
         .header("Accept-Encoding", "gzip, deflate, br");
 
     if timeout_secs > 0 {
         req = req.timeout(Duration::from_secs(timeout_secs));
     }
 
-    let resp = match req.send().await
-    {
+    let resp = match req.send().await {
         Ok(r) => r,
-        Err(_) => return None,
+        Err(_) => return ScrapeResult::Skip,
     };
+
+    let status = resp.status().as_u16();
+    if status == 403 || status == 429 || status == 503 {
+        return ScrapeResult::Blocked;
+    }
 
     if let Some(ct) = resp.headers().get("content-type") {
         let ct_str = ct.to_str().unwrap_or("");
         if !ct_str.contains("text/html") && !ct_str.contains("application/xhtml") {
-            return None;
+            return ScrapeResult::Skip;
         }
     }
 
     let bytes = match resp.bytes().await {
         Ok(b) => b,
-        Err(_) => return None,
+        Err(_) => return ScrapeResult::Skip,
     };
 
     let html_bytes = &bytes[..bytes.len().min(max_bytes)];
@@ -327,29 +387,25 @@ async fn scrape_url(
 
     if matches!(focus_mode, Some("youtube")) || target_url.contains("youtube.com/watch") {
         if let Some(desc) = extract_youtube_short_description(&html) {
-            return Some((title, desc));
+            return ScrapeResult::Ok(title, desc);
         }
     }
 
-    let mut text = extractor::extract_article_text(&html);
-
-    if lite_mode {
-        if text.len() < 120 { return None; }
-        if text.len() > 4_000 { text.truncate(4_000); }
-        return Some((title, text));
+    let text = extractor::extract_article_text(&html);
+    if text.len() < config::min_text_length() {
+        return ScrapeResult::Skip;
     }
-    if text.len() < config::min_text_length() { return None; }
-    
-    Some((title, text))
+
+    ScrapeResult::Ok(title, text)
 }
 
 fn extract_youtube_short_description(html: &str) -> Option<String> {
-    if let Ok(selector) = Selector::parse("meta[name='shortDescription']") {
+    if let Ok(selector) = Selector::parse("meta[name='description']") {
         let doc = Html::parse_document(html);
         if let Some(meta) = doc.select(&selector).next() {
             if let Some(content) = meta.value().attr("content") {
                 let cleaned = content.trim();
-                if !cleaned.is_empty() {
+                if !cleaned.is_empty() && cleaned.len() > 30 {
                     return Some(cleaned.to_string());
                 }
             }
@@ -359,30 +415,33 @@ fn extract_youtube_short_description(html: &str) -> Option<String> {
     let marker = "\"shortDescription\":\"";
     let start = html.find(marker)? + marker.len();
     let rest = &html[start..];
-    let end = rest.find("\"")?;
-    let raw = &rest[..end];
 
-    let cleaned = raw
-        .replace("\\n", " ")
-        .replace("\\\"", "\"")
-        .replace("\\u0026", "&")
-        .replace("\\/", "/")
-        .trim()
-        .to_string();
-
-    if cleaned.is_empty() {
-        None
-    } else {
-        Some(cleaned)
+    let mut end = 0;
+    let mut escaped = false;
+    for (i, c) in rest.char_indices() {
+        if escaped { escaped = false; continue; }
+        if c == '\\' { escaped = true; continue; }
+        if c == '"' { end = i; break; }
     }
+    if end == 0 { return None; }
+
+    let raw = &rest[..end];
+    let cleaned = raw.replace("\\n", " ").replace("\\\"", "\"").replace("\\u0026", "&").replace("\\/", "/").trim().to_string();
+    if cleaned.is_empty() { None } else { Some(cleaned) }
 }
+
+// =============================================================================
+// HTTP Client Builders — Fixed versions matching search.rs
+// =============================================================================
 
 fn build_search_client(proxy: Option<&str>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(16))
         .redirect(reqwest::redirect::Policy::limited(5))
         .pool_max_idle_per_host(5)
         .cookie_store(true)
+        .user_agent(config::random_user_agent())
         .tcp_nodelay(true)
         .gzip(true).brotli(true)
         .deflate(true)
@@ -397,11 +456,16 @@ fn build_search_client(proxy: Option<&str>) -> reqwest::Client {
     builder.build().expect("search HTTP client error")
 }
 
+/// FIXED: Added User-Agent, connect_timeout, tcp_nodelay (was completely bare before)
 fn build_scrape_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(config::scrape_timeout_secs()))
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::limited(5))
         .pool_max_idle_per_host(10)
+        .user_agent(config::random_user_agent())
+        .tcp_nodelay(true)
+        .cookie_store(true)
         .gzip(true).brotli(true).deflate(true)
         .build().expect("scrape HTTP client error")
 }
