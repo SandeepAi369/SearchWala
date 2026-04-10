@@ -1,3 +1,9 @@
+// ============================================================================
+// Swift Search Agent v4.1 - LLM Synthesis Engine
+// FIXED: Added summarize_direct() — no more race condition with channels
+// Research mode: 50 chunks / 32K context | Lite mode: 25 chunks / 16K context
+// ============================================================================
+
 use std::time::Duration;
 
 use axum::response::sse::Event;
@@ -10,10 +16,12 @@ use tokio::sync::mpsc;
 use crate::models::{LlmConfig, SourceResult};
 
 const MAX_CONTEXT_CHUNKS: usize = 25;
+const MAX_CONTEXT_CHUNKS_RESEARCH: usize = 50;
 const MAX_CONTEXT_CHARS: usize = 16_000;
-const DEFAULT_LLM_TIMEOUT_MS: u64 = 9_000;
-const FIRST_BATCH_WAIT_MS: u64 = 2_500;
-const PIPELINE_ACCUMULATION_MS: u64 = 1_200;
+const MAX_CONTEXT_CHARS_RESEARCH: usize = 32_000;
+const DEFAULT_LLM_TIMEOUT_MS: u64 = 45_000;
+const FIRST_BATCH_WAIT_MS: u64 = 60_000;
+const PIPELINE_ACCUMULATION_MS: u64 = 5_000;
 
 #[derive(Debug, Default)]
 pub struct LlmExecutionResult {
@@ -21,11 +29,105 @@ pub struct LlmExecutionResult {
     pub llm_error: Option<String>,
 }
 
+// =============================================================================
+// DIRECT SYNTHESIS — Takes scraped data directly, no channel race condition
+// This is the PRIMARY path used by search.rs
+// =============================================================================
+
+pub async fn summarize_direct(
+    query: &str,
+    llm_config: LlmConfig,
+    sources: &[SourceResult],
+    research_mode: bool,
+) -> LlmExecutionResult {
+    if sources.is_empty() {
+        return LlmExecutionResult {
+            llm_answer: None,
+            llm_error: Some("llm_skipped: no scraped content available".to_string()),
+        };
+    }
+
+    let context = build_ranked_context(query, sources, research_mode);
+    if context.is_empty() {
+        return LlmExecutionResult {
+            llm_answer: None,
+            llm_error: Some("llm_skipped: relevance filter produced empty context".to_string()),
+        };
+    }
+
+    tracing::info!(
+        "LLM direct synthesis: {} sources, context_len={}, research={}",
+        sources.len(),
+        context.len(),
+        research_mode
+    );
+
+    let client = build_client(&llm_config);
+    let model = namespaced_model(&llm_config.provider, &llm_config.model);
+    let timeout_ms = llm_config.timeout_ms.unwrap_or(DEFAULT_LLM_TIMEOUT_MS);
+
+    let (system_prompt, user_prompt) = build_prompts(query, &context, false);
+
+    let chat_req = ChatRequest::new(vec![
+        ChatMessage::system(system_prompt),
+        ChatMessage::user(user_prompt),
+    ]);
+
+    tracing::info!("LLM calling model={} provider={} timeout={}ms", model, llm_config.provider, timeout_ms);
+
+    let call_result = if timeout_ms == 0 {
+        client.exec_chat(&model, chat_req, None).await
+    } else {
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), client.exec_chat(&model, chat_req, None)).await {
+            Ok(result) => result,
+            Err(_) => {
+                return LlmExecutionResult {
+                    llm_answer: None,
+                    llm_error: Some(format!("llm_timeout: exceeded {}ms", timeout_ms)),
+                };
+            }
+        }
+    };
+
+    match call_result {
+        Ok(chat_res) => {
+            let answer = chat_res.first_text().unwrap_or("").trim().to_string();
+            if answer.is_empty() {
+                LlmExecutionResult {
+                    llm_answer: None,
+                    llm_error: Some("llm_empty_response".to_string()),
+                }
+            } else {
+                tracing::info!("LLM synthesis complete: {} chars", answer.len());
+                LlmExecutionResult {
+                    llm_answer: Some(answer),
+                    llm_error: None,
+                }
+            }
+        }
+        Err(err) => {
+            tracing::error!("LLM call failed: {}", err);
+            LlmExecutionResult {
+                llm_answer: None,
+                llm_error: Some(format!("llm_error: {err}")),
+            }
+        }
+    }
+}
+
+// =============================================================================
+// CHANNEL-BASED SYNTHESIS — Used by stream.rs (SSE streaming path)
+// =============================================================================
+
 pub async fn summarize_from_stream(
     query: &str,
     llm_config: LlmConfig,
     mut rx: mpsc::Receiver<SourceResult>,
+    research_mode: bool,
 ) -> LlmExecutionResult {
+    let max_chunks = if research_mode { MAX_CONTEXT_CHUNKS_RESEARCH } else { MAX_CONTEXT_CHUNKS };
+
+    // Wait much longer for first batch — scraping can take 30-60s
     let first = match tokio::time::timeout(Duration::from_millis(FIRST_BATCH_WAIT_MS), rx.recv()).await {
         Ok(Some(source)) => source,
         Ok(None) => {
@@ -44,14 +146,14 @@ pub async fn summarize_from_stream(
 
     let mut batch = vec![first];
     let collect_deadline = tokio::time::Instant::now() + Duration::from_millis(PIPELINE_ACCUMULATION_MS);
-    while batch.len() < MAX_CONTEXT_CHUNKS {
+    while batch.len() < max_chunks {
         match tokio::time::timeout_at(collect_deadline, rx.recv()).await {
             Ok(Some(source)) => batch.push(source),
             Ok(None) | Err(_) => break,
         }
     }
 
-    let context = build_ranked_context(query, &batch);
+    let context = build_ranked_context(query, &batch, research_mode);
     if context.is_empty() {
         return LlmExecutionResult {
             llm_answer: None,
@@ -106,6 +208,10 @@ pub async fn summarize_from_stream(
     }
 }
 
+// =============================================================================
+// Client & Model Helpers
+// =============================================================================
+
 pub(crate) fn build_client(config: &LlmConfig) -> Client {
     let mut builder = Client::builder();
 
@@ -137,7 +243,10 @@ pub(crate) fn namespaced_model(provider: &str, model: &str) -> String {
     }
 
     let provider = provider.trim().to_lowercase();
-    if provider == "cerebras"
+
+    // All OpenAI-compatible providers (custom endpoints) use the openai:: prefix
+    if provider == "openai_compatible"
+        || provider == "cerebras"
         || provider == "openrouter"
         || provider == "together"
         || provider == "fireworks"
@@ -154,17 +263,23 @@ pub(crate) fn namespaced_model(provider: &str, model: &str) -> String {
         "openai" | "anthropic" | "gemini" | "groq" | "ollama" | "xai" | "deepseek" | "cohere" | "zai" => {
             format!("{}::{}", provider, model)
         }
-        _ => model.to_string(),
+        _ => {
+            // Unknown provider — assume OpenAI-compatible
+            format!("openai::{}", model)
+        }
     }
 }
 
-fn build_ranked_context(_query: &str, sources: &[SourceResult]) -> String {
+fn build_ranked_context(_query: &str, sources: &[SourceResult], research_mode: bool) -> String {
     if sources.is_empty() {
         return String::new();
     }
 
+    let max_chunks = if research_mode { MAX_CONTEXT_CHUNKS_RESEARCH } else { MAX_CONTEXT_CHUNKS };
+    let max_chars = if research_mode { MAX_CONTEXT_CHARS_RESEARCH } else { MAX_CONTEXT_CHARS };
+
     let mut context = String::new();
-    for (idx, source) in sources.iter().take(MAX_CONTEXT_CHUNKS).enumerate() {
+    for (idx, source) in sources.iter().take(max_chunks).enumerate() {
         let block = format!(
             "[{}] {} {} ({})\n{}\n\n",
             idx + 1,
@@ -174,7 +289,7 @@ fn build_ranked_context(_query: &str, sources: &[SourceResult]) -> String {
             source.extracted_text.trim()
         );
 
-        if context.len() + block.len() > MAX_CONTEXT_CHARS {
+        if context.len() + block.len() > max_chars {
             break;
         }
         context.push_str(&block);
@@ -195,6 +310,8 @@ fn credibility_tag(url: &str) -> String {
         ("who.int", "WHO"),
         ("nature.com", "Nature"),
         ("sciencedirect.com", "ScienceDirect"),
+        ("arxiv.org", "arXiv"),
+        ("pubmed.ncbi", "PubMed"),
     ];
 
     if host.ends_with(".gov") || host.ends_with(".edu") {
@@ -210,6 +327,7 @@ fn credibility_tag(url: &str) -> String {
     let forum = [
         ("reddit.com", "Reddit"),
         ("stackexchange.com", "StackExchange"),
+        ("stackoverflow.com", "StackOverflow"),
         ("quora.com", "Quora"),
         ("news.ycombinator.com", "Hacker News"),
     ];
@@ -249,12 +367,19 @@ fn build_prompts(query: &str, context: &str, streaming: bool) -> (String, String
     (system, user)
 }
 
+// =============================================================================
+// SSE Streaming Synthesis — Used by stream.rs
+// =============================================================================
+
 pub async fn summarize_from_stream_sse(
     query: String,
     llm_config: LlmConfig,
     mut rx: mpsc::Receiver<SourceResult>,
     tx_sse: mpsc::Sender<Result<Event, std::convert::Infallible>>,
+    research_mode: bool,
 ) {
+    let max_chunks = if research_mode { MAX_CONTEXT_CHUNKS_RESEARCH } else { MAX_CONTEXT_CHUNKS };
+
     let first = match tokio::time::timeout(Duration::from_millis(FIRST_BATCH_WAIT_MS), rx.recv()).await {
         Ok(Some(source)) => source,
         Ok(None) | Err(_) => {
@@ -266,14 +391,14 @@ pub async fn summarize_from_stream_sse(
 
     let mut batch = vec![first];
     let collect_deadline = tokio::time::Instant::now() + Duration::from_millis(PIPELINE_ACCUMULATION_MS);
-    while batch.len() < MAX_CONTEXT_CHUNKS {
+    while batch.len() < max_chunks {
         match tokio::time::timeout_at(collect_deadline, rx.recv()).await {
             Ok(Some(source)) => batch.push(source),
             Ok(None) | Err(_) => break,
         }
     }
 
-    let context = build_ranked_context(&query, &batch);
+    let context = build_ranked_context(&query, &batch, research_mode);
     if context.is_empty() {
         let json = serde_json::json!({"type": "llm_error", "text": "llm_skipped: relevance filter produced empty context"}).to_string();
         let _ = tx_sse.send(Ok(Event::default().data(json))).await;
@@ -313,4 +438,59 @@ pub async fn summarize_from_stream_sse(
             let _ = tx_sse.send(Ok(Event::default().data(json))).await;
         }
     }
+}
+
+// =============================================================================
+// Dynamic Model Fetcher — GET /api/models
+// Pings provider's /v1/models endpoint and returns available models
+// =============================================================================
+
+pub async fn fetch_provider_models(
+    api_key: &str,
+    base_url: &str,
+) -> Result<Vec<String>, String> {
+    if api_key.is_empty() || base_url.is_empty() {
+        return Err("api_key and base_url are required".to_string());
+    }
+
+    let models_url = format!("{}v1/models", ensure_trailing_slash(base_url.trim()));
+    tracing::info!("Fetching models from: {}", models_url);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("client_error: {e}"))?;
+
+    let resp = client
+        .get(&models_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("request_failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("http_{}: models endpoint returned error", resp.status().as_u16()));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("json_parse_error: {e}"))?;
+
+    let mut models: Vec<String> = Vec::new();
+
+    if let Some(data) = json.get("data").and_then(|v| v.as_array()) {
+        for item in data {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                let id = id.trim().to_string();
+                if !id.is_empty() {
+                    models.push(id);
+                }
+            }
+        }
+    }
+
+    models.sort();
+    Ok(models)
 }

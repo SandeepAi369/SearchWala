@@ -1,5 +1,5 @@
 // ============================================================================
-// Swift-Search-RS v4.0.0
+// Swift-Search-RS v4.1.0
 // ============================================================================
 //
 // Native Rust meta-search + extraction + optional BYOK LLM synthesis.
@@ -195,7 +195,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
     let uptime = state.start_time.elapsed().as_secs();
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: "4.0.0".to_string(),
+        version: "4.1.0".to_string(),
         engines: config::enabled_engines(),
         uptime_seconds: uptime,
     })
@@ -204,7 +204,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
 /// GET /config - Configuration info
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
-        version: "4.0.0".to_string(),
+        version: "4.1.0".to_string(),
         engines: config::enabled_engines(),
         max_urls: config::max_urls(),
         scrape_timeout_secs: config::scrape_timeout_secs(),
@@ -222,17 +222,43 @@ async fn root_handler() -> impl IntoResponse {
     Html(BENCHMARK_UI)
 }
 
+/// POST /api/models - Dynamic model fetcher
+/// Pings the provider's /v1/models endpoint and returns available model IDs
+async fn models_handler(
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let api_key = body.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let base_url = body.get("base_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if api_key.is_empty() || base_url.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "api_key and base_url are required" })),
+        ));
+    }
+
+    match llm::fetch_provider_models(&api_key, &base_url).await {
+        Ok(models) => Ok(Json(serde_json::json!({ "models": models }))),
+        Err(err) => Err((
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": err })),
+        )),
+    }
+}
+
 /// GET /about - Service metadata JSON endpoint
 async fn about_handler() -> impl IntoResponse {
     Json(serde_json::json!({
         "name": "Swift-Search-RS",
-        "version": "4.0.0",
+        "version": "4.1.0",
         "language": "Rust",
         "description": "Ultra-fast native meta-search & scrape API with optional BYOK LLM synthesis",
         "endpoints": {
-            "POST /search": "Search and scrape (body: {\"query\":\"...\",\"llm\":{...optional...}})",
+            "POST /search": "Search and scrape",
             "POST /search/lite-llm": "LLM synthesis with forced lite mode",
             "POST /search/research-llm": "LLM synthesis with forced research mode",
+            "POST /search/stream": "SSE streaming endpoint",
+            "POST /api/models": "Dynamic model fetcher for any OpenAI-compatible provider",
             "GET /health": "Health check",
             "GET /config": "Current configuration"
         }
@@ -256,7 +282,7 @@ async fn main() {
     let engines = config::enabled_engines();
 
     tracing::info!("============================================");
-    tracing::info!("  Swift-Search-RS v4.0.0");
+    tracing::info!("  Swift-Search-RS v4.1.0");
     tracing::info!("  Language: Rust");
     tracing::info!("  Engines: {:?}", engines);
     tracing::info!("  Max URLs: {}", config::max_urls());
@@ -283,6 +309,7 @@ async fn main() {
         .route("/search/lite-llm", post(search_lite_llm_handler))
         .route("/search/research-llm", post(search_research_llm_handler))
         .route("/search/stream", post(stream_handler))
+        .route("/api/models", post(models_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

@@ -480,6 +480,29 @@ pub fn spec_for(name: &str) -> Option<GenericEngineSpec> {
         });
     }
 
+    // ── New engines added in v4.1 ──
+
+    if n.starts_with("marginalia") {
+        return Some(GenericEngineSpec {
+            endpoint_template: "https://search.marginalia.nu/search?query={query}",
+            pages: 2,
+        });
+    }
+
+    if n.starts_with("right_dao") {
+        return Some(GenericEngineSpec {
+            endpoint_template: "https://rightdao.com/search?q={query}",
+            pages: 2,
+        });
+    }
+
+    if n.starts_with("stract") {
+        return Some(GenericEngineSpec {
+            endpoint_template: "https://stract.com/search?q={query}",
+            pages: 2,
+        });
+    }
+
     None
 }
 
