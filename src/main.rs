@@ -30,7 +30,7 @@ use std::time::Instant;
 use axum::{
     extract::Json,
     http::StatusCode,
-    response::{IntoResponse, sse::{Event, Sse}},
+    response::{Html, IntoResponse, sse::{Event, Sse}},
     routing::{get, post},
     Router,
 };
@@ -41,6 +41,8 @@ use models::*;
 struct AppState {
     start_time: Instant,
 }
+
+const BENCHMARK_UI: &str = include_str!("../benchmark_ui.html");
 
 /// POST /search - Main search endpoint
 async fn search_handler(
@@ -123,6 +125,11 @@ async fn config_handler() -> impl IntoResponse {
 
 /// GET / - Root endpoint (for uptime pings)
 async fn root_handler() -> impl IntoResponse {
+    Html(BENCHMARK_UI)
+}
+
+/// GET /about - Service metadata JSON endpoint
+async fn about_handler() -> impl IntoResponse {
     Json(serde_json::json!({
         "name": "Swift-Search-RS",
         "version": "4.0.0",
@@ -170,9 +177,13 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(root_handler))
+        .route("/index.html", get(root_handler))
+        .route("/benchmark_ui.html", get(root_handler))
+        .route("/ui", get(root_handler))
+        .route("/about", get(about_handler))
         .route("/health", get(health_handler))
         .route("/config", get(config_handler))
-        .route("/search", post(search_handler))
+        .route("/search", get(root_handler).post(search_handler))
         .route("/search/stream", post(stream_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);

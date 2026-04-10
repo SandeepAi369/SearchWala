@@ -75,7 +75,7 @@
           <h1 class="text-2xl md:text-4xl font-bold tracking-tight">Swift-Search-RS Research Console</h1>
           <p class="mt-1 text-sm md:text-base text-emerald-900/80">Source-first benchmark flow: instant sources, optional cited LLM synthesis.</p>
         </div>
-        <span class="text-xs md:text-sm px-3 py-1.5 rounded-full border border-emerald-800/25 bg-emerald-50 text-emerald-900">Endpoint: http://localhost:8000/search</span>
+        <span id="endpointLabel" class="text-xs md:text-sm px-3 py-1.5 rounded-full border border-emerald-800/25 bg-emerald-50 text-emerald-900">Endpoint: /search</span>
       </div>
 
       <div class="mt-6 grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -184,7 +184,8 @@
   </main>
 
   <script>
-    const endpoint = "http://localhost:8000/search";
+    const endpointCandidates = resolveEndpointCandidates();
+    let activeEndpoint = endpointCandidates[0] || "http://127.0.0.1:8000/search";
 
     const dom = {
       queryInput: document.getElementById("queryInput"),
@@ -207,10 +208,24 @@
       sourcesList: document.getElementById("sourcesList"),
       answerBox: document.getElementById("answerBox"),
       citationBox: document.getElementById("citationBox"),
+      endpointLabel: document.getElementById("endpointLabel"),
     };
 
     function nowMs() {
       return performance.now();
+    }
+
+    function resolveEndpointCandidates() {
+      const candidates = [];
+
+      if (window.location.origin && window.location.origin !== "null") {
+        candidates.push(`${window.location.origin}/search`);
+      }
+
+      candidates.push("http://127.0.0.1:8000/search");
+      candidates.push("http://localhost:8000/search");
+
+      return Array.from(new Set(candidates));
     }
 
     function escapeHtml(str) {
@@ -222,7 +237,28 @@
         .replaceAll("'", "&#039;");
     }
 
+    function cleanDisplayText(str, maxLen = 4000) {
+      let out = String(str || "");
+
+      // Remove chain-of-thought style wrappers often returned by some models.
+      out = out.replace(/<think>[\s\S]*?<\/think>/gi, "");
+      out = out.replace(/<\|[^|]+\|>/g, "");
+
+      // Remove accidental SSE-like prefixes if they leak through.
+      out = out.replace(/^data:\s*/gim, "");
+
+      // Keep printable text only.
+      out = out.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+
+      out = out.trim();
+      if (out.length > maxLen) {
+        out = out.slice(0, maxLen) + "...";
+      }
+      return out;
+    }
+
     function setIdle() {
+      dom.endpointLabel.textContent = `Endpoint: ${activeEndpoint}`;
       dom.searchMs.textContent = "-";
       dom.searchStatus.textContent = "idle";
       dom.llmMs.textContent = "-";
@@ -252,10 +288,13 @@
       for (const [idx, item] of items.entries()) {
         const li = document.createElement("li");
         li.className = "p-3 rounded-xl border border-emerald-900/15 bg-white/75";
-        const snippet = (item.snippet || "").slice(0, 260);
+        const rawSnippet = item.snippet || item.extracted_text || "";
+        const snippet = cleanDisplayText(rawSnippet, 260);
+        const title = cleanDisplayText(item.title || item.url, 180);
+        const url = String(item.url || "").trim();
         li.innerHTML = `
           <div class="text-xs text-emerald-900/70">#${idx + 1} • ${escapeHtml(item.engine || "unknown")}</div>
-          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="text-teal-800 hover:text-teal-900 font-medium break-all">${escapeHtml(item.title || item.url)}</a>
+          <a href="${escapeHtml(url)}" target="_blank" rel="noopener" class="text-teal-800 hover:text-teal-900 font-medium break-all">${escapeHtml(title)}</a>
           <p class="text-emerald-950/80 mt-1">${escapeHtml(snippet)}</p>
         `;
         dom.sourcesList.appendChild(li);
@@ -268,6 +307,7 @@
         return;
       }
       for (const [idx, item] of items.slice(0, 10).entries()) {
+        if (!item || !item.url) continue;
         const a = document.createElement("a");
         a.href = item.url;
         a.target = "_blank";
@@ -279,26 +319,50 @@
     }
 
     async function postSearch(payload) {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      let lastError = new Error("No working API endpoint found");
 
-      const text = await res.text();
-      let data = {};
-      try {
-        data = text ? JSON.parse(text) : {};
-      } catch {
-        throw new Error(`Invalid JSON response (status ${res.status})`);
+      for (const endpoint of endpointCandidates) {
+        try {
+          const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          const text = await res.text();
+          let data = {};
+          try {
+            data = text ? JSON.parse(text) : {};
+          } catch {
+            // Some users open UI from a static host/path where /search returns HTML instead of JSON.
+            if (text.trim().startsWith("<!doctype html") || text.trim().startsWith("<html")) {
+              lastError = new Error(`Endpoint ${endpoint} returned HTML instead of JSON`);
+              continue;
+            }
+            lastError = new Error(`Invalid JSON response from ${endpoint} (status ${res.status})`);
+            continue;
+          }
+
+          if (!res.ok) {
+            const msg = data?.error || `Request failed with ${res.status}`;
+            // Try next endpoint for common local-host mismatches.
+            if (res.status === 404 || res.status === 405) {
+              lastError = new Error(msg);
+              continue;
+            }
+            throw new Error(msg);
+          }
+
+          activeEndpoint = endpoint;
+          dom.endpointLabel.textContent = `Endpoint: ${activeEndpoint}`;
+          return data;
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          continue;
+        }
       }
 
-      if (!res.ok) {
-        const msg = data?.error || `Request failed with ${res.status}`;
-        throw new Error(msg);
-      }
-
-      return data;
+      throw lastError;
     }
 
     function basePayload(query, focusMode, maxResults) {
@@ -391,7 +455,10 @@
         dom.llmStatus.textContent = phaseB.llm_error ? "fallback" : "complete";
         dom.llmError.textContent = phaseB.llm_error || "none";
 
-        const answer = phaseB.llm_answer || "No LLM answer returned. Using source-only fallback.";
+        const answer = cleanDisplayText(
+          phaseB.llm_answer || "No LLM answer returned. Using source-only fallback.",
+          12000
+        );
         dom.answerBox.textContent = answer;
 
         const citations = Array.isArray(phaseB.search_results) ? phaseB.search_results : sources;
