@@ -1,12 +1,12 @@
 // ============================================================================
 // Swift Search Agent v4.0 - Search Orchestrator
-// Full pipeline: Engines -> URLs -> Scrape -> Extract -> Optional BYOK LLM
 // ============================================================================
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use scraper::{Html, Selector};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 
@@ -15,14 +15,15 @@ use crate::engines;
 use crate::extractor;
 use crate::llm;
 use crate::models::*;
+use crate::proxy_pool::ProxyPoolManager;
 use crate::url_utils;
 
-/// Execute the full search pipeline.
 pub async fn execute_search(
     query: &str,
     max_results: Option<usize>,
     focus_mode: Option<String>,
     llm_config: Option<LlmConfig>,
+    enable_copilot: Option<bool>,
 ) -> SearchResponse {
     let start = std::time::Instant::now();
 
@@ -34,39 +35,100 @@ pub async fn execute_search(
     let is_lite_mode = matches!(normalized_focus.as_deref(), Some("lite"));
 
     let max_urls = if is_lite_mode {
-        max_results.unwrap_or_else(config::max_urls).min(25)
+        max_results.unwrap_or_else(config::max_urls).min(35)
     } else {
-        max_results.unwrap_or_else(config::max_urls)
+        max_results.unwrap_or_else(config::max_urls).min(900)
     };
 
-    let effective_query = apply_focus_mode(query, normalized_focus.as_deref());
+    let mut effective_query = apply_focus_mode(query, normalized_focus.as_deref());
+    let mut copilot_out = None;
+
+    if enable_copilot.unwrap_or(false) {
+        if let Some(cfg) = &llm_config {
+            let rewritten = crate::copilot::rewrite_query(&effective_query, cfg).await;
+            tracing::info!("Swift-Copilot rewrote query: [{}] -> [{}]", effective_query, rewritten);
+            copilot_out = Some(rewritten.clone());
+            effective_query = rewritten;
+        }
+    }
+
+    let query_variations = if is_lite_mode {
+        vec![effective_query.clone()]
+    } else {
+        engines::generate_query_variations(&effective_query)
+    };
+
+    let jitter_min = config::jitter_min_ms();
+    let jitter_max = config::jitter_max_ms();
 
     tracing::info!(
-        "NEW SEARCH query={} focus_mode={:?} lite_mode={} max_urls={}",
+        "NEW SEARCH query={} focus_mode={:?} lite_mode={} max_urls={} snowball_variations={}",
         &effective_query[..effective_query.len().min(120)],
         normalized_focus,
         is_lite_mode,
-        max_urls
+        max_urls,
+        query_variations.len()
     );
 
-    // --- Phase 1: Meta-search (all engines concurrently) ---------------------
     let enabled = config::enabled_engines();
     let engine_instances = engines::get_engines(&enabled);
-    let client = build_search_client();
+    let base_search_client = build_search_client(None);
+    let proxy_pool = ProxyPoolManager::from_env();
+    if proxy_pool.has_proxies() {
+        tracing::info!("Proxy pool loaded with {} entries", proxy_pool.len());
+    }
+    let engine_concurrency = config::engine_concurrency().max(1).min(24);
+    let engine_semaphore = Arc::new(Semaphore::new(engine_concurrency));
 
-    let search_futures: Vec<_> = engine_instances
-        .iter()
-        .map(|engine| {
-            let client = client.clone();
-            let query = effective_query.clone();
-            let name = engine.name().to_string();
-            async move {
-                let results = engine.search(&client, &query).await;
-                tracing::info!("Engine [{}]: {} results", name, results.len());
+    let mut search_futures = Vec::new();
+    let mut dispatch_index: u64 = 0;
+
+    for variation in &query_variations {
+        for engine in &engine_instances {
+            let base_client = base_search_client.clone();
+            let query_variant = variation.clone();
+            let engine_name = engine.name().to_string();
+            let jitter = config::random_jitter_ms(jitter_min, jitter_max);
+            let proxy_hint = proxy_pool.next_proxy();
+            let pool = proxy_pool.clone();
+            let sem = engine_semaphore.clone();
+            let extra_spread = (dispatch_index % engine_concurrency as u64) * 15;
+            let engine = engine.as_ref();
+            dispatch_index += 1;
+
+            search_futures.push(async move {
+                let _permit = match sem.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => return Vec::new(),
+                };
+
+                let delay = jitter.saturating_add(extra_spread);
+                if delay > 0 {
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+
+                let client = if let Some(proxy) = proxy_hint.as_deref() {
+                    tracing::debug!("Engine {} using proxy hint {}", engine_name, proxy);
+                    build_search_client(Some(proxy))
+                } else {
+                    base_client
+                };
+
+                let results = engine.search(&client, &query_variant).await;
+
+                if let Some(proxy) = proxy_hint {
+                    if results.is_empty() {
+                        pool.mark_proxy_failure(&proxy);
+                    } else {
+                        pool.mark_proxy_success(&proxy);
+                    }
+                }
+
+                tracing::info!("Engine [{}] variant [{}]: {} results", engine_name, query_variant, results.len());
                 results
-            }
-        })
-        .collect();
+            });
+        }
+    }
 
     let engine_results = futures::future::join_all(search_futures).await;
 
@@ -76,20 +138,12 @@ pub async fn execute_search(
     }
 
     let total_raw = all_results.len();
-    tracing::info!(
-        "Meta-search: {} total raw results from {} engines",
-        total_raw,
-        enabled.len()
-    );
+    tracing::info!("Meta-search total raw results={} engines={}", total_raw, enabled.len());
 
-    // --- Phase 2: URL deduplication ------------------------------------------
     let raw_urls: Vec<String> = all_results.iter().map(|r| r.url.clone()).collect();
-    let unique_urls = url_utils::deduplicate(raw_urls, max_urls);
+    let unique_urls = url_utils::deduplicate(raw_urls, max_urls, normalized_focus.as_deref());
     let deduped_count = unique_urls.len();
 
-    tracing::info!("Deduplicated: {} -> {} URLs", total_raw, deduped_count);
-
-    // Build URL -> engine map and expose classic raw search list for fallback UI.
     let mut engine_by_url: HashMap<String, String> = HashMap::new();
     let mut seen = HashSet::new();
     let mut search_results: Vec<SearchHit> = Vec::new();
@@ -111,8 +165,7 @@ pub async fn execute_search(
         }
     }
 
-    // --- Phase 3: Concurrent scrape + extraction with ghost-stream to LLM ----
-    let concurrency = config::concurrency();
+    let concurrency = config::concurrency().min(40);
     let semaphore = Arc::new(Semaphore::new(concurrency));
     let scrape_client = build_scrape_client();
 
@@ -126,25 +179,13 @@ pub async fn execute_search(
     };
 
     let mut join_set = JoinSet::new();
-    let scrape_timeout_secs = if is_lite_mode {
-        config::scrape_timeout_secs().min(4)
-    } else {
-        config::scrape_timeout_secs()
-    };
-    let scrape_max_bytes = if is_lite_mode {
-        config::max_html_bytes().min(180_000)
-    } else {
-        config::max_html_bytes()
-    };
-    let min_char_threshold = if is_lite_mode {
-        config::min_text_length().min(400)
-    } else {
-        config::min_text_length()
-    };
+    let scrape_timeout_secs = config::scrape_timeout_secs();
+    let scrape_max_bytes = config::max_html_bytes();
 
     for url in unique_urls {
         let sem = semaphore.clone();
         let client = scrape_client.clone();
+        let focus = normalized_focus.clone();
 
         let engine_name = engine_by_url
             .get(&url)
@@ -159,6 +200,7 @@ pub async fn execute_search(
                 scrape_timeout_secs,
                 scrape_max_bytes,
                 is_lite_mode,
+                focus.as_deref(),
             )
             .await
             {
@@ -180,20 +222,17 @@ pub async fn execute_search(
     let mut results: Vec<SourceResult> = Vec::new();
     while let Some(join_result) = join_set.join_next().await {
         match join_result {
-            Ok(Some(result)) if result.char_count >= min_char_threshold => {
+            Ok(Some(result)) => {
                 if let Some(tx) = maybe_sender.as_ref() {
                     let _ = tx.send(result.clone()).await;
                 }
                 results.push(result);
             }
             Ok(_) => {}
-            Err(err) => {
-                tracing::debug!("Scrape task join error: {}", err);
-            }
+            Err(err) => tracing::debug!("Scrape task join error: {}", err),
         }
     }
 
-    // Close sender so LLM task can finish cleanly once channel is drained.
     drop(maybe_sender);
 
     let llm_result = if let Some(handle) = llm_handle {
@@ -208,27 +247,18 @@ pub async fn execute_search(
         llm::LlmExecutionResult::default()
     };
 
-    let sources_processed = results.len();
-    let elapsed = start.elapsed().as_secs_f64();
-
     results.sort_by(|a, b| b.char_count.cmp(&a.char_count));
-
-    tracing::info!(
-        "Scraped {}/{} URLs in {:.2}s",
-        sources_processed,
-        deduped_count,
-        elapsed
-    );
 
     SearchResponse {
         query: query.to_string(),
-        sources_found: deduped_count,
-        sources_processed,
+        sources_found: total_raw,
+        sources_processed: deduped_count,
         results,
         search_results,
+        copilot_query: copilot_out,
         llm_answer: llm_result.llm_answer,
         llm_error: llm_result.llm_error,
-        elapsed_seconds: (elapsed * 100.0).round() / 100.0,
+        elapsed_seconds: start.elapsed().as_secs_f64(),
         engine_stats: EngineStats {
             engines_queried: enabled,
             total_raw_results: total_raw,
@@ -242,34 +272,42 @@ fn apply_focus_mode(query: &str, focus_mode: Option<&str>) -> String {
     match focus_mode {
         Some("reddit") => format!("{} site:reddit.com", base),
         Some("youtube") => format!("{} site:youtube.com", base),
-        Some("academic") => {
-            format!("{} site:edu OR site:gov OR site:nature.com", base)
-        }
-        Some("lite") | _ => base.to_string(),
+        Some("academic") => format!("{} site:edu OR site:gov OR site:nature.com", base),
+        Some("research") | Some("lite") | _ => base.to_string(),
     }
 }
 
-/// Scrape a single URL and extract article text.
 async fn scrape_url(
     client: &reqwest::Client,
     url: &str,
     timeout_secs: u64,
     max_bytes: usize,
-    lite_mode: bool,
+    _lite_mode: bool,
+    focus_mode: Option<&str>,
 ) -> Option<(String, String)> {
-    let resp = match client
-        .get(url)
-        .header("User-Agent", config::random_user_agent())
+    let mut target_url = url.to_string();
+
+    if matches!(focus_mode, Some("reddit")) && target_url.contains("reddit.com/") && !target_url.contains("old.reddit.com") {
+        target_url = target_url
+            .replace("www.reddit.com", "old.reddit.com")
+            .replace("reddit.com", "old.reddit.com");
+    }
+
+    let mut req = client
+        .get(&target_url)
         .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9")
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .header("Accept-Encoding", "gzip, deflate, br")
-        .timeout(Duration::from_secs(timeout_secs))
-        .send()
-        .await
-    {
+        .header("Accept-Encoding", "gzip, deflate, br");
+
+    req = config::apply_browser_headers(req, &target_url);
+
+    if timeout_secs > 0 {
+        req = req.timeout(Duration::from_secs(timeout_secs));
+    }
+
+    let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
-            tracing::debug!("Fetch failed {}: {}", url, e);
+            tracing::debug!("Fetch failed {}: {}", target_url, e);
             return None;
         }
     };
@@ -277,7 +315,6 @@ async fn scrape_url(
     if let Some(ct) = resp.headers().get("content-type") {
         let ct_str = ct.to_str().unwrap_or("");
         if !ct_str.contains("text/html") && !ct_str.contains("application/xhtml") {
-            tracing::debug!("Skipping non-HTML content type: {}", ct_str);
             return None;
         }
     }
@@ -287,51 +324,88 @@ async fn scrape_url(
         Err(_) => return None,
     };
 
-    if bytes.len() > max_bytes {
-        tracing::debug!("Page too large ({}B > {}B): {}", bytes.len(), max_bytes, url);
-    }
-
     let html_bytes = &bytes[..bytes.len().min(max_bytes)];
     let html = String::from_utf8_lossy(html_bytes).to_string();
-
     let title = extractor::extract_title(&html);
-    let mut text = extractor::extract_article_text(&html);
 
-    if lite_mode {
-        if text.len() < 120 {
-            return None;
+    if matches!(focus_mode, Some("youtube")) || target_url.contains("youtube.com/watch") {
+        if let Some(desc) = extract_youtube_short_description(&html) {
+            return Some((title, desc));
         }
-        if text.len() > 4_000 {
-            text.truncate(4_000);
-        }
-        return Some((title, text));
     }
 
-    if text.len() < config::min_text_length() {
-        return None;
-    }
-
+    let text = extractor::extract_article_text(&html);
     Some((title, text))
 }
 
-/// Build HTTP client for search engine queries.
-fn build_search_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .pool_max_idle_per_host(5)
+fn extract_youtube_short_description(html: &str) -> Option<String> {
+    if let Ok(selector) = Selector::parse("meta[name='shortDescription']") {
+        let doc = Html::parse_document(html);
+        if let Some(meta) = doc.select(&selector).next() {
+            if let Some(content) = meta.value().attr("content") {
+                let cleaned = content.trim();
+                if !cleaned.is_empty() {
+                    return Some(cleaned.to_string());
+                }
+            }
+        }
+    }
+
+    let marker = "\"shortDescription\":\"";
+    let start = html.find(marker)? + marker.len();
+    let rest = &html[start..];
+    let end = rest.find("\"")?;
+    let raw = &rest[..end];
+
+    let cleaned = raw
+        .replace("\\n", " ")
+        .replace("\\\"", "\"")
+        .replace("\\u0026", "&")
+        .replace("\\/", "/")
+        .trim()
+        .to_string();
+
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+fn build_search_client(proxy: Option<&str>) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(16))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .pool_max_idle_per_host(10)
+        .cookie_store(true)
+        .user_agent(config::random_user_agent())
+        .tcp_nodelay(true)
         .gzip(true)
         .brotli(true)
+        .deflate(true)
+        .https_only(false);
+
+    if let Some(proxy_url) = proxy {
+        match reqwest::Proxy::all(proxy_url) {
+            Ok(proxy_cfg) => {
+                builder = builder.proxy(proxy_cfg);
+            }
+            Err(err) => {
+                tracing::warn!("Invalid proxy {}: {}", proxy_url, err);
+            }
+        }
+    }
+
+    builder
         .build()
         .expect("Failed to build search HTTP client")
 }
 
-/// Build HTTP client for web scraping (more generous timeouts).
 fn build_scrape_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(config::scrape_timeout_secs()))
         .redirect(reqwest::redirect::Policy::limited(5))
-        .pool_max_idle_per_host(10)
+        .pool_max_idle_per_host(12)
         .gzip(true)
         .brotli(true)
         .deflate(true)

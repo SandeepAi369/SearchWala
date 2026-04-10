@@ -14,8 +14,8 @@ tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 
-# HTTP client (rustls = pure Rust TLS, no system OpenSSL needed)
-reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "brotli", "deflate", "cookies", "rustls-tls"] }
+# HTTP client (rustls + socks proxy support, portable in minimal environments)
+reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "brotli", "deflate", "cookies", "rustls-tls", "socks"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -53,6 +53,7 @@ urlencoding = "2"
 
 # Futures utilities (join_all for concurrent engine queries)
 futures = "0.3"
+tokio-stream = "0.1.18"
 
 [profile.release]
 opt-level = 3

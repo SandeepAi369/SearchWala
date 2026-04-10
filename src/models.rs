@@ -20,10 +20,12 @@ pub struct SearchRequest {
     pub query: String,
     /// Max number of URLs to scrape (default: from config)
     pub max_results: Option<usize>,
-    /// Optional focus mode: reddit | youtube | academic | lite.
+    /// Optional focus mode: research | academic | reddit | youtube | lite.
     pub focus_mode: Option<String>,
     /// Optional BYOK LLM config for synthesized answer generation.
     pub llm: Option<LlmConfig>,
+    /// Enable the Swift Copilot pre-computation rewriter
+    pub enable_copilot: Option<bool>,
 }
 
 // --- Response ---------------------------------------------------------------
@@ -35,6 +37,7 @@ pub struct SearchResponse {
     pub sources_processed: usize,
     pub results: Vec<SourceResult>,
     pub search_results: Vec<SearchHit>,
+    pub copilot_query: Option<String>,
     pub llm_answer: Option<String>,
     pub llm_error: Option<String>,
     pub elapsed_seconds: f64,
@@ -94,5 +97,9 @@ pub struct ConfigResponse {
     pub max_urls: usize,
     pub scrape_timeout_secs: u64,
     pub concurrent_scrapes: usize,
+    pub concurrent_engines: usize,
+    pub jitter_min_ms: u64,
+    pub jitter_max_ms: u64,
+    pub proxy_cooldown_secs: u64,
     pub user_agents_count: usize,
 }

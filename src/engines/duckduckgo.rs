@@ -1,13 +1,15 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// DuckDuckGo Search Engine — HTML scraping approach
+// DuckDuckGo Search Engine — Multi-page HTML scraping
 // ══════════════════════════════════════════════════════════════════════════════
 
-use crate::config;
 use crate::models::RawSearchResult;
 use reqwest::Client;
 use scraper::{Html, Selector};
+use std::collections::HashSet;
 
 pub struct DuckDuckGo;
+
+const PAGES: usize = 2;
 
 #[async_trait::async_trait]
 impl super::SearchEngine for DuckDuckGo {
@@ -16,99 +18,96 @@ impl super::SearchEngine for DuckDuckGo {
     }
 
     async fn search(&self, client: &Client, query: &str) -> Vec<RawSearchResult> {
-        let url = "https://html.duckduckgo.com/html/";
-        let ua = config::random_user_agent();
+        let mut all_results = Vec::new();
+        let mut seen_urls: HashSet<String> = HashSet::new();
 
-        let resp = match client
-            .post(url)
-            .header("User-Agent", ua)
-            .header("Referer", "https://duckduckgo.com/")
-            .header("Accept", "text/html,application/xhtml+xml")
-            .header("Accept-Language", "en-US,en;q=0.9")
-            .form(&[("q", query), ("kl", "us-en")])
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!("DuckDuckGo request failed: {}", e);
-                return vec![];
+        for page in 0..PAGES {
+            let offset = page * 20; // Lite offset approximation or just generic
+            
+            // lite.duckduckgo.com/lite/ takes POST with q, s, dc, etc.
+            let mut params = vec![
+                ("q".to_string(), query.to_string()),
+            ];
+            
+            if page > 0 {
+                params.push(("s".to_string(), offset.to_string()));
+                params.push(("dc".to_string(), (offset + 1).to_string()));
             }
-        };
 
-        let html_text = match resp.text().await {
-            Ok(t) => t,
-            Err(_) => return vec![],
-        };
+            let req = crate::config::apply_browser_headers(client
+                .post("https://lite.duckduckgo.com/lite/"), "https://lite.duckduckgo.com/lite/");
+            let resp = match req
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Origin", "https://lite.duckduckgo.com")
+                .header("Referer", "https://lite.duckduckgo.com/")
+                .form(&params)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!("DuckDuckGo page {} request failed: {}", page, e);
+                    break;
+                }
+            };
 
-        parse_ddg_html(&html_text)
+            let html_text = match resp.text().await {
+                Ok(t) => t,
+                Err(_) => break,
+            };
+
+            let page_results = parse_duckduckgo_lite_html(&html_text);
+            if page_results.is_empty() {
+                break;
+            }
+
+            for r in page_results {
+                if seen_urls.insert(r.url.clone()) {
+                    all_results.push(r);
+                }
+            }
+        }
+
+        tracing::info!("DuckDuckGo total: {} results across {} pages", all_results.len(), PAGES);
+        all_results
     }
 }
 
-fn parse_ddg_html(html: &str) -> Vec<RawSearchResult> {
-    let document = Html::parse_document(html);
+fn parse_duckduckgo_lite_html(html: &str) -> Vec<RawSearchResult> {
     let mut results = Vec::new();
+    let document = Html::parse_document(html);
+    let row_sel = Selector::parse("tr").unwrap();
+    let title_sel = Selector::parse("a.result-snippet").unwrap();
+    let snippet_sel = Selector::parse("td.result-snippet").unwrap();
 
-    // DuckDuckGo HTML results use .result class with .result__a for links
-    let result_selector = Selector::parse(".result").unwrap();
-    let link_selector = Selector::parse(".result__a").unwrap();
-    let snippet_selector = Selector::parse(".result__snippet").unwrap();
+    let mut current_title = String::new();
+    let mut current_url = String::new();
 
-    for element in document.select(&result_selector) {
-        let link = match element.select(&link_selector).next() {
-            Some(a) => a,
-            None => continue,
-        };
-
-        // Extract href — DDG uses redirect URLs, need to extract actual URL
-        let href = match link.value().attr("href") {
-            Some(h) => h,
-            None => continue,
-        };
-
-        // DDG wraps URLs in a redirect: //duckduckgo.com/l/?uddg=ENCODED_URL&...
-        let actual_url = extract_ddg_url(href);
-        if actual_url.is_empty() {
-            continue;
+    for row in document.select(&row_sel) {
+        if let Some(a) = row.select(&title_sel).next() {
+            if let Some(href) = a.value().attr("href") {
+                if !href.starts_with('/') {
+                    current_url = href.to_string();
+                    current_title = a.text().collect::<String>().trim().to_string();
+                }
+            }
+        } else if !current_url.is_empty() && !current_title.is_empty() {
+            if let Some(td) = row.select(&snippet_sel).next() {
+                let snippet = td.text().collect::<String>().trim().to_string();
+                if !snippet.is_empty() {
+                    results.push(RawSearchResult {
+                        engine: "duckduckgo".to_string(),
+                        title: current_title.clone(),
+                        url: current_url.clone(),
+                        snippet,
+                    });
+                }
+                current_title = String::new();
+                current_url = String::new();
+            }
         }
-
-        let title = link.text().collect::<String>().trim().to_string();
-
-        let snippet = element
-            .select(&snippet_selector)
-            .next()
-            .map(|s| s.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-
-        results.push(RawSearchResult {
-            url: actual_url,
-            title,
-            snippet,
-            engine: "duckduckgo".to_string(),
-        });
     }
-
-    tracing::debug!("DuckDuckGo: {} results parsed", results.len());
+    
     results
-}
-
-/// Extract actual URL from DDG redirect format
-fn extract_ddg_url(href: &str) -> String {
-    // DDG format: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=...
-    if let Some(pos) = href.find("uddg=") {
-        let encoded = &href[pos + 5..];
-        let end = encoded.find('&').unwrap_or(encoded.len());
-        let encoded_url = &encoded[..end];
-        match urlencoding::decode(encoded_url) {
-            Ok(decoded) => return decoded.to_string(),
-            Err(_) => {}
-        }
-    }
-
-    // Direct URL (no redirect)
-    if href.starts_with("http://") || href.starts_with("https://") {
-        return href.to_string();
-    }
-
-    String::new()
 }

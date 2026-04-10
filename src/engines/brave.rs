@@ -1,13 +1,15 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Brave Search Engine — HTML scraping
+// Brave Search Engine — Multi-page HTML scraping
 // ══════════════════════════════════════════════════════════════════════════════
 
-use crate::config;
 use crate::models::RawSearchResult;
 use reqwest::Client;
 use scraper::{Html, Selector};
+use std::collections::HashSet;
 
 pub struct Brave;
+
+const PAGES: usize = 3;
 
 #[async_trait::async_trait]
 impl super::SearchEngine for Brave {
@@ -16,33 +18,50 @@ impl super::SearchEngine for Brave {
     }
 
     async fn search(&self, client: &Client, query: &str) -> Vec<RawSearchResult> {
-        let url = format!(
-            "https://search.brave.com/search?q={}&source=web",
-            urlencoding::encode(query)
-        );
-        let ua = config::random_user_agent();
+        let mut all_results = Vec::new();
+        let mut seen_urls: HashSet<String> = HashSet::new();
 
-        let resp = match client
-            .get(&url)
-            .header("User-Agent", ua)
-            .header("Accept", "text/html,application/xhtml+xml")
-            .header("Accept-Language", "en-US,en;q=0.9")
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!("Brave request failed: {}", e);
-                return vec![];
+        for page in 0..PAGES {
+            let offset = page * 10;
+            let url = format!(
+                "https://search.brave.com/search?q={}&source=web&offset={}",
+                urlencoding::encode(query),
+                offset
+            );
+
+            let req = crate::config::apply_browser_headers(client
+                .get(&url), &url);
+            let resp = match req
+                .header("Accept", "text/html,application/xhtml+xml")
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!("Brave page {} request failed: {}", page, e);
+                    break;
+                }
+            };
+
+            let html_text = match resp.text().await {
+                Ok(t) => t,
+                Err(_) => break,
+            };
+
+            let page_results = parse_brave_html(&html_text);
+            if page_results.is_empty() {
+                break;
             }
-        };
 
-        let html_text = match resp.text().await {
-            Ok(t) => t,
-            Err(_) => return vec![],
-        };
+            for r in page_results {
+                if seen_urls.insert(r.url.clone()) {
+                    all_results.push(r);
+                }
+            }
+        }
 
-        parse_brave_html(&html_text)
+        tracing::info!("Brave total: {} results", all_results.len());
+        all_results
     }
 }
 
@@ -50,10 +69,9 @@ fn parse_brave_html(html: &str) -> Vec<RawSearchResult> {
     let document = Html::parse_document(html);
     let mut results = Vec::new();
 
-    // Brave search results are in #results .snippet
-    // Each result has .snippet-title a for the link and .snippet-description for text
+    // Primary selector
     let result_selector = Selector::parse("#results .snippet").unwrap();
-    let title_link_selector = Selector::parse(".snippet-title a, .result-header a").unwrap();
+    let title_link_selector = Selector::parse(".snippet-title a, .result-header a, .heading-serpresult a").unwrap();
     let desc_selector = Selector::parse(".snippet-description, .snippet-content, .result-snippet").unwrap();
 
     for element in document.select(&result_selector) {
@@ -106,6 +124,5 @@ fn parse_brave_html(html: &str) -> Vec<RawSearchResult> {
         }
     }
 
-    tracing::debug!("Brave: {} results parsed", results.len());
     results
 }

@@ -12,13 +12,16 @@
 //
 // ============================================================================
 
-mod config;
-mod engines;
-mod extractor;
-mod llm;
-mod models;
-mod search;
-mod url_utils;
+pub mod config;
+pub mod engines;
+pub mod extractor;
+pub mod llm;
+pub mod models;
+pub mod search;
+pub mod url_utils;
+pub mod copilot;
+pub mod stream;
+pub mod proxy_pool;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -26,7 +29,7 @@ use std::time::Instant;
 use axum::{
     extract::Json,
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, sse::{Event, Sse}},
     routing::{get, post},
     Router,
 };
@@ -53,7 +56,13 @@ async fn search_handler(
         ));
     }
 
-    let response = search::execute_search(&query, body.max_results, body.focus_mode, body.llm).await;
+    let response = search::execute_search(
+        &query, 
+        body.max_results, 
+        body.focus_mode, 
+        body.llm,
+        body.enable_copilot
+    ).await;
 
     if response.sources_processed == 0 {
         return Err((
@@ -67,6 +76,21 @@ async fn search_handler(
     }
 
     Ok(Json(response))
+}
+
+/// POST /search/stream - Streaming search endpoint explicitly for LLM synthesis
+async fn stream_handler(
+    Json(body): Json<SearchRequest>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let query = body.query.trim().to_string();
+    let stream = stream::execute_stream_search(
+        query,
+        body.max_results,
+        body.focus_mode,
+        body.llm,
+        body.enable_copilot
+    );
+    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new())
 }
 
 /// GET /health - Health check
@@ -88,6 +112,10 @@ async fn config_handler() -> impl IntoResponse {
         max_urls: config::max_urls(),
         scrape_timeout_secs: config::scrape_timeout_secs(),
         concurrent_scrapes: config::concurrency(),
+        concurrent_engines: config::engine_concurrency(),
+        jitter_min_ms: config::jitter_min_ms(),
+        jitter_max_ms: config::jitter_max_ms(),
+        proxy_cooldown_secs: config::proxy_cooldown_secs(),
         user_agents_count: config::user_agents_count(),
     })
 }
@@ -144,6 +172,7 @@ async fn main() {
         .route("/health", get(health_handler))
         .route("/config", get(config_handler))
         .route("/search", post(search_handler))
+        .route("/search/stream", post(stream_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
