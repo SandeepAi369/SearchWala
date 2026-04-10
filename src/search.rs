@@ -16,6 +16,7 @@ use crate::extractor;
 use crate::llm;
 use crate::models::*;
 use crate::proxy_pool::ProxyPoolManager;
+use crate::ranking;
 use crate::url_utils;
 
 pub async fn execute_search(
@@ -33,6 +34,7 @@ pub async fn execute_search(
         .filter(|m| !m.is_empty());
 
     let is_lite_mode = matches!(normalized_focus.as_deref(), Some("lite"));
+    let use_ranked_chunk_path = is_lite_mode || llm_config.is_some();
 
     let max_urls = if is_lite_mode {
         max_results.unwrap_or_else(config::max_urls).min(35)
@@ -219,17 +221,32 @@ pub async fn execute_search(
         });
     }
 
-    let mut results: Vec<SourceResult> = Vec::new();
+    let mut raw_scraped_results: Vec<SourceResult> = Vec::new();
     while let Some(join_result) = join_set.join_next().await {
         match join_result {
             Ok(Some(result)) => {
-                if let Some(tx) = maybe_sender.as_ref() {
-                    let _ = tx.send(result.clone()).await;
-                }
-                results.push(result);
+                raw_scraped_results.push(result);
             }
             Ok(_) => {}
             Err(err) => tracing::debug!("Scrape task join error: {}", err),
+        }
+    }
+
+    let mut results = if use_ranked_chunk_path {
+        ranking::rank_top_chunks(&effective_query, &raw_scraped_results, 25)
+    } else {
+        raw_scraped_results
+    };
+
+    if let Some(tx) = maybe_sender.as_ref() {
+        let llm_inputs = if use_ranked_chunk_path {
+            results.clone()
+        } else {
+            ranking::rank_top_chunks(&effective_query, &results, 25)
+        };
+
+        for item in llm_inputs {
+            let _ = tx.send(item).await;
         }
     }
 
@@ -247,12 +264,20 @@ pub async fn execute_search(
         llm::LlmExecutionResult::default()
     };
 
-    results.sort_by(|a, b| b.char_count.cmp(&a.char_count));
+    if !use_ranked_chunk_path {
+        results.sort_by(|a, b| b.char_count.cmp(&a.char_count));
+    }
+
+    let sources_processed = if use_ranked_chunk_path {
+        results.len()
+    } else {
+        deduped_count
+    };
 
     SearchResponse {
         query: query.to_string(),
         sources_found: total_raw,
-        sources_processed: deduped_count,
+        sources_processed,
         results,
         search_results,
         copilot_query: copilot_out,

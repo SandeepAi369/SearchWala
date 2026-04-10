@@ -17,6 +17,7 @@ pub mod engines;
 pub mod extractor;
 pub mod llm;
 pub mod models;
+pub mod ranking;
 pub mod search;
 pub mod url_utils;
 pub mod copilot;

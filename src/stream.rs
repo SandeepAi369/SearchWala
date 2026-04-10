@@ -13,6 +13,7 @@ use crate::extractor;
 use crate::llm;
 use crate::models::*;
 use crate::proxy_pool::ProxyPoolManager;
+use crate::ranking;
 use crate::url_utils;
 
 pub fn execute_stream_search(
@@ -34,6 +35,8 @@ pub fn execute_stream_search(
             .map(|m| m.trim().to_lowercase())
             .filter(|m| !m.is_empty());
         let is_lite_mode = matches!(normalized_focus.as_deref(), Some("lite"));
+        let llm_enabled = llm_config.is_some();
+        let use_ranked_chunk_path = is_lite_mode || llm_enabled;
         let max_urls = if is_lite_mode {
             max_results.unwrap_or_else(config::max_urls).min(35)
         } else {
@@ -159,7 +162,7 @@ pub fn execute_stream_search(
         let scrape_client = build_scrape_client();
 
         // Optional llm channel
-        let (mut llm_tx, llm_rx) = if llm_config.is_some() {
+        let (mut llm_tx, llm_rx) = if llm_enabled {
             let (sc_tx, sc_rx) = mpsc::channel::<SourceResult>((concurrency.max(2)) * 2);
             (Some(sc_tx), Some(sc_rx))
         } else {
@@ -210,22 +213,51 @@ pub fn execute_stream_search(
             });
         }
 
-        let mut results_scraped = 0;
+        let mut scraped_results: Vec<SourceResult> = Vec::new();
         while let Some(join_res) = join_set.join_next().await {
             if let Ok(Some(result)) = join_res {
                 if result.char_count >= min_char_threshold {
-                    if let Some(ref mut ltx) = llm_tx {
-                        let _ = ltx.send(result.clone()).await;
-                    }
-                    results_scraped += 1;
+                    scraped_results.push(result);
                 }
             }
         }
+
+        let ranked_results = if use_ranked_chunk_path {
+            ranking::rank_top_chunks(&effective_query, &scraped_results, 25)
+        } else {
+            Vec::new()
+        };
+
+        if let Some(ref mut ltx) = llm_tx {
+            let llm_inputs = if use_ranked_chunk_path {
+                ranked_results.clone()
+            } else {
+                ranking::rank_top_chunks(&effective_query, &scraped_results, 25)
+            };
+
+            for item in llm_inputs {
+                let _ = ltx.send(item).await;
+            }
+        }
+
         drop(llm_tx);
+
+        let reported_sources = if use_ranked_chunk_path {
+            ranked_results.len()
+        } else {
+            scraped_results.len()
+        };
+
+        if use_ranked_chunk_path {
+            let _ = tx.send(Ok(Event::default().data(serde_json::json!({
+                "type": "ranked_chunks",
+                "count": ranked_results.len()
+            }).to_string()))).await;
+        }
 
         let _ = tx.send(Ok(Event::default().data(serde_json::json!({
             "type": "scrape_complete",
-            "sources_processed": results_scraped,
+            "sources_processed": reported_sources,
             "elapsed_seconds": start.elapsed().as_secs_f64()
         }).to_string()))).await;
 

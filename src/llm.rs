@@ -1,4 +1,3 @@
-use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use axum::response::sse::Event;
@@ -10,8 +9,7 @@ use tokio::sync::mpsc;
 
 use crate::models::{LlmConfig, SourceResult};
 
-const CONTEXT_TOP_FRACTION: f64 = 0.30;
-const MAX_CONTEXT_CHUNKS: usize = 40;
+const MAX_CONTEXT_CHUNKS: usize = 25;
 const MAX_CONTEXT_CHARS: usize = 16_000;
 const DEFAULT_LLM_TIMEOUT_MS: u64 = 9_000;
 const FIRST_BATCH_WAIT_MS: u64 = 2_500;
@@ -46,7 +44,7 @@ pub async fn summarize_from_stream(
 
     let mut batch = vec![first];
     let collect_deadline = tokio::time::Instant::now() + Duration::from_millis(PIPELINE_ACCUMULATION_MS);
-    while batch.len() < 10 {
+    while batch.len() < MAX_CONTEXT_CHUNKS {
         match tokio::time::timeout_at(collect_deadline, rx.recv()).await {
             Ok(Some(source)) => batch.push(source),
             Ok(None) | Err(_) => break,
@@ -147,76 +145,22 @@ pub(crate) fn namespaced_model(provider: &str, model: &str) -> String {
     }
 }
 
-fn build_ranked_context(query: &str, sources: &[SourceResult]) -> String {
-    struct Candidate {
-        score: f64,
-        source_header: String,
-        paragraph: String,
-    }
-
-    let query_terms = tokenize(query);
-    let query_phrase = query.trim().to_lowercase();
-
-    let mut candidates = Vec::new();
-    for (idx, source) in sources.iter().enumerate() {
-        let source_id = idx + 1;
-        let source_header = format!(
-            "[{}] {} {} ({})",
-            source_id,
-            credibility_tag(&source.url),
-            source.title,
-            source.url
-        );
-
-        for paragraph in split_into_chunks(&source.extracted_text) {
-            let score = score_chunk(&query_terms, &query_phrase, &paragraph);
-            if score > 0.0 {
-                candidates.push(Candidate {
-                    score,
-                    source_header: source_header.clone(),
-                    paragraph,
-                });
-            }
-        }
-    }
-
-    if candidates.is_empty() {
-        for (idx, source) in sources.iter().enumerate() {
-            if let Some(paragraph) = split_into_chunks(&source.extracted_text).into_iter().next() {
-                candidates.push(Candidate {
-                    score: 0.1,
-                    source_header: format!(
-                        "[{}] {} {} ({})",
-                        idx + 1,
-                        credibility_tag(&source.url),
-                        source.title,
-                        source.url
-                    ),
-                    paragraph,
-                });
-            }
-            if candidates.len() >= 8 {
-                break;
-            }
-        }
-    }
-
-    if candidates.is_empty() {
+fn build_ranked_context(_query: &str, sources: &[SourceResult]) -> String {
+    if sources.is_empty() {
         return String::new();
     }
 
-    candidates.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let mut keep = ((candidates.len() as f64) * CONTEXT_TOP_FRACTION).ceil() as usize;
-    keep = keep.clamp(1, MAX_CONTEXT_CHUNKS);
-
     let mut context = String::new();
-    for candidate in candidates.into_iter().take(keep) {
-        let block = format!("{}\n{}\n\n", candidate.source_header, candidate.paragraph);
+    for (idx, source) in sources.iter().take(MAX_CONTEXT_CHUNKS).enumerate() {
+        let block = format!(
+            "[{}] {} {} ({})\n{}\n\n",
+            idx + 1,
+            credibility_tag(&source.url),
+            source.title,
+            source.url,
+            source.extracted_text.trim()
+        );
+
         if context.len() + block.len() > MAX_CONTEXT_CHARS {
             break;
         }
@@ -224,116 +168,6 @@ fn build_ranked_context(query: &str, sources: &[SourceResult]) -> String {
     }
 
     context
-}
-
-fn split_into_chunks(text: &str) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let normalized = text.replace('\r', "");
-
-    for paragraph in normalized.split("\n\n") {
-        let paragraph = paragraph.trim();
-        if paragraph.len() < 20 {
-            continue;
-        }
-
-        if paragraph.len() <= 700 {
-            chunks.push(paragraph.to_string());
-            continue;
-        }
-
-        let mut current = String::new();
-        for sentence in paragraph.split_terminator('.') {
-            let sentence = sentence.trim();
-            if sentence.len() < 4 {
-                continue;
-            }
-
-            if current.len() + sentence.len() + 2 > 550 && !current.is_empty() {
-                chunks.push(current.trim().to_string());
-                current.clear();
-            }
-
-            current.push_str(sentence);
-            current.push_str(". ");
-        }
-
-        if current.trim().len() >= 25 {
-            chunks.push(current.trim().to_string());
-        }
-    }
-
-    if chunks.is_empty() {
-        let compact = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
-        if compact.len() >= 40 {
-            chunks.push(compact.chars().take(550).collect());
-        }
-    }
-
-    chunks
-}
-
-fn score_chunk(query_terms: &[String], query_phrase: &str, paragraph: &str) -> f64 {
-    let para_lc = paragraph.to_lowercase();
-    let tokens = tokenize(&para_lc);
-    if tokens.is_empty() {
-        return 0.0;
-    }
-
-    let mut freq: HashMap<&str, usize> = HashMap::new();
-    for token in &tokens {
-        *freq.entry(token.as_str()).or_insert(0) += 1;
-    }
-
-    let mut score = 0.0;
-
-    if query_terms.is_empty() {
-        for token in query_phrase.split_whitespace() {
-            let token = token.trim().to_lowercase();
-            if token.len() >= 2 && para_lc.contains(&token) {
-                score += 1.0;
-            }
-        }
-        if score == 0.0 {
-            score = 0.2;
-        }
-    } else {
-        for term in query_terms {
-            let count = freq.get(term.as_str()).copied().unwrap_or(0) as f64;
-            if count > 0.0 {
-                let weight = 1.0 + ((term.len().min(12) as f64 - 2.0) / 10.0);
-                score += count * weight;
-            }
-        }
-    }
-
-    if !query_phrase.is_empty() && para_lc.contains(query_phrase) {
-        score += 4.0;
-    }
-
-    if para_lc.chars().any(|c| c.is_ascii_digit()) {
-        score += 0.35;
-    }
-
-    score / (1.0 + (paragraph.len() as f64 / 500.0))
-}
-
-fn tokenize(text: &str) -> Vec<String> {
-    let stop_words: HashSet<&str> = [
-        "the", "and", "for", "with", "that", "this", "from", "into", "about", "what", "when", "where", "which", "were", "have", "your", "you", "are", "how", "why", "can", "will", "not", "but", "has", "had", "its", "their", "than", "then",
-    ]
-    .into_iter()
-    .collect();
-
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter_map(|token| {
-            let token = token.trim().to_lowercase();
-            if token.len() < 2 || stop_words.contains(token.as_str()) {
-                None
-            } else {
-                Some(token)
-            }
-        })
-        .collect()
 }
 
 fn credibility_tag(url: &str) -> String {
@@ -419,7 +253,7 @@ pub async fn summarize_from_stream_sse(
 
     let mut batch = vec![first];
     let collect_deadline = tokio::time::Instant::now() + Duration::from_millis(PIPELINE_ACCUMULATION_MS);
-    while batch.len() < 10 {
+    while batch.len() < MAX_CONTEXT_CHUNKS {
         match tokio::time::timeout_at(collect_deadline, rx.recv()).await {
             Ok(Some(source)) => batch.push(source),
             Ok(None) | Err(_) => break,
