@@ -137,6 +137,10 @@ pub(crate) fn namespaced_model(provider: &str, model: &str) -> String {
     }
 
     let provider = provider.trim().to_lowercase();
+    if provider == "cerebras" {
+        return format!("openai::{}", model);
+    }
+
     match provider.as_str() {
         "openai" | "anthropic" | "gemini" | "groq" | "ollama" | "xai" | "deepseek" | "cohere" | "zai" => {
             format!("{}::{}", provider, model)

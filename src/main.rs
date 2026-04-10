@@ -81,6 +81,100 @@ async fn search_handler(
     Ok(Json(response))
 }
 
+/// POST /search/lite-llm - LLM flow forced to lite focus mode
+async fn search_lite_llm_handler(
+    Json(body): Json<SearchRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let query = body.query.trim().to_string();
+
+    if query.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Query cannot be empty"
+            })),
+        ));
+    }
+
+    let Some(llm_cfg) = body.llm else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "LLM config is required for /search/lite-llm"
+            })),
+        ));
+    };
+
+    let response = search::execute_search(
+        &query,
+        body.max_results.or(Some(30)),
+        Some("lite".to_string()),
+        Some(llm_cfg),
+        body.enable_copilot,
+    )
+    .await;
+
+    if response.sources_processed == 0 {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "No results found. Search engines may be unreachable.",
+                "query": query,
+                "engines_queried": response.engine_stats.engines_queried,
+            })),
+        ));
+    }
+
+    Ok(Json(response))
+}
+
+/// POST /search/research-llm - LLM flow forced to research focus mode
+async fn search_research_llm_handler(
+    Json(body): Json<SearchRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let query = body.query.trim().to_string();
+
+    if query.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Query cannot be empty"
+            })),
+        ));
+    }
+
+    let Some(llm_cfg) = body.llm else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "LLM config is required for /search/research-llm"
+            })),
+        ));
+    };
+
+    let response = search::execute_search(
+        &query,
+        body.max_results,
+        Some("research".to_string()),
+        Some(llm_cfg),
+        body.enable_copilot,
+    )
+    .await;
+
+    if response.sources_processed == 0 {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "No results found. Search engines may be unreachable.",
+                "query": query,
+                "engines_queried": response.engine_stats.engines_queried,
+            })),
+        ));
+    }
+
+    Ok(Json(response))
+}
+
 /// POST /search/stream - Streaming search endpoint explicitly for LLM synthesis
 async fn stream_handler(
     Json(body): Json<SearchRequest>,
@@ -137,6 +231,8 @@ async fn about_handler() -> impl IntoResponse {
         "description": "Ultra-fast native meta-search & scrape API with optional BYOK LLM synthesis",
         "endpoints": {
             "POST /search": "Search and scrape (body: {\"query\":\"...\",\"llm\":{...optional...}})",
+            "POST /search/lite-llm": "LLM synthesis with forced lite mode",
+            "POST /search/research-llm": "LLM synthesis with forced research mode",
             "GET /health": "Health check",
             "GET /config": "Current configuration"
         }
@@ -184,6 +280,8 @@ async fn main() {
         .route("/health", get(health_handler))
         .route("/config", get(config_handler))
         .route("/search", get(root_handler).post(search_handler))
+        .route("/search/lite-llm", post(search_lite_llm_handler))
+        .route("/search/research-llm", post(search_research_llm_handler))
         .route("/search/stream", post(stream_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);

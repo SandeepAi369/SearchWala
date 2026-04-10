@@ -36,7 +36,7 @@ pub fn execute_stream_search(
             .filter(|m| !m.is_empty());
         let is_lite_mode = matches!(normalized_focus.as_deref(), Some("lite"));
         let llm_enabled = llm_config.is_some();
-        let use_ranked_chunk_path = is_lite_mode || llm_enabled;
+        let use_ranked_chunk_path = is_lite_mode;
         let max_urls = if is_lite_mode {
             max_results.unwrap_or_else(config::max_urls).min(35)
         } else {

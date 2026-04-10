@@ -9,16 +9,16 @@
     @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
 
     :root {
-      --paper: #f8faf6;
-      --paper-2: #ecf7ef;
-      --ink: #153128;
-      --muted: #3c5b4f;
-      --line: rgba(21, 49, 40, 0.16);
-      --panel: rgba(255, 255, 255, 0.78);
-      --accent: #0ea36d;
-      --accent-2: #0f766e;
-      --warn: #b45309;
-      --danger: #b91c1c;
+      --paper: #050816;
+      --paper-2: #0b1224;
+      --ink: #dbe7ff;
+      --muted: #9fb1d9;
+      --line: rgba(148, 163, 184, 0.25);
+      --panel: rgba(15, 23, 42, 0.72);
+      --accent: #38bdf8;
+      --accent-2: #22d3ee;
+      --warn: #f59e0b;
+      --danger: #f87171;
     }
 
     body {
@@ -26,8 +26,8 @@
       color: var(--ink);
       font-family: "Space Grotesk", "Segoe UI", sans-serif;
       background:
-        radial-gradient(900px 520px at -10% -20%, rgba(20, 184, 166, 0.16), transparent 60%),
-        radial-gradient(900px 480px at 115% -10%, rgba(16, 185, 129, 0.12), transparent 60%),
+        radial-gradient(960px 620px at -10% -20%, rgba(14, 165, 233, 0.22), transparent 60%),
+        radial-gradient(920px 540px at 120% -10%, rgba(45, 212, 191, 0.14), transparent 62%),
         linear-gradient(165deg, var(--paper), var(--paper-2));
     }
 
@@ -35,6 +35,39 @@
       background: var(--panel);
       border: 1px solid var(--line);
       backdrop-filter: blur(8px);
+    }
+
+    .panel input,
+    .panel select {
+      background: rgba(15, 23, 42, 0.72) !important;
+      border-color: rgba(148, 163, 184, 0.35) !important;
+      color: var(--ink) !important;
+    }
+
+    .panel input::placeholder {
+      color: #93a8d5 !important;
+    }
+
+    [class*="text-emerald"],
+    [class*="text-teal"] {
+      color: var(--ink) !important;
+    }
+
+    [class*="text-red"] {
+      color: var(--danger) !important;
+    }
+
+    [class*="bg-emerald-50"],
+    [class*="bg-white"] {
+      background: rgba(15, 23, 42, 0.72) !important;
+    }
+
+    [class*="border-emerald"] {
+      border-color: rgba(148, 163, 184, 0.35) !important;
+    }
+
+    a {
+      color: #7dd3fc !important;
     }
 
     .mono {
@@ -72,8 +105,8 @@
     <section class="panel rounded-3xl p-5 md:p-8 shadow-xl fade-up">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 class="text-2xl md:text-4xl font-bold tracking-tight">Swift-Search-RS Research Console</h1>
-          <p class="mt-1 text-sm md:text-base text-emerald-900/80">Source-first benchmark flow: instant sources, optional cited LLM synthesis.</p>
+          <h1 class="text-2xl md:text-4xl font-bold tracking-tight">Swift-Search-RS Dark Console</h1>
+          <p class="mt-1 text-sm md:text-base text-emerald-900/80">Lite-first search flow with optional research and dedicated LLM routes.</p>
         </div>
         <span id="endpointLabel" class="text-xs md:text-sm px-3 py-1.5 rounded-full border border-emerald-800/25 bg-emerald-50 text-emerald-900">Endpoint: /search</span>
       </div>
@@ -87,11 +120,11 @@
         <div class="lg:col-span-4">
           <label class="block text-sm text-emerald-900/80 mb-2">Focus Mode</label>
           <select id="focusMode" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-emerald-600">
-            <option value="research" selected>Research</option>
+            <option value="research">Research</option>
             <option value="academic">Academic</option>
             <option value="reddit">Reddit / Forum</option>
             <option value="youtube">YouTube</option>
-            <option value="lite">Lite</option>
+            <option value="lite" selected>Lite</option>
           </select>
         </div>
       </div>
@@ -99,7 +132,7 @@
       <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
         <div>
           <label class="block text-sm text-emerald-900/80 mb-2">Max Results</label>
-          <input id="maxResults" type="number" value="30" min="5" max="200" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
+          <input id="maxResults" type="number" value="" min="5" max="900" placeholder="Lite default: 30 | Research: blank = full" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-emerald-600" />
         </div>
 
         <div class="md:col-span-2 flex items-end">
@@ -120,6 +153,7 @@
           <label class="block text-sm text-emerald-900/80 mb-2">Provider</label>
           <select id="provider" class="w-full rounded-xl px-3 py-3 bg-white/90 border border-emerald-900/20 focus:outline-none focus:ring-2 focus:ring-teal-700">
             <option value="openai">OpenAI-compatible</option>
+            <option value="cerebras">Cerebras (OpenAI-compatible)</option>
             <option value="groq">Groq</option>
             <option value="ollama">Ollama</option>
             <option value="anthropic">Anthropic</option>
@@ -149,7 +183,7 @@
         <h2 class="text-lg font-semibold">Search Phase</h2>
         <div class="mt-3 space-y-1.5 text-sm">
           <p>Latency: <span id="searchMs" class="mono text-teal-800">-</span></p>
-          <p>Focus: <span id="focusLabel" class="mono text-teal-800">research</span></p>
+          <p>Focus: <span id="focusLabel" class="mono text-teal-800">lite</span></p>
           <p>Status: <span id="searchStatus" class="mono">idle</span></p>
         </div>
       </article>
@@ -165,7 +199,7 @@
 
       <article class="panel rounded-2xl p-4">
         <h2 class="text-lg font-semibold">Behavior</h2>
-        <p class="mt-3 text-sm text-emerald-950/80">Without LLM, this console returns fast source links and snippets only. With LLM enabled, it runs a second synthesis step for a best-answer response with citations.</p>
+        <p class="mt-3 text-sm text-emerald-950/80">Default mode is Lite. Research mode can run uncapped by leaving Max Results blank. LLM uses dedicated routes: Lite LLM and Research LLM.</p>
       </article>
     </section>
 
@@ -184,8 +218,8 @@
   </main>
 
   <script>
-    const endpointCandidates = resolveEndpointCandidates();
-    let activeEndpoint = endpointCandidates[0] || "http://127.0.0.1:8000/search";
+    const endpointBases = resolveEndpointBases();
+    let activeEndpoint = `${endpointBases[0] || "http://127.0.0.1:8000"}/search`;
 
     const dom = {
       queryInput: document.getElementById("queryInput"),
@@ -215,17 +249,21 @@
       return performance.now();
     }
 
-    function resolveEndpointCandidates() {
+    function resolveEndpointBases() {
       const candidates = [];
 
       if (window.location.origin && window.location.origin !== "null") {
-        candidates.push(`${window.location.origin}/search`);
+        candidates.push(window.location.origin);
       }
 
-      candidates.push("http://127.0.0.1:8000/search");
-      candidates.push("http://localhost:8000/search");
+      candidates.push("http://127.0.0.1:8000");
+      candidates.push("http://localhost:8000");
 
       return Array.from(new Set(candidates));
+    }
+
+    function resolveEndpointCandidates(path) {
+      return endpointBases.map((base) => `${base}${path}`);
     }
 
     function escapeHtml(str) {
@@ -267,14 +305,49 @@
       dom.sourcesList.innerHTML = "";
       dom.answerBox.textContent = "";
       dom.citationBox.innerHTML = "";
-      dom.focusLabel.textContent = dom.focusMode.value || "research";
+      dom.focusLabel.textContent = dom.focusMode.value || "lite";
     }
 
     function toggleLlmPanel() {
       if (dom.enableLlm.checked) {
         dom.llmPanel.classList.remove("hidden");
+        // LLM defaults to lite mode; user can switch back to research manually.
+        if (dom.focusMode.value === "research") {
+          dom.focusMode.value = "lite";
+          dom.focusLabel.textContent = "lite";
+        }
       } else {
         dom.llmPanel.classList.add("hidden");
+      }
+      syncMaxResultsHint();
+      applyProviderPreset();
+    }
+
+    function syncMaxResultsHint() {
+      const mode = dom.focusMode.value || "lite";
+      if (mode === "lite") {
+        dom.maxResults.placeholder = "Lite default: 30";
+        if (!dom.maxResults.value.trim()) {
+          dom.maxResults.value = "30";
+          dom.maxResults.dataset.autofill = "1";
+        }
+      } else {
+        dom.maxResults.placeholder = "Blank = backend default (research/full mode)";
+        if (dom.maxResults.dataset.autofill === "1") {
+          dom.maxResults.value = "";
+          dom.maxResults.dataset.autofill = "";
+        }
+      }
+    }
+
+    function applyProviderPreset() {
+      if (dom.provider.value === "cerebras") {
+        if (!dom.baseUrl.value.trim()) {
+          dom.baseUrl.value = "https://api.cerebras.ai/v1";
+        }
+        if (!dom.model.value.trim() || dom.model.value.trim().toLowerCase() === "llama3") {
+          dom.model.value = "gpt-oss-120b";
+        }
       }
     }
 
@@ -318,8 +391,9 @@
       }
     }
 
-    async function postSearch(payload) {
+    async function postSearch(path, payload) {
       let lastError = new Error("No working API endpoint found");
+      const endpointCandidates = resolveEndpointCandidates(path);
 
       for (const endpoint of endpointCandidates) {
         try {
@@ -366,11 +440,30 @@
     }
 
     function basePayload(query, focusMode, maxResults) {
-      return {
+      const payload = {
         query,
-        max_results: maxResults,
         focus_mode: focusMode,
       };
+
+      if (typeof maxResults === "number" && Number.isFinite(maxResults) && maxResults > 0) {
+        payload.max_results = maxResults;
+      }
+
+      return payload;
+    }
+
+    function parseMaxResults(focusMode) {
+      const raw = dom.maxResults.value.trim();
+      if (!raw) {
+        return focusMode === "lite" ? 30 : null;
+      }
+
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed)) {
+        return focusMode === "lite" ? 30 : null;
+      }
+
+      return Math.max(5, Math.min(900, Math.floor(parsed)));
     }
 
     async function runBenchmark() {
@@ -380,11 +473,8 @@
         return;
       }
 
-      const focusMode = dom.focusMode.value || "research";
-      const maxResultsInput = Number(dom.maxResults.value || 30);
-      const maxResults = Number.isFinite(maxResultsInput)
-        ? Math.max(5, Math.min(200, Math.floor(maxResultsInput)))
-        : 30;
+      const focusMode = dom.focusMode.value || "lite";
+      const maxResults = parseMaxResults(focusMode);
 
       dom.focusLabel.textContent = focusMode;
       dom.runBtn.disabled = true;
@@ -398,8 +488,11 @@
         dom.searchStatus.textContent = "running";
 
         const phaseAStart = nowMs();
-        const phaseAPayload = basePayload(query, focusMode, focusMode === "lite" ? Math.min(maxResults, 25) : maxResults);
-        const phaseA = await postSearch(phaseAPayload);
+        const phaseAMax = focusMode === "lite"
+          ? Math.min(maxResults ?? 30, 35)
+          : maxResults;
+        const phaseAPayload = basePayload(query, focusMode, phaseAMax);
+        const phaseA = await postSearch("/search", phaseAPayload);
         const phaseAms = Math.round(nowMs() - phaseAStart);
 
         const sources = Array.isArray(phaseA.search_results) ? phaseA.search_results : [];
@@ -417,7 +510,7 @@
         }
 
         const apiKey = dom.apiKey.value.trim();
-        const provider = dom.provider.value.trim();
+        const provider = dom.provider.value.trim() || "openai";
         const model = dom.model.value.trim();
         const baseUrl = dom.baseUrl.value.trim();
 
@@ -436,19 +529,27 @@
           provider,
           api_key: apiKey,
           model,
-          timeout_ms: 0,
+          timeout_ms: 45000,
         };
-        if (baseUrl) {
+
+        if (provider === "cerebras" && !baseUrl) {
+          llm.base_url = "https://api.cerebras.ai/v1";
+        } else if (baseUrl) {
           llm.base_url = baseUrl;
         }
 
+        const llmPath = focusMode === "research" ? "/search/research-llm" : "/search/lite-llm";
+        const llmMax = llmPath === "/search/lite-llm"
+          ? Math.min(maxResults ?? 30, 35)
+          : maxResults;
+
         const phaseBPayload = {
-          ...basePayload(query, focusMode, focusMode === "lite" ? Math.min(maxResults, 25) : maxResults),
+          ...basePayload(query, focusMode, llmMax),
           llm,
         };
 
         const phaseBStart = nowMs();
-        const phaseB = await postSearch(phaseBPayload);
+        const phaseB = await postSearch(llmPath, phaseBPayload);
         const phaseBms = Math.round(nowMs() - phaseBStart);
 
         dom.llmMs.textContent = `${phaseBms} ms`;
@@ -475,6 +576,11 @@
     }
 
     dom.enableLlm.addEventListener("change", toggleLlmPanel);
+    dom.focusMode.addEventListener("change", () => {
+      dom.focusLabel.textContent = dom.focusMode.value || "lite";
+      syncMaxResultsHint();
+    });
+    dom.provider.addEventListener("change", applyProviderPreset);
     dom.runBtn.addEventListener("click", runBenchmark);
     dom.clearBtn.addEventListener("click", setIdle);
     dom.queryInput.addEventListener("keydown", (e) => {
@@ -482,6 +588,8 @@
     });
 
     toggleLlmPanel();
+    syncMaxResultsHint();
+    applyProviderPreset();
     setIdle();
   </script>
 </body>
