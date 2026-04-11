@@ -524,11 +524,7 @@ fn clean_and_deduplicate(text: &str) -> String {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        let fp_key = if fingerprint.len() > 80 {
-            fingerprint[..80].to_string()
-        } else {
-            fingerprint
-        };
+        let fp_key = fingerprint.chars().take(80).collect::<String>();
 
         if !seen_fingerprints.insert(fp_key) {
             continue; // duplicate paragraph
