@@ -500,14 +500,15 @@
       },1500);
     }
 
-    // ═══ TTS — Chunked Edge Neural Voice (en-US-AvaNeural) ═══
-    // Smart chunking: split text into sentences, play first chunk instantly,
-    // prefetch remaining chunks for seamless playback (XeL Studio pattern)
+    // ═══ TTS — Cached Chunked Edge Neural Voice (en-US-AvaNeural) ═══
+    // Global cache + aggressive prefetch + audio preloading = zero stutter
     let ttsAudio=null;
     let ttsChunks=[];
     let ttsChunkIdx=0;
-    let ttsChunkUrls=[];
     let ttsAbort=false;
+    // Global cache: text→blobURL (persists across replays)
+    const ttsCache=new Map();
+    const TTS_CACHE_MAX=100;
 
     const TTS_ICON=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>`;
 
@@ -515,64 +516,87 @@
       ttsAbort=true;
       if(ttsAudio){ttsAudio.pause();ttsAudio.src='';ttsAudio=null}
       ttsPlaying=false;
-      ttsChunks=[];ttsChunkIdx=0;ttsChunkUrls=[];
+      ttsChunks=[];ttsChunkIdx=0;
       dom.ttsBtn.classList.remove('playing');
       dom.ttsBtn.innerHTML=TTS_ICON+`<span id="ttsLabel">Listen</span>`;
     }
 
-    // Split text into small sentence-based chunks for fast TTS
+    // Fetch chunk audio, cache the blob URL
+    async function ttsFetchChunk(text){
+      if(ttsCache.has(text))return ttsCache.get(text);
+      const res=await fetch(apiBase()+'/api/tts?text='+encodeURIComponent(text));
+      if(!res.ok)throw new Error('TTS '+res.status);
+      const blob=await res.blob();
+      const url=URL.createObjectURL(blob);
+      // LRU eviction
+      if(ttsCache.size>=TTS_CACHE_MAX){
+        const oldest=ttsCache.keys().next().value;
+        URL.revokeObjectURL(ttsCache.get(oldest));
+        ttsCache.delete(oldest);
+      }
+      ttsCache.set(text,url);
+      return url;
+    }
+
+    // Split into sentence-based chunks (larger = fewer transitions = smoother)
     function ttsSplit(text){
-      const sentences=text.split(/(?<=[.!?])\s+/).filter(s=>s.length>5);
+      const sentences=text.split(/(?<=[.!?])\s+/).filter(s=>s.length>3);
       if(!sentences.length)return [text];
       const chunks=[];
-      let buf=[];let words=0;
-      const FIRST_MAX=30,CHUNK_MAX=50;
-      let isFirst=true;
+      let buf=[];let wc=0;
       for(const s of sentences){
         const w=s.split(' ').length;
-        const max=isFirst?FIRST_MAX:CHUNK_MAX;
-        if(words+w<=max){buf.push(s);words+=w}
+        if(wc+w<=60){buf.push(s);wc+=w}
         else{
-          if(buf.length){chunks.push(buf.join(' '));isFirst=false}
-          buf=[s];words=w;
+          if(buf.length)chunks.push(buf.join(' '));
+          buf=[s];wc=w;
         }
       }
       if(buf.length)chunks.push(buf.join(' '));
       return chunks.length?chunks:[text];
     }
 
-    // Play chunk at index, chain to next
+    // Play chunk, preload next, chain seamlessly
     async function ttsPlayChunk(idx){
       if(ttsAbort||idx>=ttsChunks.length){ttsReset();return}
       ttsChunkIdx=idx;
       const total=ttsChunks.length;
       dom.ttsBtn.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">${idx+1}/${total}</span>`;
 
-      // Get URL (may already be prefetched)
-      let url=ttsChunkUrls[idx];
-      if(!url){
-        try{
-          const res=await fetch(apiBase()+'/api/tts?text='+encodeURIComponent(ttsChunks[idx]));
-          if(!res.ok)throw new Error('TTS error');
-          const blob=await res.blob();
-          url=URL.createObjectURL(blob);
-          ttsChunkUrls[idx]=url;
-        }catch(e){ttsReset();return}
-      }
-      if(ttsAbort)return;
+      try{
+        const url=await ttsFetchChunk(ttsChunks[idx]);
+        if(ttsAbort)return;
 
-      ttsAudio=new Audio(url);
-      ttsAudio.onended=()=>ttsPlayChunk(idx+1);
-      ttsAudio.onerror=()=>ttsPlayChunk(idx+1);
-      ttsAudio.play().catch(()=>{});
+        ttsAudio=new Audio(url);
 
-      // Prefetch next 3 chunks
-      for(let i=idx+1;i<Math.min(idx+4,ttsChunks.length);i++){
-        if(!ttsChunkUrls[i]){
-          const ci=i;
-          fetch(apiBase()+'/api/tts?text='+encodeURIComponent(ttsChunks[ci]))
-            .then(r=>r.blob()).then(b=>{ttsChunkUrls[ci]=URL.createObjectURL(b)}).catch(()=>{});
+        // Preload next chunk's Audio element while this one plays
+        let nextAudio=null;
+        if(idx+1<ttsChunks.length){
+          ttsFetchChunk(ttsChunks[idx+1]).then(nextUrl=>{
+            if(!ttsAbort){nextAudio=new Audio(nextUrl);nextAudio.preload='auto'}
+          }).catch(()=>{});
         }
+
+        ttsAudio.onended=()=>{
+          if(ttsAbort)return;
+          if(nextAudio){
+            // Instant transition — next audio already loaded
+            ttsAudio=nextAudio;
+            ttsChunkIdx=idx+1;
+            dom.ttsBtn.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">${idx+2}/${total}</span>`;
+            ttsAudio.onended=()=>ttsPlayChunk(idx+2);
+            ttsAudio.onerror=()=>ttsPlayChunk(idx+2);
+            ttsAudio.play().catch(()=>ttsPlayChunk(idx+2));
+            // Pre-preload idx+2
+            if(idx+2<ttsChunks.length)ttsFetchChunk(ttsChunks[idx+2]).catch(()=>{});
+          }else{
+            ttsPlayChunk(idx+1);
+          }
+        };
+        ttsAudio.onerror=()=>ttsPlayChunk(idx+1);
+        await ttsAudio.play();
+      }catch(e){
+        if(!ttsAbort)ttsPlayChunk(idx+1);
       }
     }
 
@@ -580,7 +604,6 @@
       if(ttsPlaying){ttsReset();return}
       if(!currentAnswer)return;
 
-      // Clean text
       const text=currentAnswer
         .replace(/\*\*/g,'').replace(/#{1,6}\s*/g,'')
         .replace(/\[(\d+)\]/g,'').replace(/https?:\/\/\S+/g,'')
@@ -592,11 +615,13 @@
       ttsAbort=false;
       ttsPlaying=true;
       ttsChunks=ttsSplit(text);
-      ttsChunkUrls=new Array(ttsChunks.length).fill(null);
       dom.ttsBtn.classList.add('playing');
       dom.ttsBtn.innerHTML=`<span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span><span id="ttsLabel">1/${ttsChunks.length}</span>`;
 
-      // Start playing first chunk immediately
+      // Prefetch ALL chunks in parallel (cached for replay)
+      ttsChunks.forEach((c,i)=>{if(i>0)ttsFetchChunk(c).catch(()=>{})});
+
+      // Start first chunk immediately
       ttsPlayChunk(0);
     }
 
