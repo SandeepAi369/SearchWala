@@ -50,14 +50,15 @@
     .icon-btn svg{width:14px;height:14px}
 
     /* ═══ Center ═══ */
-    .center-wrap{flex:1;display:flex;flex-direction:column;max-width:820px;width:100%;margin:0 auto;padding:0 20px;overflow:hidden}
+    .center-wrap{flex:1;display:flex;flex-direction:column;max-width:820px;width:100%;margin:0 auto;padding:0 20px}
 
     /* ═══ Home ═══ */
-    .home-hero{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:60px 0}
-    .home-title{font-size:28px;font-weight:800;letter-spacing:-.02em;margin-bottom:24px;color:var(--ink)}
+    .home-hero{display:flex;flex-direction:column;align-items:center;padding:0}
+    .center-wrap.home-active{justify-content:center}
+    .home-title{font-size:28px;font-weight:800;letter-spacing:-.02em;margin-bottom:8px;color:var(--ink)}
 
-    /* ═══ Search box — always visible, pinned top after search ═══ */
-    .search-wrap{width:100%;max-width:820px;margin:0 auto;flex-shrink:0}
+    /* ═══ Search box — always visible ═══ */
+    .search-wrap{width:100%;max-width:820px;margin:0 auto}
     .search-row{display:flex;align-items:center;gap:12px}
     .search-input{flex:1;padding:16px 20px;font-size:16px;font-family:inherit;font-weight:400;background:var(--surface);border:1px solid var(--border-2);border-radius:16px;color:var(--ink);outline:none;transition:border .25s,box-shadow .25s}
     .search-input::placeholder{color:var(--muted)}
@@ -82,7 +83,7 @@
     .progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));border-radius:4px;transition:width .5s ease-out;width:0}
 
     /* ═══ Results ═══ */
-    .results-area{padding:20px 0 30px;animation:fadeUp .35s ease-out both;overflow-y:auto;flex:1}
+    .results-area{padding:20px 0 30px;animation:fadeUp .35s ease-out both}
 
     /* Sources strip */
     .sources-strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:16px}
@@ -221,7 +222,7 @@
       </div>
     </header>
 
-    <div class="center-wrap">
+    <div class="center-wrap home-active">
       <!-- Home hero (only shown before first search) -->
       <section id="homeView" class="home-hero">
         <div class="home-title">What do you want to know?</div>
@@ -378,6 +379,7 @@
 
     // ═══ Navigation ═══
     function goHome(){
+      document.querySelector('.center-wrap').classList.add('home-active');
       dom.homeView.classList.remove('hidden');
       dom.resultsArea.classList.add('hidden');
       dom.queryInput.focus();
@@ -670,6 +672,7 @@
       ttsReset();
 
       // Hide home hero, show results
+      document.querySelector('.center-wrap').classList.remove('home-active');
       dom.homeView.classList.add('hidden');
       dom.resultsArea.classList.remove('hidden');
       dom.llmError.classList.add('hidden');
