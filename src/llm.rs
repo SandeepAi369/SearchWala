@@ -28,7 +28,7 @@ use crate::models::{LlmConfig, SourceResult};
 const MAX_CONTEXT_CHUNKS_LITE: usize = 25;
 const BATCH_SIZE_RESEARCH: usize = 50;
 const MAX_CONTEXT_CHARS_LITE: usize = 16_000;
-const MAX_CONTEXT_CHARS_RESEARCH_BATCH: usize = 32_000;
+const MAX_CONTEXT_CHARS_RESEARCH_BATCH: usize = 12_000;
 const DEFAULT_LLM_TIMEOUT_MS: u64 = 45_000;
 const RESEARCH_BATCH_TIMEOUT_MS: u64 = 60_000;
 const FIRST_BATCH_WAIT_MS: u64 = 60_000;
@@ -662,32 +662,34 @@ fn build_research_continuation_prompts(
     total_batches: usize,
 ) -> (String, String) {
     let system = format!(
-        "You are an expert research analyst expanding an existing research report with new source material. \
-         Current date: {}. \
-         You are processing batch {} of {} total batches. \
-         STRICT RULES: \
-         1. You MUST integrate new information into the existing report — do NOT restart from scratch. \
-         2. ADD new details, evidence, and insights from the new sources. \
-         3. KEEP all existing content and citations intact. \
-         4. Use ONLY the provided new sources for additions — NEVER hallucinate. \
-         5. Every new factual statement MUST cite the source number like [51], [52], etc. \
-         6. Maintain the same structure and section headings. Add new sections if warranted. \
-         7. Update the 'Sources Used' section to include all sources used (old + new). \
-         8. Flag outdated information if new sources provide more current data.",
+        "You are an expert research analyst expanding a research report with new sources. \
+         Date: {}. Batch {} of {}. \
+         RULES: 1. Integrate new info into the report — do NOT restart. \
+         2. ADD new details and evidence. 3. KEEP existing content. \
+         4. Cite source numbers like [51], [52]. 5. NEVER hallucinate. \
+         6. Maintain structure. Add sections if warranted.",
         current_datetime_str(),
         batch_num,
         total_batches
     );
 
+    // Truncate previous report to fit within model context limits
+    // ~3000 chars ≈ 750 tokens, leaves room for new sources + system
+    let max_prev = 3000;
+    let prev_truncated = if previous_report.len() > max_prev {
+        let start = previous_report.len().saturating_sub(max_prev);
+        // Find safe char boundary
+        let safe_start = (start..start+4).find(|&i| previous_report.is_char_boundary(i)).unwrap_or(start);
+        format!("[...truncated...] {}", &previous_report[safe_start..])
+    } else {
+        previous_report.to_string()
+    };
+
     let user = format!(
-        "RESEARCH QUERY:\n{}\n\n\
-         EXISTING REPORT FROM PREVIOUS BATCHES:\n---\n{}\n---\n\n\
-         NEW SOURCE MATERIAL (Batch {}/{}):\n{}\n\n\
-         Expand and enhance the existing report with evidence from these new sources. \
-         ADD new details, strengthen existing points, fill gaps, and correct any outdated info. \
-         Keep the full report intact — return the COMPLETE updated report including all previous content plus new additions. \
-         Update the Sources Used section at the end.",
-        query, previous_report, batch_num, total_batches, new_context
+        "QUERY: {}\n\nEXISTING REPORT (summary):\n{}\n\n\
+         NEW SOURCES (Batch {}/{}):\n{}\n\n\
+         Expand the report with these new sources. Add new details, cite sources, keep existing content.",
+        query, prev_truncated, batch_num, total_batches, new_context
     );
 
     (system, user)
