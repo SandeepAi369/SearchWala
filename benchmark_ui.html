@@ -55,7 +55,7 @@
     /* ═══ Home ═══ */
     .home-hero{display:flex;flex-direction:column;align-items:center;padding:0}
     .center-wrap.home-active{justify-content:center}
-    .home-title{font-size:28px;font-weight:800;letter-spacing:-.02em;margin-bottom:8px;color:var(--ink)}
+    .home-title{font-size:28px;font-weight:800;letter-spacing:-.02em;margin-bottom:14px;color:var(--ink)}
 
     /* ═══ Search box — always visible ═══ */
     .search-wrap{width:100%;max-width:820px;margin:0 auto}
@@ -63,8 +63,8 @@
     .search-input{flex:1;padding:16px 20px;font-size:16px;font-family:inherit;font-weight:400;background:var(--surface);border:1px solid var(--border-2);border-radius:16px;color:var(--ink);outline:none;transition:border .25s,box-shadow .25s}
     .search-input::placeholder{color:var(--muted)}
     .search-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(32,178,170,.12)}
-    .search-submit{flex-shrink:0;background:var(--accent);border:none;border-radius:14px;width:50px;height:50px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .2s}
-    .search-submit:hover{background:var(--accent-2);transform:scale(1.08);box-shadow:0 4px 20px rgba(32,178,170,.3)}
+    .search-submit{flex-shrink:0;background:linear-gradient(135deg,#3b82f6,#6366f1);border:none;border-radius:14px;width:50px;height:50px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .25s ease;box-shadow:0 2px 12px rgba(59,130,246,.25)}
+    .search-submit:hover{background:linear-gradient(135deg,#60a5fa,#818cf8);transform:scale(1.06);box-shadow:0 6px 28px rgba(59,130,246,.4)}
     .search-submit:active{transform:scale(.95)}
     .search-submit:disabled{opacity:.4;cursor:not-allowed;transform:none!important;box-shadow:none!important}
     .search-submit svg{width:20px;height:20px;color:#fff}
@@ -175,7 +175,23 @@
     .skel{background:linear-gradient(90deg,var(--surface) 25%,var(--surface-2) 50%,var(--surface) 75%);background-size:400% 100%;animation:shimmer 1.8s linear infinite;border-radius:4px;height:14px;margin-bottom:8px}
     .skel.w30{width:30%}.skel.w50{width:50%}.skel.w70{width:70%}.skel.w90{width:90%}
     .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border-2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
-  </style>
+
+    /* ═══ Searching Animation ═══ */
+    @keyframes searchPulse{0%,100%{box-shadow:0 0 0 0 rgba(59,130,246,0)}50%{box-shadow:0 0 20px 4px rgba(59,130,246,.18)}}
+    @keyframes orbitalSpin{to{transform:rotate(360deg)}}
+    @keyframes dotFade{0%,100%{opacity:.3;transform:scale(.7)}50%{opacity:1;transform:scale(1)}}
+    .search-input.searching{border-color:#6366f1;animation:searchPulse 2s ease-in-out infinite;box-shadow:0 0 0 3px rgba(99,102,241,.15)}
+    .search-submit.searching{background:linear-gradient(135deg,#6366f1,#3b82f6);animation:orbitalSpin 1.2s linear infinite;border-radius:50%;pointer-events:none}
+    .search-submit.searching svg{display:none}
+    .search-submit.searching::after{content:'';width:18px;height:18px;border:2.5px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+    .search-orbital{position:absolute;top:50%;left:50%;width:62px;height:62px;margin:-31px 0 0 -31px;pointer-events:none;animation:orbitalSpin 3s linear infinite}
+    .search-orbital .orbital-dot{position:absolute;width:5px;height:5px;background:#60a5fa;border-radius:50%;animation:dotFade 1.5s ease-in-out infinite}
+    .search-orbital .orbital-dot:nth-child(1){top:0;left:50%;transform:translateX(-50%);animation-delay:0s}
+    .search-orbital .orbital-dot:nth-child(2){top:50%;right:0;transform:translateY(-50%);animation-delay:.375s}
+    .search-orbital .orbital-dot:nth-child(3){bottom:0;left:50%;transform:translateX(-50%);animation-delay:.75s}
+    .search-orbital .orbital-dot:nth-child(4){top:50%;left:0;transform:translateY(-50%);animation-delay:1.125s}
+    .search-btn-wrap{position:relative;flex-shrink:0}
+    </style>
 </head>
 <body>
   <div id="dbModal" class="modal-overlay">
@@ -229,12 +245,15 @@
       </section>
 
       <!-- SEARCH BOX — always visible, centered -->
-      <div id="searchSection" class="search-wrap" style="padding:16px 0">
+      <div id="searchSection" class="search-wrap" style="padding:24px 0 16px">
         <div class="search-row">
           <input id="queryInput" class="search-input" type="text" placeholder="Ask anything..." autofocus />
-          <button id="runBtn" class="search-submit" onclick="runSearch()" title="Search">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-          </button>
+          <div class="search-btn-wrap">
+            <button id="runBtn" class="search-submit" onclick="runSearch()" title="Search">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
+            <div id="searchOrbital" class="search-orbital hidden"><div class="orbital-dot"></div><div class="orbital-dot"></div><div class="orbital-dot"></div><div class="orbital-dot"></div></div>
+          </div>
         </div>
         <!-- Status bar -->
         <div id="statusBar" class="status-bar hidden">
@@ -684,6 +703,9 @@
       dom.sourcesStrip.innerHTML=Array(5).fill(0).map(()=>'<div class="src-chip" style="min-width:120px"><div class="skel" style="height:12px;width:80px;margin:0"></div></div>').join('');
       dom.answerContent.innerHTML=`<div class="answer-loading"><span class="spinner"></span> Searching and analyzing sources...</div><div class="skel w90"></div><div class="skel w70"></div><div class="skel w50"></div>`;
       dom.runBtn.disabled=true;
+      dom.queryInput.classList.add('searching');
+      dom.runBtn.classList.add('searching');
+      $('searchOrbital').classList.remove('hidden');
 
       saveSettings();
       startStatus();
@@ -741,6 +763,9 @@
         dom.answerContent.innerHTML=`<div style="color:#f87171;padding:20px 0">Error: ${esc(err.message)}</div>`;
       }finally{
         dom.runBtn.disabled=false;
+        dom.queryInput.classList.remove('searching');
+        dom.runBtn.classList.remove('searching');
+        $('searchOrbital').classList.add('hidden');
       }
     }
 
