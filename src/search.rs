@@ -1,7 +1,7 @@
 // ============================================================================
-// Swift Search Agent v4.1 - Search Orchestrator
-// FIXED: LLM channel fed as scrapes arrive (not after all complete)
-// Retry on 403/429/503, research mode deep path
+// Swift Search Agent v4.2 - Search Orchestrator
+// Iterative deep research: multi-batch LLM synthesis
+// TempDb session tracking + HistoryDb persistence
 // ============================================================================
 
 use std::collections::{HashMap, HashSet};
@@ -27,6 +27,8 @@ pub async fn execute_search(
     focus_mode: Option<String>,
     llm_config: Option<LlmConfig>,
     enable_copilot: Option<bool>,
+    temp_db: Option<&crate::cache::TempDb>,
+    history_db: Option<&crate::cache::HistoryDb>,
 ) -> SearchResponse {
     let start = std::time::Instant::now();
 
@@ -175,8 +177,8 @@ pub async fn execute_search(
     let semaphore = Arc::new(Semaphore::new(concurrency));
     let scrape_client = build_scrape_client();
 
-    // ── Research mode sends more chunks to LLM ──
-    let llm_top_k: usize = if is_research_mode { 50 } else { 25 };
+    // ── Research mode sends ALL sources to iterative LLM ──
+    let llm_top_k: usize = if is_research_mode { 200 } else { 25 };
 
     // ══════════════════════════════════════════════════════════════════════
     // FIX: Create LLM channel AFTER scraping so we can feed data INLINE
@@ -247,13 +249,26 @@ pub async fn execute_search(
     );
 
     // ── Rank and prepare LLM input ──
+    let scraped_count = raw_scraped_results.len();
     let mut results = if use_ranked_chunk_path {
         ranking::rank_top_chunks(&effective_query, &raw_scraped_results, llm_top_k)
     } else {
         raw_scraped_results
     };
 
-    // ── NOW run LLM synchronously with collected data ──
+    // ── Create TempDb session for progress tracking ──
+    let session_id = if let Some(db) = temp_db {
+        Some(db.create_session(query).await)
+    } else {
+        None
+    };
+
+    if let (Some(db), Some(sid)) = (temp_db, session_id.as_deref()) {
+        db.update_status(sid, "scraping_done", "").await;
+        db.update_sources(sid, scraped_count).await;
+    }
+
+    // ── NOW run LLM synthesis ──
     let llm_result = if let Some(cfg) = llm_config {
         let llm_inputs = if use_ranked_chunk_path {
             results.clone()
@@ -266,14 +281,31 @@ pub async fn execute_search(
             llm::LlmExecutionResult {
                 llm_answer: None,
                 llm_error: Some("llm_skipped: no scraped content available".to_string()),
+                batches_processed: 0,
             }
+        } else if is_research_mode {
+            // ── ITERATIVE DEEP RESEARCH: multi-batch 50-source processing ──
+            tracing::info!("Starting iterative deep research with {} sources", llm_inputs.len());
+            llm::summarize_iterative(
+                query,
+                cfg,
+                &llm_inputs,
+                temp_db,
+                session_id.as_deref(),
+            ).await
         } else {
-            tracing::info!("Feeding {} chunks to LLM (research={})", llm_inputs.len(), is_research_mode);
-            llm::summarize_direct(query, cfg, &llm_inputs, is_research_mode).await
+            // ── LITE MODE: single fast call ──
+            tracing::info!("Feeding {} chunks to LLM (lite mode)", llm_inputs.len());
+            llm::summarize_direct(query, cfg, &llm_inputs, false).await
         }
     } else {
         llm::LlmExecutionResult::default()
     };
+
+    // ── Wipe TempDb session (auto-clean) ──
+    if let (Some(db), Some(sid)) = (temp_db, session_id.as_deref()) {
+        db.wipe_session(sid).await;
+    }
 
     if !use_ranked_chunk_path {
         results.sort_by(|a, b| b.char_count.cmp(&a.char_count));
@@ -285,6 +317,24 @@ pub async fn execute_search(
         deduped_count
     };
 
+    let elapsed = start.elapsed().as_secs_f64();
+    let focus_str = normalized_focus.as_deref().unwrap_or("lite");
+
+    // ── Save to HistoryDb if enabled ──
+    if let Some(hdb) = history_db {
+        if hdb.is_enabled() {
+            let entry = crate::cache::build_history_entry(
+                query,
+                focus_str,
+                llm_result.llm_answer.as_deref(),
+                sources_processed,
+                total_raw,
+                elapsed,
+            );
+            hdb.add_entry(entry).await;
+        }
+    }
+
     SearchResponse {
         query: query.to_string(),
         sources_found: total_raw,
@@ -294,7 +344,7 @@ pub async fn execute_search(
         copilot_query: copilot_out,
         llm_answer: llm_result.llm_answer,
         llm_error: llm_result.llm_error,
-        elapsed_seconds: start.elapsed().as_secs_f64(),
+        elapsed_seconds: elapsed,
         engine_stats: EngineStats {
             engines_queried: enabled,
             total_raw_results: total_raw,

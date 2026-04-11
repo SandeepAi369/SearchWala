@@ -1,7 +1,17 @@
 // ============================================================================
-// Swift Search Agent v4.1 - LLM Synthesis Engine
-// FIXED: Added summarize_direct() — no more race condition with channels
-// Research mode: 50 chunks / 32K context | Lite mode: 25 chunks / 16K context
+// Swift Search Agent v4.2 - LLM Synthesis Engine
+//
+// Iterative Deep Research:
+//   Research mode processes sources in batches of 50, calling the LLM
+//   iteratively to build a comprehensive long-form report.
+//   Each batch expands the previous report with new evidence.
+//
+// Time Awareness:
+//   Current date/time injected into every system prompt via chrono.
+//
+// Modes:
+//   - Lite: Single call, 25 chunks, 16K context → concise bullets
+//   - Research: Multi-batch iterative, 50/batch, 64K total → detailed report
 // ============================================================================
 
 use std::time::Duration;
@@ -15,11 +25,12 @@ use tokio::sync::mpsc;
 
 use crate::models::{LlmConfig, SourceResult};
 
-const MAX_CONTEXT_CHUNKS: usize = 25;
-const MAX_CONTEXT_CHUNKS_RESEARCH: usize = 50;
-const MAX_CONTEXT_CHARS: usize = 16_000;
-const MAX_CONTEXT_CHARS_RESEARCH: usize = 32_000;
+const MAX_CONTEXT_CHUNKS_LITE: usize = 25;
+const BATCH_SIZE_RESEARCH: usize = 50;
+const MAX_CONTEXT_CHARS_LITE: usize = 16_000;
+const MAX_CONTEXT_CHARS_RESEARCH_BATCH: usize = 32_000;
 const DEFAULT_LLM_TIMEOUT_MS: u64 = 45_000;
+const RESEARCH_BATCH_TIMEOUT_MS: u64 = 60_000;
 const FIRST_BATCH_WAIT_MS: u64 = 60_000;
 const PIPELINE_ACCUMULATION_MS: u64 = 5_000;
 
@@ -27,46 +38,47 @@ const PIPELINE_ACCUMULATION_MS: u64 = 5_000;
 pub struct LlmExecutionResult {
     pub llm_answer: Option<String>,
     pub llm_error: Option<String>,
+    pub batches_processed: usize,
 }
 
 // =============================================================================
-// DIRECT SYNTHESIS — Takes scraped data directly, no channel race condition
-// This is the PRIMARY path used by search.rs
+// DIRECT SYNTHESIS — Single-call for lite mode
 // =============================================================================
 
 pub async fn summarize_direct(
     query: &str,
     llm_config: LlmConfig,
     sources: &[SourceResult],
-    research_mode: bool,
+    _research_mode: bool,
 ) -> LlmExecutionResult {
     if sources.is_empty() {
         return LlmExecutionResult {
             llm_answer: None,
             llm_error: Some("llm_skipped: no scraped content available".to_string()),
+            batches_processed: 0,
         };
     }
 
-    let context = build_ranked_context(query, sources, research_mode);
+    let context = build_ranked_context(query, sources, false);
     if context.is_empty() {
         return LlmExecutionResult {
             llm_answer: None,
             llm_error: Some("llm_skipped: relevance filter produced empty context".to_string()),
+            batches_processed: 0,
         };
     }
 
     tracing::info!(
-        "LLM direct synthesis: {} sources, context_len={}, research={}",
+        "LLM direct synthesis: {} sources, context_len={}, mode=lite",
         sources.len(),
         context.len(),
-        research_mode
     );
 
     let client = build_client(&llm_config);
     let model = namespaced_model(&llm_config.provider, &llm_config.model);
     let timeout_ms = llm_config.timeout_ms.unwrap_or(DEFAULT_LLM_TIMEOUT_MS);
 
-    let (system_prompt, user_prompt) = build_prompts(query, &context, false);
+    let (system_prompt, user_prompt) = build_lite_prompts(query, &context);
 
     let chat_req = ChatRequest::new(vec![
         ChatMessage::system(system_prompt),
@@ -84,6 +96,7 @@ pub async fn summarize_direct(
                 return LlmExecutionResult {
                     llm_answer: None,
                     llm_error: Some(format!("llm_timeout: exceeded {}ms", timeout_ms)),
+                    batches_processed: 0,
                 };
             }
         }
@@ -96,12 +109,14 @@ pub async fn summarize_direct(
                 LlmExecutionResult {
                     llm_answer: None,
                     llm_error: Some("llm_empty_response".to_string()),
+                    batches_processed: 1,
                 }
             } else {
-                tracing::info!("LLM synthesis complete: {} chars", answer.len());
+                tracing::info!("LLM lite synthesis complete: {} chars", answer.len());
                 LlmExecutionResult {
                     llm_answer: Some(answer),
                     llm_error: None,
+                    batches_processed: 1,
                 }
             }
         }
@@ -110,7 +125,192 @@ pub async fn summarize_direct(
             LlmExecutionResult {
                 llm_answer: None,
                 llm_error: Some(format!("llm_error: {err}")),
+                batches_processed: 0,
             }
+        }
+    }
+}
+
+// =============================================================================
+// ITERATIVE DEEP RESEARCH — Multi-batch synthesis for long-form reports
+//
+// Flow:
+//   1. Split all sources into batches of 50
+//   2. Batch 1: Generate initial comprehensive report
+//   3. Batch 2+: Send previous_report + new sources → LLM expands
+//   4. Return final accumulated long-form report
+// =============================================================================
+
+pub async fn summarize_iterative(
+    query: &str,
+    llm_config: LlmConfig,
+    sources: &[SourceResult],
+    temp_db: Option<&crate::cache::TempDb>,
+    session_id: Option<&str>,
+) -> LlmExecutionResult {
+    if sources.is_empty() {
+        return LlmExecutionResult {
+            llm_answer: None,
+            llm_error: Some("llm_skipped: no scraped content available".to_string()),
+            batches_processed: 0,
+        };
+    }
+
+    // Split sources into batches of 50
+    let batches: Vec<&[SourceResult]> = sources.chunks(BATCH_SIZE_RESEARCH).collect();
+    let total_batches = batches.len();
+
+    tracing::info!(
+        "LLM iterative research: {} total sources → {} batches of ≤{} each",
+        sources.len(),
+        total_batches,
+        BATCH_SIZE_RESEARCH
+    );
+
+    let client = build_client(&llm_config);
+    let model = namespaced_model(&llm_config.provider, &llm_config.model);
+    let timeout_ms = llm_config.timeout_ms.unwrap_or(RESEARCH_BATCH_TIMEOUT_MS);
+
+    let mut accumulated_report = String::new();
+    let mut global_source_offset = 0usize;
+
+    for (batch_idx, batch) in batches.iter().enumerate() {
+        let batch_num = batch_idx + 1;
+
+        tracing::info!(
+            "LLM research batch {}/{}: {} sources (offset {})",
+            batch_num,
+            total_batches,
+            batch.len(),
+            global_source_offset
+        );
+
+        // Update temp DB progress
+        if let (Some(db), Some(sid)) = (temp_db, session_id) {
+            let progress = format!("Batch {}/{}", batch_num, total_batches);
+            db.update_status(sid, &format!("llm_batch_{}", batch_num), &progress).await;
+        }
+
+        // Build context for this batch with global source IDs
+        let context = build_research_batch_context(query, batch, global_source_offset);
+        if context.is_empty() {
+            global_source_offset += batch.len();
+            continue;
+        }
+
+        let (system_prompt, user_prompt) = if batch_idx == 0 {
+            build_research_initial_prompts(query, &context, total_batches)
+        } else {
+            build_research_continuation_prompts(
+                query,
+                &context,
+                &accumulated_report,
+                batch_num,
+                total_batches,
+            )
+        };
+
+        let chat_req = ChatRequest::new(vec![
+            ChatMessage::system(system_prompt),
+            ChatMessage::user(user_prompt),
+        ]);
+
+        tracing::info!(
+            "LLM batch {}/{} calling model={} context_len={} prev_report_len={}",
+            batch_num,
+            total_batches,
+            model,
+            context.len(),
+            accumulated_report.len()
+        );
+
+        let call_result = match tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            client.exec_chat(&model, chat_req, None),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::warn!("LLM batch {}/{} timed out after {}ms", batch_num, total_batches, timeout_ms);
+                // If we already have a partial report, return it instead of failing
+                if !accumulated_report.is_empty() {
+                    tracing::info!("Returning partial report ({} chars) after timeout", accumulated_report.len());
+                    return LlmExecutionResult {
+                        llm_answer: Some(accumulated_report),
+                        llm_error: Some(format!(
+                            "partial_report: batch {}/{} timed out, showing results from {} batches",
+                            batch_num, total_batches, batch_idx
+                        )),
+                        batches_processed: batch_idx,
+                    };
+                }
+                return LlmExecutionResult {
+                    llm_answer: None,
+                    llm_error: Some(format!("llm_timeout: batch {}/{} exceeded {}ms", batch_num, total_batches, timeout_ms)),
+                    batches_processed: batch_idx,
+                };
+            }
+        };
+
+        match call_result {
+            Ok(chat_res) => {
+                let batch_answer = chat_res.first_text().unwrap_or("").trim().to_string();
+                if !batch_answer.is_empty() {
+                    accumulated_report = batch_answer;
+                    tracing::info!(
+                        "LLM batch {}/{} complete: report now {} chars",
+                        batch_num,
+                        total_batches,
+                        accumulated_report.len()
+                    );
+
+                    // Update partial answer in temp DB
+                    if let (Some(db), Some(sid)) = (temp_db, session_id) {
+                        db.update_partial_answer(sid, &accumulated_report).await;
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::error!("LLM batch {}/{} error: {}", batch_num, total_batches, err);
+                // Return partial if we have it
+                if !accumulated_report.is_empty() {
+                    return LlmExecutionResult {
+                        llm_answer: Some(accumulated_report),
+                        llm_error: Some(format!(
+                            "partial_report: batch {}/{} failed ({}), showing partial results",
+                            batch_num, total_batches, err
+                        )),
+                        batches_processed: batch_idx,
+                    };
+                }
+                return LlmExecutionResult {
+                    llm_answer: None,
+                    llm_error: Some(format!("llm_error: {err}")),
+                    batches_processed: batch_idx,
+                };
+            }
+        }
+
+        global_source_offset += batch.len();
+    }
+
+    if accumulated_report.is_empty() {
+        LlmExecutionResult {
+            llm_answer: None,
+            llm_error: Some("llm_empty_response: all batches returned empty".to_string()),
+            batches_processed: total_batches,
+        }
+    } else {
+        tracing::info!(
+            "LLM iterative research complete: {} chars across {} batches",
+            accumulated_report.len(),
+            total_batches
+        );
+        LlmExecutionResult {
+            llm_answer: Some(accumulated_report),
+            llm_error: None,
+            batches_processed: total_batches,
         }
     }
 }
@@ -125,21 +325,22 @@ pub async fn summarize_from_stream(
     mut rx: mpsc::Receiver<SourceResult>,
     research_mode: bool,
 ) -> LlmExecutionResult {
-    let max_chunks = if research_mode { MAX_CONTEXT_CHUNKS_RESEARCH } else { MAX_CONTEXT_CHUNKS };
+    let max_chunks = if research_mode { BATCH_SIZE_RESEARCH } else { MAX_CONTEXT_CHUNKS_LITE };
 
-    // Wait much longer for first batch — scraping can take 30-60s
     let first = match tokio::time::timeout(Duration::from_millis(FIRST_BATCH_WAIT_MS), rx.recv()).await {
         Ok(Some(source)) => source,
         Ok(None) => {
             return LlmExecutionResult {
                 llm_answer: None,
                 llm_error: Some("llm_skipped: no scraped content available".to_string()),
+                batches_processed: 0,
             };
         }
         Err(_) => {
             return LlmExecutionResult {
                 llm_answer: None,
                 llm_error: Some("llm_timeout: waiting for first scraped batch".to_string()),
+                batches_processed: 0,
             };
         }
     };
@@ -158,6 +359,7 @@ pub async fn summarize_from_stream(
         return LlmExecutionResult {
             llm_answer: None,
             llm_error: Some("llm_skipped: relevance filter produced empty context".to_string()),
+            batches_processed: 0,
         };
     }
 
@@ -165,7 +367,7 @@ pub async fn summarize_from_stream(
     let model = namespaced_model(&llm_config.provider, &llm_config.model);
     let timeout_ms = llm_config.timeout_ms.unwrap_or(DEFAULT_LLM_TIMEOUT_MS);
 
-    let (system_prompt, user_prompt) = build_prompts(query, &context, false);
+    let (system_prompt, user_prompt) = build_lite_prompts(query, &context);
 
     let chat_req = ChatRequest::new(vec![
         ChatMessage::system(system_prompt),
@@ -181,6 +383,7 @@ pub async fn summarize_from_stream(
                 return LlmExecutionResult {
                     llm_answer: None,
                     llm_error: Some(format!("llm_timeout: exceeded {}ms", timeout_ms)),
+                    batches_processed: 0,
                 };
             }
         }
@@ -193,17 +396,20 @@ pub async fn summarize_from_stream(
                 LlmExecutionResult {
                     llm_answer: None,
                     llm_error: Some("llm_empty_response".to_string()),
+                    batches_processed: 1,
                 }
             } else {
                 LlmExecutionResult {
                     llm_answer: Some(answer),
                     llm_error: None,
+                    batches_processed: 1,
                 }
             }
         }
         Err(err) => LlmExecutionResult {
             llm_answer: None,
             llm_error: Some(format!("llm_error: {err}")),
+            batches_processed: 0,
         },
     }
 }
@@ -244,7 +450,6 @@ pub(crate) fn namespaced_model(provider: &str, model: &str) -> String {
 
     let provider = provider.trim().to_lowercase();
 
-    // All OpenAI-compatible providers (custom endpoints) use the openai:: prefix
     if provider == "openai_compatible"
         || provider == "cerebras"
         || provider == "openrouter"
@@ -264,19 +469,22 @@ pub(crate) fn namespaced_model(provider: &str, model: &str) -> String {
             format!("{}::{}", provider, model)
         }
         _ => {
-            // Unknown provider — assume OpenAI-compatible
             format!("openai::{}", model)
         }
     }
 }
+
+// =============================================================================
+// Context Building
+// =============================================================================
 
 fn build_ranked_context(_query: &str, sources: &[SourceResult], research_mode: bool) -> String {
     if sources.is_empty() {
         return String::new();
     }
 
-    let max_chunks = if research_mode { MAX_CONTEXT_CHUNKS_RESEARCH } else { MAX_CONTEXT_CHUNKS };
-    let max_chars = if research_mode { MAX_CONTEXT_CHARS_RESEARCH } else { MAX_CONTEXT_CHARS };
+    let max_chunks = if research_mode { BATCH_SIZE_RESEARCH } else { MAX_CONTEXT_CHUNKS_LITE };
+    let max_chars = if research_mode { MAX_CONTEXT_CHARS_RESEARCH_BATCH } else { MAX_CONTEXT_CHARS_LITE };
 
     let mut context = String::new();
     for (idx, source) in sources.iter().take(max_chunks).enumerate() {
@@ -290,6 +498,37 @@ fn build_ranked_context(_query: &str, sources: &[SourceResult], research_mode: b
         );
 
         if context.len() + block.len() > max_chars {
+            break;
+        }
+        context.push_str(&block);
+    }
+
+    context
+}
+
+/// Build context for a research batch using global source IDs.
+fn build_research_batch_context(
+    _query: &str,
+    sources: &[SourceResult],
+    global_offset: usize,
+) -> String {
+    if sources.is_empty() {
+        return String::new();
+    }
+
+    let mut context = String::new();
+    for (idx, source) in sources.iter().enumerate() {
+        let global_id = global_offset + idx + 1;
+        let block = format!(
+            "[{}] {} {} ({})\n{}\n\n",
+            global_id,
+            credibility_tag(&source.url),
+            source.title,
+            source.url,
+            source.extracted_text.trim()
+        );
+
+        if context.len() + block.len() > MAX_CONTEXT_CHARS_RESEARCH_BATCH {
             break;
         }
         context.push_str(&block);
@@ -349,20 +588,107 @@ fn ensure_trailing_slash(url: &str) -> String {
     }
 }
 
-fn build_prompts(query: &str, context: &str, streaming: bool) -> (String, String) {
-    let system = "You are a synthesis engine for web search results. Always prioritize evidence from [High Trust] sources over [Forum Discussion] and [General Web]. If sources conflict, mention that briefly and use the highest-trust evidence. Use only provided context. Every factual sentence must include at least one source citation like [1] or [2]. End with a 'Sources Used:' section mapping source IDs to URLs.".to_string();
+// =============================================================================
+// Prompt Builders — with time awareness via chrono
+// =============================================================================
 
-    let user = if streaming {
-        format!(
-            "Query:\n{}\n\nUse only this curated context:\n{}\n\nStream a concise factual answer with [n] citations for each factual sentence, then end with:\nSources Used:\n[n] <url>",
-            query, context
-        )
-    } else {
-        format!(
-            "Query:\n{}\n\nUse only this curated context:\n{}\n\nReturn the best answer in 3-7 short bullet points. Cite each factual point with [n] where n maps to source IDs from context. Finish with:\nSources Used:\n[n] <url>",
-            query, context
-        )
-    };
+fn current_datetime_str() -> String {
+    chrono::Utc::now().format("%B %d, %Y at %H:%M UTC").to_string()
+}
+
+fn build_lite_prompts(query: &str, context: &str) -> (String, String) {
+    let system = format!(
+        "You are a synthesis engine for web search results. Current date: {}. \
+         Always prioritize evidence from [High Trust] sources over [Forum Discussion] and [General Web]. \
+         If sources conflict, mention that briefly and use the highest-trust evidence. \
+         Use only provided context — never hallucinate or add information not in the sources. \
+         Every factual sentence must include at least one source citation like [1] or [2]. \
+         Prioritize recent/current data. Flag any information that appears outdated. \
+         End with a 'Sources Used:' section mapping source IDs to URLs.",
+        current_datetime_str()
+    );
+
+    let user = format!(
+        "Query:\n{}\n\nUse only this curated context:\n{}\n\n\
+         Return the best answer in 5-10 detailed bullet points with explanation. \
+         Each point should be substantive (2-3 sentences minimum). \
+         Cite each factual point with [n] where n maps to source IDs from context. \
+         Finish with:\nSources Used:\n[n] <url>",
+        query, context
+    );
+
+    (system, user)
+}
+
+fn build_research_initial_prompts(query: &str, context: &str, total_batches: usize) -> (String, String) {
+    let system = format!(
+        "You are an expert research analyst producing a comprehensive, detailed research report. \
+         Current date: {}. \
+         You are processing batch 1 of {} total batches of source material. \
+         STRICT RULES: \
+         1. Use ONLY the provided source material — NEVER hallucinate or add unsourced claims. \
+         2. Every factual statement MUST have a citation like [1], [2], etc. \
+         3. Prioritize [High Trust] sources over forums and general web. \
+         4. Flag any information that appears outdated given today's date. \
+         5. Write in a structured, detailed, analytical style — NOT bullet points. \
+         6. Use clear section headings (## format). \
+         7. Be thorough — this is a deep research report, not a summary.",
+        current_datetime_str(),
+        total_batches
+    );
+
+    let user = format!(
+        "RESEARCH QUERY:\n{}\n\n\
+         SOURCE MATERIAL (Batch 1/{}):\n{}\n\n\
+         Write a comprehensive, well-structured research report based ONLY on these sources. \
+         Include:\n\
+         - An overview/introduction section\n\
+         - Key findings organized by theme or topic\n\
+         - Important details, data points, and context from the sources\n\
+         - Analysis of source agreement/disagreement where relevant\n\
+         - A 'Sources Used' section at the end: [n] <url>\n\n\
+         Write at length. Be detailed and thorough. Do NOT summarize briefly — expand fully.",
+        query, total_batches, context
+    );
+
+    (system, user)
+}
+
+fn build_research_continuation_prompts(
+    query: &str,
+    new_context: &str,
+    previous_report: &str,
+    batch_num: usize,
+    total_batches: usize,
+) -> (String, String) {
+    let system = format!(
+        "You are an expert research analyst expanding an existing research report with new source material. \
+         Current date: {}. \
+         You are processing batch {} of {} total batches. \
+         STRICT RULES: \
+         1. You MUST integrate new information into the existing report — do NOT restart from scratch. \
+         2. ADD new details, evidence, and insights from the new sources. \
+         3. KEEP all existing content and citations intact. \
+         4. Use ONLY the provided new sources for additions — NEVER hallucinate. \
+         5. Every new factual statement MUST cite the source number like [51], [52], etc. \
+         6. Maintain the same structure and section headings. Add new sections if warranted. \
+         7. Update the 'Sources Used' section to include all sources used (old + new). \
+         8. Flag outdated information if new sources provide more current data.",
+        current_datetime_str(),
+        batch_num,
+        total_batches
+    );
+
+    let user = format!(
+        "RESEARCH QUERY:\n{}\n\n\
+         EXISTING REPORT FROM PREVIOUS BATCHES:\n---\n{}\n---\n\n\
+         NEW SOURCE MATERIAL (Batch {}/{}):\n{}\n\n\
+         Expand and enhance the existing report with evidence from these new sources. \
+         ADD new details, strengthen existing points, fill gaps, and correct any outdated info. \
+         Keep the full report intact — return the COMPLETE updated report including all previous content plus new additions. \
+         Update the Sources Used section at the end.",
+        query, previous_report, batch_num, total_batches, new_context
+    );
 
     (system, user)
 }
@@ -378,7 +704,7 @@ pub async fn summarize_from_stream_sse(
     tx_sse: mpsc::Sender<Result<Event, std::convert::Infallible>>,
     research_mode: bool,
 ) {
-    let max_chunks = if research_mode { MAX_CONTEXT_CHUNKS_RESEARCH } else { MAX_CONTEXT_CHUNKS };
+    let max_chunks = if research_mode { BATCH_SIZE_RESEARCH } else { MAX_CONTEXT_CHUNKS_LITE };
 
     let first = match tokio::time::timeout(Duration::from_millis(FIRST_BATCH_WAIT_MS), rx.recv()).await {
         Ok(Some(source)) => source,
@@ -408,7 +734,7 @@ pub async fn summarize_from_stream_sse(
     let client = build_client(&llm_config);
     let model = namespaced_model(&llm_config.provider, &llm_config.model);
 
-    let (system_prompt, user_prompt) = build_prompts(&query, &context, true);
+    let (system_prompt, user_prompt) = build_lite_prompts(&query, &context);
 
     let chat_req = ChatRequest::new(vec![
         ChatMessage::system(system_prompt),
@@ -442,7 +768,6 @@ pub async fn summarize_from_stream_sse(
 
 // =============================================================================
 // Dynamic Model Fetcher — GET /api/models
-// Pings provider's /v1/models endpoint and returns available models
 // =============================================================================
 
 pub async fn fetch_provider_models(

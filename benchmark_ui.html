@@ -3,1028 +3,661 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Swift-Search-RS · Research Console</title>
-  <meta name="description" content="Ultra-fast meta-search engine with 90+ engines and LLM synthesis" />
+  <title>Swift Search · Research Engine</title>
+  <meta name="description" content="Ultra-fast meta-search engine with 90+ engines, iterative deep research, and LLM synthesis" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --paper: #020617;
-      --paper-2: #0a0f1f;
-      --ink: #e6eeff;
-      --muted: #7b8db5;
-      --line: rgba(148, 163, 184, 0.18);
-      --panel: rgba(12, 18, 36, 0.82);
-      --panel-2: rgba(16, 25, 48, 0.92);
-      --accent: #60a5fa;
-      --accent-2: #22d3ee;
+      --bg: #0a0a12;
+      --bg-2: #0f1019;
+      --surface: rgba(18, 20, 32, 0.92);
+      --surface-2: rgba(24, 28, 44, 0.85);
+      --surface-3: rgba(30, 35, 55, 0.75);
+      --ink: #e8ecf4;
+      --ink-2: #c0c8d8;
+      --muted: #6b7b98;
+      --border: rgba(100, 120, 160, 0.14);
+      --border-2: rgba(100, 120, 160, 0.25);
+      --accent: #6c8cff;
+      --accent-2: #38bdf8;
       --success: #34d399;
-      --warn: #f59e0b;
+      --warn: #fbbf24;
       --danger: #f87171;
-      --gradient-1: linear-gradient(135deg, #3b82f6, #8b5cf6);
-      --gradient-2: linear-gradient(135deg, #22d3ee, #3b82f6);
+      --grad-1: linear-gradient(135deg, #4f6cf7, #7c3aed);
+      --grad-2: linear-gradient(135deg, #38bdf8, #6c8cff);
+      --radius: 16px;
+      --radius-sm: 10px;
     }
-
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
       min-height: 100vh;
       color: var(--ink);
-      font-family: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
-      background:
-        radial-gradient(960px 620px at -10% -20%, rgba(37, 99, 235, 0.15), transparent 60%),
-        radial-gradient(920px 540px at 120% -10%, rgba(34, 211, 238, 0.09), transparent 62%),
-        linear-gradient(165deg, var(--paper), var(--paper-2));
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+      background: var(--bg);
       -webkit-font-smoothing: antialiased;
     }
-
-    .container { max-width: 1280px; margin: 0 auto; padding: 24px 16px; }
-
-    /* ── Glass Panel ── */
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 20px;
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      box-shadow:
-        inset 0 1px 0 rgba(148, 163, 184, 0.08),
-        0 18px 40px rgba(2, 6, 23, 0.5);
-    }
-
-    /* ── Inputs ── */
-    input, select, textarea {
-      font-family: inherit;
-      font-size: 14px;
-      background: var(--panel-2);
-      border: 1px solid rgba(148, 163, 184, 0.25);
-      border-radius: 12px;
-      color: var(--ink);
-      padding: 12px 14px;
-      width: 100%;
-      outline: none;
-      transition: border-color 0.25s, box-shadow 0.25s;
-    }
-    input::placeholder { color: var(--muted); }
-    input:focus, select:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.15);
-    }
-
-    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
-
-    a { color: var(--accent); text-decoration: none; transition: color 0.2s; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    a { color: var(--accent); text-decoration: none; }
     a:hover { color: var(--accent-2); }
+    .mono { font-family: "IBM Plex Mono", monospace; }
 
-    .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+    /* ─── Animations ─── */
+    @keyframes fadeUp { from { opacity:0;transform:translateY(16px) } to { opacity:1;transform:translateY(0) } }
+    @keyframes fadeIn { from { opacity:0 } to { opacity:1 } }
+    @keyframes slideDown { from { opacity:0;max-height:0 } to { opacity:1;max-height:600px } }
+    @keyframes spin { to { transform:rotate(360deg) } }
+    @keyframes shimmer { 0%{background-position:-200% 0}100%{background-position:200% 0} }
+    @keyframes pulse { 0%,100%{opacity:.4}50%{opacity:1} }
+    @keyframes typeIn { from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:translateY(0)} }
+    .fade-up { animation: fadeUp 500ms ease-out both }
+    .fade-in { animation: fadeIn 350ms ease-out both }
+    .slide-down { animation: slideDown 350ms ease-out both; overflow:hidden }
+    .spinner { display:inline-block;width:16px;height:16px;border:2px solid rgba(108,140,255,.25);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite }
+    .pulse { animation:pulse 1.4s ease-in-out infinite }
+    .hidden { display:none!important }
 
-    /* ── Grid ── */
-    .grid { display: grid; gap: 16px; }
-    .grid-2 { grid-template-columns: 1fr 1fr; }
-    .grid-3 { grid-template-columns: repeat(3, 1fr); }
-    .grid-4 { grid-template-columns: repeat(4, 1fr); }
-    .grid-12 { grid-template-columns: repeat(12, 1fr); }
-    @media (max-width: 768px) {
-      .grid-2, .grid-3, .grid-4, .grid-12 { grid-template-columns: 1fr; }
+    /* ─── Hero Search ─── */
+    .hero { padding: 48px 0 24px; text-align: center; }
+    .hero-brand { display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px }
+    .hero-logo { width:40px;height:40px }
+    .hero-title { font-size:1.8rem;font-weight:800;letter-spacing:-0.03em;background:var(--grad-2);-webkit-background-clip:text;-webkit-text-fill-color:transparent }
+    .hero-sub { font-size:13px;color:var(--muted);margin-top:2px }
+    .search-wrap {
+      position:relative;max-width:780px;margin:0 auto;
     }
+    .search-input {
+      width:100%;
+      font-family:inherit;font-size:18px;font-weight:500;
+      padding:20px 56px 20px 52px;
+      background:var(--surface);border:1px solid var(--border-2);
+      border-radius:20px;color:var(--ink);outline:none;
+      transition:border-color .25s,box-shadow .25s;
+    }
+    .search-input::placeholder { color:var(--muted) }
+    .search-input:focus { border-color:var(--accent);box-shadow:0 0 0 4px rgba(108,140,255,.12) }
+    .search-icon {
+      position:absolute;left:18px;top:50%;transform:translateY(-50%);color:var(--muted);pointer-events:none
+    }
+    .search-btn {
+      position:absolute;right:8px;top:50%;transform:translateY(-50%);
+      background:var(--grad-1);border:none;border-radius:14px;
+      padding:12px 20px;color:#fff;font-weight:600;font-size:14px;cursor:pointer;
+      transition:transform .15s,box-shadow .2s;
+    }
+    .search-btn:hover { transform:translateY(-50%) translateY(-1px);box-shadow:0 4px 16px rgba(79,108,247,.35) }
+    .search-btn:disabled { opacity:.5;cursor:not-allowed;transform:translateY(-50%)!important;box-shadow:none!important }
 
-    .col-span-8 { grid-column: span 8; }
-    .col-span-4 { grid-column: span 4; }
-    .col-span-3 { grid-column: span 3; }
-    .col-span-6 { grid-column: span 6; }
-    @media (max-width: 768px) { .col-span-8, .col-span-4, .col-span-3, .col-span-6 { grid-column: span 1; } }
+    /* ─── Mode Pills ─── */
+    .mode-bar { display:flex;justify-content:center;gap:6px;margin-top:14px;flex-wrap:wrap }
+    .mode-pill {
+      padding:6px 16px;border-radius:20px;font-size:12px;font-weight:500;
+      background:transparent;border:1px solid var(--border);color:var(--muted);
+      cursor:pointer;transition:all .2s;
+    }
+    .mode-pill:hover { border-color:var(--border-2);color:var(--ink-2) }
+    .mode-pill.active { background:rgba(108,140,255,.12);border-color:rgba(108,140,255,.3);color:var(--accent) }
 
-    /* ── Animations ── */
-    @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(12px); }
-      to { opacity: 1; transform: translateY(0); }
+    /* ─── Settings Panel (collapsible) ─── */
+    .settings-toggle {
+      display:flex;align-items:center;justify-content:center;gap:6px;
+      margin:14px auto 0;padding:6px 14px;border-radius:10px;
+      background:transparent;border:1px solid var(--border);color:var(--muted);
+      font-size:12px;cursor:pointer;transition:all .2s;width:fit-content;
     }
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
+    .settings-toggle:hover { border-color:var(--border-2);color:var(--ink-2) }
+    .settings-toggle svg { width:14px;height:14px }
+    .settings-body {
+      max-width:780px;margin:10px auto 0;padding:16px 20px;
+      background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
     }
-    @keyframes slideDown {
-      from { opacity: 0; max-height: 0; transform: translateY(-8px); }
-      to { opacity: 1; max-height: 800px; transform: translateY(0); }
+    .settings-grid { display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px }
+    .settings-grid label { display:block;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px }
+    .settings-grid input, .settings-grid select {
+      width:100%;padding:8px 10px;font-size:13px;font-family:inherit;
+      background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-sm);
+      color:var(--ink);outline:none;transition:border-color .2s;
     }
-    @keyframes pulse {
-      0%, 100% { opacity: 0.4; }
-      50% { opacity: 1; }
+    .settings-grid input:focus, .settings-grid select:focus { border-color:var(--accent) }
+    .settings-row { display:flex;align-items:center;gap:10px;margin-top:10px }
+    .settings-row label { font-size:13px;color:var(--ink-2);cursor:pointer;display:flex;align-items:center;gap:6px }
+    .btn-sm {
+      padding:5px 12px;border-radius:8px;font-size:11px;font-weight:500;
+      border:1px solid rgba(108,140,255,.2);background:rgba(108,140,255,.08);
+      color:var(--accent);cursor:pointer;transition:all .2s;
     }
-    @keyframes shimmer {
-      0% { background-position: -200% 0; }
-      100% { background-position: 200% 0; }
-    }
-    @keyframes spin {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(360deg); }
-    }
-    @keyframes breathe {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0); }
-      50% { box-shadow: 0 0 20px 4px rgba(96, 165, 250, 0.15); }
-    }
-    @keyframes typewriter {
-      from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
+    .btn-sm:hover { background:rgba(108,140,255,.15);border-color:rgba(108,140,255,.35) }
+    .btn-sm:disabled { opacity:.4;cursor:not-allowed }
+    @media(max-width:768px) { .settings-grid { grid-template-columns:1fr 1fr } }
 
-    .fade-up { animation: fadeUp 520ms ease-out both; }
-    .fade-in { animation: fadeIn 400ms ease-out both; }
-    .slide-down { animation: slideDown 400ms ease-out both; overflow: hidden; }
-    .pulse { animation: pulse 1.4s ease-in-out infinite; }
-    .breathe { animation: breathe 2s ease-in-out infinite; }
+    /* ─── Progress ─── */
+    .progress-wrap { max-width:780px;margin:16px auto 0;height:3px;background:var(--surface);border-radius:4px;overflow:hidden }
+    .progress-bar { height:100%;background:var(--grad-2);border-radius:4px;transition:width .5s ease-out;width:0 }
+    .progress-label { text-align:center;margin-top:6px;font-size:12px;color:var(--muted) }
 
-    .shimmer-bg {
-      background: linear-gradient(90deg, transparent 0%, rgba(96,165,250,0.08) 50%, transparent 100%);
-      background-size: 200% 100%;
-      animation: shimmer 2s linear infinite;
-    }
+    /* ─── Results Layout ─── */
+    .results-grid { display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px }
+    @media(max-width:768px) { .results-grid { grid-template-columns:1fr } }
 
-    .spinner {
-      display: inline-block;
-      width: 16px;
-      height: 16px;
-      border: 2px solid rgba(96, 165, 250, 0.3);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+    .panel {
+      background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+      padding:20px;min-height:300px;
     }
+    .panel-head { display:flex;align-items:center;justify-content:space-between;margin-bottom:12px }
+    .panel-title { font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px }
+    .panel-title svg { width:16px;height:16px;color:var(--muted) }
 
-    /* ── Buttons ── */
-    .btn-primary {
-      background: var(--gradient-1);
-      color: white;
-      font-weight: 600;
-      font-size: 14px;
-      border: none;
-      border-radius: 12px;
-      padding: 12px 28px;
-      cursor: pointer;
-      transition: transform 0.15s, box-shadow 0.25s, opacity 0.2s;
-      position: relative;
-      overflow: hidden;
-    }
-    .btn-primary::after {
-      content: '';
-      position: absolute;
-      inset: 0;
-      background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.08) 50%, transparent 60%);
-      background-size: 200% 100%;
-      animation: shimmer 3s linear infinite;
-    }
-    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(59, 130, 246, 0.35); }
-    .btn-primary:active { transform: translateY(0); }
-    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
-
-    .btn-secondary {
-      background: transparent;
-      color: var(--muted);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px 24px;
-      font-size: 14px;
-      cursor: pointer;
-      transition: border-color 0.2s, color 0.2s;
-    }
-    .btn-secondary:hover { border-color: rgba(148, 163, 184, 0.4); color: var(--ink); }
-
-    .btn-icon {
-      background: rgba(96, 165, 250, 0.1);
-      border: 1px solid rgba(96, 165, 250, 0.2);
-      border-radius: 10px;
-      padding: 8px 14px;
-      color: var(--accent);
-      font-size: 12px;
-      cursor: pointer;
-      transition: background 0.2s, border-color 0.2s;
-    }
-    .btn-icon:hover { background: rgba(96, 165, 250, 0.2); border-color: rgba(96, 165, 250, 0.4); }
-    .btn-icon:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    /* ── Badge ── */
     .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 3px 10px;
-      border-radius: 8px;
-      font-size: 11px;
-      font-weight: 500;
-      background: rgba(96, 165, 250, 0.12);
-      color: var(--accent);
-      border: 1px solid rgba(96, 165, 250, 0.15);
+      display:inline-flex;align-items:center;padding:2px 8px;border-radius:6px;
+      font-size:11px;font-weight:500;
+      background:rgba(108,140,255,.1);color:var(--accent);border:1px solid rgba(108,140,255,.12)
     }
-    .badge-success { background: rgba(52, 211, 153, 0.12); color: var(--success); border-color: rgba(52, 211, 153, 0.15); }
-    .badge-warn { background: rgba(245, 158, 11, 0.12); color: var(--warn); border-color: rgba(245, 158, 11, 0.15); }
-    .badge-danger { background: rgba(248, 113, 113, 0.12); color: var(--danger); border-color: rgba(248, 113, 113, 0.15); }
+    .badge-success { background:rgba(52,211,153,.1);color:var(--success);border-color:rgba(52,211,153,.12) }
 
-    /* ── Stats ── */
-    .stat-card { text-align: center; padding: 16px; }
-    .stat-value { font-size: 1.2rem; font-weight: 600; color: var(--accent-2); }
-    .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; }
-
-    /* ── Source Cards ── */
+    /* ─── Source Cards ─── */
     .source-card {
-      border: 1px solid var(--line);
-      background: rgba(16, 25, 48, 0.5);
-      border-radius: 14px;
-      padding: 14px 16px;
-      transition: border-color 0.25s, background 0.25s, transform 0.2s;
-      animation: fadeUp 400ms ease-out both;
+      padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);
+      margin-bottom:8px;transition:border-color .2s,background .2s,transform .15s;
+      animation:fadeUp 350ms ease-out both;
     }
-    .source-card:hover {
-      border-color: rgba(96, 165, 250, 0.3);
-      background: rgba(16, 25, 48, 0.8);
-      transform: translateY(-1px);
-    }
+    .source-card:hover { border-color:rgba(108,140,255,.25);background:var(--surface-2);transform:translateY(-1px) }
+    .source-meta { display:flex;align-items:center;gap:6px;margin-bottom:4px }
+    .source-num { color:var(--muted);font-size:10px;font-weight:600 }
+    .engine-badge { padding:1px 6px;border-radius:4px;font-size:10px;background:var(--surface-3);color:var(--ink-2);border:1px solid var(--border) }
+    .source-title { font-size:13px;font-weight:500;line-height:1.4;word-break:break-word }
+    .source-snippet { font-size:11px;color:var(--muted);margin-top:3px;line-height:1.4 }
 
-    /* ── Answer Box ── */
-    .answer-box {
-      line-height: 1.85;
-      font-size: 14px;
-      white-space: pre-wrap;
-      color: var(--ink);
-    }
-    .answer-box .word {
-      display: inline;
-      animation: typewriter 200ms ease-out both;
-    }
+    /* ─── Answer ─── */
+    .answer-box { font-size:14px;line-height:1.85;color:var(--ink);white-space:pre-wrap }
+    .answer-box .word { display:inline;animation:typeIn 150ms ease-out both }
+    .answer-empty { color:var(--muted);font-size:13px;text-align:center;padding:40px 0 }
 
-    /* ── Citation Pills ── */
-    .citation-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px 12px;
-      border-radius: 10px;
-      font-size: 12px;
-      border: 1px solid rgba(96, 165, 250, 0.2);
-      color: var(--accent);
-      transition: all 0.2s;
-      text-decoration: none;
+    /* ─── History Panel ─── */
+    .history-toggle {
+      display:flex;align-items:center;justify-content:center;gap:6px;
+      margin:10px auto 0;padding:5px 12px;border-radius:8px;
+      background:transparent;border:1px solid var(--border);color:var(--muted);
+      font-size:11px;cursor:pointer;transition:all .2s;width:fit-content;
     }
-    .citation-pill:hover { background: rgba(96, 165, 250, 0.1); border-color: rgba(96, 165, 250, 0.35); transform: translateY(-1px); }
+    .history-toggle:hover { border-color:var(--border-2);color:var(--ink-2) }
+    .history-panel {
+      max-width:1200px;margin:12px auto 0;padding:16px 20px;
+      background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    }
+    .history-entry {
+      display:flex;align-items:center;justify-content:space-between;
+      padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;
+    }
+    .history-entry:last-child { border-bottom:none }
+    .history-query { color:var(--ink);font-weight:500;flex:1 }
+    .history-meta { color:var(--muted);font-size:11px;display:flex;gap:10px }
 
-    /* ── Loading States ── */
+    /* ─── Startup Modal ─── */
+    .modal-overlay {
+      position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;
+      display:flex;align-items:center;justify-content:center;
+      animation:fadeIn 300ms ease-out both;
+    }
+    .modal-box {
+      background:var(--surface);border:1px solid var(--border-2);border-radius:20px;
+      padding:32px 36px;max-width:440px;width:90%;text-align:center;
+      animation:fadeUp 400ms ease-out both;
+    }
+    .modal-icon { font-size:36px;margin-bottom:12px }
+    .modal-title { font-size:18px;font-weight:700;margin-bottom:8px }
+    .modal-text { font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:20px }
+    .modal-actions { display:flex;gap:10px;justify-content:center }
+    .modal-btn {
+      padding:10px 28px;border-radius:12px;font-size:14px;font-weight:600;
+      cursor:pointer;transition:all .2s;border:none;
+    }
+    .modal-btn-primary { background:var(--grad-1);color:#fff }
+    .modal-btn-primary:hover { box-shadow:0 4px 16px rgba(79,108,247,.35) }
+    .modal-btn-secondary { background:transparent;border:1px solid var(--border-2);color:var(--muted) }
+    .modal-btn-secondary:hover { border-color:var(--border-2);color:var(--ink) }
+
+    /* ─── Skeleton ─── */
     .skeleton {
-      background: linear-gradient(90deg, rgba(30,40,70,0.4) 25%, rgba(60,80,120,0.3) 50%, rgba(30,40,70,0.4) 75%);
-      background-size: 400% 100%;
-      animation: shimmer 1.8s linear infinite;
-      border-radius: 8px;
-      height: 16px;
-      margin-bottom: 8px;
+      background:linear-gradient(90deg,rgba(30,35,55,.4) 25%,rgba(50,60,90,.3) 50%,rgba(30,35,55,.4) 75%);
+      background-size:400% 100%;animation:shimmer 1.8s linear infinite;
+      border-radius:6px;height:14px;margin-bottom:6px;
     }
-    .skeleton.h-20 { height: 20px; }
-    .skeleton.w-60 { width: 60%; }
-    .skeleton.w-80 { width: 80%; }
-    .skeleton.w-40 { width: 40%; }
-
-    .search-progress {
-      height: 3px;
-      background: var(--panel-2);
-      border-radius: 4px;
-      overflow: hidden;
-      margin-top: 16px;
-    }
-    .search-progress .bar {
-      height: 100%;
-      background: var(--gradient-2);
-      border-radius: 4px;
-      transition: width 0.5s ease-out;
-    }
-
-    /* ── Model Dropdown ── */
-    .model-select-wrapper { position: relative; }
-    .model-select-wrapper .fetch-indicator {
-      position: absolute;
-      right: 10px;
-      top: 50%;
-      transform: translateY(-50%);
-    }
-
-    .hidden { display: none !important; }
-    .flex { display: flex; }
-    .flex-wrap { flex-wrap: wrap; }
-    .items-center { align-items: center; }
-    .items-end { align-items: flex-end; }
-    .justify-between { justify-content: space-between; }
-    .gap-2 { gap: 8px; }
-    .gap-3 { gap: 12px; }
-    .gap-4 { gap: 16px; }
-    .mt-3 { margin-top: 12px; }
-    .mt-4 { margin-top: 16px; }
-    .mt-5 { margin-top: 20px; }
-    .mb-2 { margin-bottom: 8px; }
-    .p-5 { padding: 20px; }
-    .p-6 { padding: 24px; }
-    .text-sm { font-size: 14px; }
-    .text-xs { font-size: 12px; }
-    .font-bold { font-weight: 700; }
-    .font-semibold { font-weight: 600; }
-    .tracking-tight { letter-spacing: -0.02em; }
+    .skeleton.w-40 { width:40% } .skeleton.w-60 { width:60% } .skeleton.w-80 { width:80% }
   </style>
 </head>
 <body>
-  <main class="container">
+  <!-- ═══ Startup Modal ═══ -->
+  <div id="dbModal" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-icon">🗄️</div>
+      <div class="modal-title">Enable Search History?</div>
+      <div class="modal-text">
+        Save your search queries and AI answers locally for future reference.<br>
+        Data is stored only on your machine at <code style="color:var(--accent)">~/.swift-search/history.json</code>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn modal-btn-primary" onclick="initHistory(true)">Yes, Enable</button>
+        <button class="modal-btn modal-btn-secondary" onclick="initHistory(false)">No Thanks</button>
+      </div>
+    </div>
+  </div>
 
-    <!-- ══ SEARCH CONTROLS ══ -->
-    <section id="controlPanel" class="panel p-6 fade-up">
-      <div class="flex flex-wrap items-center justify-between gap-3">
+  <main class="container">
+    <!-- ═══ Hero Search ═══ -->
+    <section class="hero fade-up">
+      <div class="hero-brand">
+        <svg class="hero-logo" viewBox="0 0 40 40" fill="none"><circle cx="20" cy="20" r="18" stroke="url(#g1)" stroke-width="2.5"/><circle cx="20" cy="20" r="8" fill="url(#g1)" opacity=".7"/><line x1="28" y1="28" x2="36" y2="36" stroke="url(#g1)" stroke-width="2.5" stroke-linecap="round"/><defs><linearGradient id="g1" x1="0" y1="0" x2="40" y2="40"><stop stop-color="#6c8cff"/><stop offset="1" stop-color="#38bdf8"/></linearGradient></defs></svg>
         <div>
-          <h1 style="font-size:1.6rem" class="font-bold tracking-tight">Swift-Search-RS</h1>
-          <p class="text-xs" style="color:var(--muted);margin-top:4px">Ultra-fast meta-search engine · v4.1 · 90+ engines</p>
+          <div class="hero-title">Swift Search</div>
+          <div class="hero-sub">90+ engines · Iterative Deep Research · v4.2</div>
         </div>
-        <span id="endpointLabel" class="badge mono text-xs">Endpoint: /search</span>
       </div>
 
-      <div class="grid grid-12 mt-4">
-        <div class="col-span-8">
-          <label>Search Query</label>
-          <input id="queryInput" type="text" placeholder="Ask anything..." />
-        </div>
-        <div class="col-span-4">
-          <label>Focus Mode</label>
-          <select id="focusMode">
-            <option value="lite" selected>Lite (Fast)</option>
-            <option value="research">Research (Deep)</option>
-            <option value="academic">Academic</option>
-            <option value="reddit">Reddit / Forum</option>
-            <option value="youtube">YouTube</option>
+      <div class="search-wrap">
+        <svg class="search-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="queryInput" class="search-input" type="text" placeholder="Search anything..." autofocus />
+        <button id="runBtn" class="search-btn">Search</button>
+      </div>
+
+      <div class="mode-bar" id="modeBar">
+        <button class="mode-pill active" data-mode="lite">⚡ Lite</button>
+        <button class="mode-pill" data-mode="research">🔬 Deep Research</button>
+        <button class="mode-pill" data-mode="academic">🎓 Academic</button>
+        <button class="mode-pill" data-mode="reddit">💬 Reddit</button>
+        <button class="mode-pill" data-mode="youtube">▶ YouTube</button>
+      </div>
+    </section>
+
+    <!-- ═══ Collapsible Settings ═══ -->
+    <button id="settingsToggle" class="settings-toggle">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      LLM Settings
+    </button>
+    <div id="settingsBody" class="settings-body hidden">
+      <div class="settings-grid">
+        <div>
+          <label>Provider</label>
+          <select id="provider">
+            <option value="cerebras">Cerebras</option>
+            <option value="groq">Groq</option>
+            <option value="openai">OpenAI</option>
+            <option value="openai_compatible">OpenAI Compatible</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="gemini">Gemini</option>
+            <option value="xai">xAI (Grok)</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="ollama">Ollama</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="together">Together AI</option>
+            <option value="fireworks">Fireworks AI</option>
+            <option value="perplexity">Perplexity</option>
+            <option value="mistral_api">Mistral</option>
+            <option value="sambanova">SambaNova</option>
+            <option value="nvidia_nim">NVIDIA NIM</option>
           </select>
         </div>
-      </div>
-
-      <div class="grid grid-3 mt-3">
+        <div><label>API Key</label><input id="apiKey" type="password" placeholder="sk-..." /></div>
+        <div><label>Base URL</label><input id="baseUrl" type="text" placeholder="auto" /></div>
         <div>
-          <label>Max Results</label>
-          <input id="maxResults" type="number" value="" min="5" max="900" placeholder="Auto" />
-        </div>
-        <div class="flex items-end" style="grid-column:span 2">
-          <label style="cursor:pointer;display:flex;align-items:center;gap:8px;padding-bottom:12px">
-            <input id="enableLlm" type="checkbox" style="width:18px;height:18px;accent-color:var(--accent)" />
-            <span style="font-size:14px;color:var(--ink);text-transform:none;letter-spacing:0">Enable LLM Synthesis</span>
-          </label>
+          <label>Model <button id="fetchModelsBtn" class="btn-sm" style="margin-left:4px">⟳</button></label>
+          <input id="modelInput" type="text" placeholder="model" />
+          <select id="modelSelect" class="hidden"></select>
         </div>
       </div>
+      <div class="settings-row">
+        <label><input id="enableLlm" type="checkbox" style="width:16px;height:16px;accent-color:var(--accent)" /> Enable AI Synthesis</label>
+        <label><input id="maxResults" type="number" style="width:60px;padding:4px 6px;font-size:12px;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;color:var(--ink)" value="30" min="5" max="900" /> Results</label>
+      </div>
+    </div>
 
-      <!-- LLM Config Panel (animated slide) -->
-      <div id="llmPanel" class="hidden mt-3">
-        <div class="grid grid-4 gap-3">
-          <div>
-            <label>Provider</label>
-            <select id="provider">
-              <option value="cerebras" selected>Cerebras</option>
-              <option value="groq">Groq</option>
-              <option value="openai">OpenAI</option>
-              <option value="openai_compatible">OpenAI Compatible</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="gemini">Gemini</option>
-              <option value="xai">xAI (Grok)</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="cohere">Cohere</option>
-              <option value="ollama">Ollama (Local)</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="together">Together AI</option>
-              <option value="fireworks">Fireworks AI</option>
-              <option value="perplexity">Perplexity</option>
-              <option value="mistral_api">Mistral</option>
-              <option value="sambanova">SambaNova</option>
-              <option value="nvidia_nim">NVIDIA NIM</option>
-              <option value="azure_openai">Azure OpenAI</option>
-            </select>
+    <!-- ═══ Progress ═══ -->
+    <div id="progressWrap" class="progress-wrap hidden"><div id="progressBar" class="progress-bar"></div></div>
+    <div id="progressLabel" class="progress-label hidden"></div>
+
+    <!-- ═══ Results ═══ -->
+    <section id="resultsSection" class="results-grid hidden">
+      <article class="panel fade-up">
+        <div class="panel-head">
+          <div class="panel-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Sources
           </div>
-          <div>
-            <label>API Key</label>
-            <input id="apiKey" type="password" placeholder="sk-..." />
-          </div>
-          <div>
-            <label>Base URL</label>
-            <input id="baseUrl" type="text" placeholder="https://api.provider.com/v1" />
-          </div>
-          <div class="model-select-wrapper">
-            <label>Model
-              <button id="fetchModelsBtn" class="btn-icon" style="margin-left:8px;padding:3px 8px;font-size:10px" title="Fetch available models from provider">
-                ⟳ Fetch
-              </button>
-            </label>
-            <select id="modelSelect" style="display:none">
-              <option value="">Select a model...</option>
-            </select>
-            <input id="modelInput" type="text" value="llama-3.3-70b-versatile" placeholder="model name" />
-            <span id="fetchIndicator" class="fetch-indicator hidden"><span class="spinner"></span></span>
-          </div>
+          <span id="sourceCount" class="badge">0</span>
         </div>
-      </div>
-
-      <!-- Progress bar -->
-      <div id="progressBar" class="search-progress hidden mt-4">
-        <div class="bar" style="width:0%"></div>
-      </div>
-
-      <div class="flex gap-3 mt-4">
-        <button id="runBtn" class="btn-primary">⚡ Search</button>
-        <button id="clearBtn" class="btn-secondary">Clear</button>
-      </div>
-    </section>
-
-    <!-- ══ STATS BAR ══ -->
-    <section class="grid grid-4 mt-4 fade-up" style="animation-delay:80ms">
-      <div class="panel stat-card">
-        <div id="searchMs" class="stat-value mono">-</div>
-        <div class="stat-label">Search Time</div>
-      </div>
-      <div class="panel stat-card">
-        <div id="searchStatus" class="stat-value mono" style="font-size:0.9rem">idle</div>
-        <div class="stat-label">Pipeline</div>
-      </div>
-      <div class="panel stat-card">
-        <div id="llmMs" class="stat-value mono">-</div>
-        <div class="stat-label">LLM Time</div>
-      </div>
-      <div class="panel stat-card">
-        <div id="llmStatus" class="stat-value mono" style="font-size:0.9rem">idle</div>
-        <div class="stat-label">LLM Status</div>
-      </div>
-    </section>
-
-    <!-- ══ SOURCES + ANSWER ══ -->
-    <section class="grid grid-2 mt-4 fade-up" style="animation-delay:160ms">
-      <!-- Sources Panel -->
-      <article class="panel p-5" style="min-height:380px">
-        <div class="flex items-center justify-between mb-2">
-          <h3 class="font-semibold" style="font-size:1.05rem">Sources</h3>
-          <span id="sourceCount" class="badge">0 results</span>
-        </div>
-        <div id="sourcesList" style="max-height:620px;overflow-y:auto;padding-right:4px">
-          <div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">Run a search to see results</div>
-        </div>
+        <div id="sourcesList" style="max-height:600px;overflow-y:auto;padding-right:4px"></div>
       </article>
 
-      <!-- Answer Panel -->
-      <article class="panel p-5" style="min-height:380px">
-        <div class="flex items-center justify-between mb-2">
-          <h3 class="font-semibold" style="font-size:1.05rem">Answer</h3>
-          <span id="focusLabel" class="badge">lite</span>
+      <article id="answerPanel" class="panel fade-up" style="animation-delay:80ms">
+        <div class="panel-head">
+          <div class="panel-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+            AI Answer
+          </div>
+          <span id="modeLabel" class="badge">lite</span>
         </div>
-        <div id="answerBox" class="answer-box" style="min-height:200px"></div>
-        <div id="llmError" class="hidden mt-3 text-xs mono" style="color:var(--danger)"></div>
-        <div id="citationBox" class="flex flex-wrap gap-2 mt-4"></div>
+        <div id="answerBox" class="answer-box"></div>
+        <div id="llmError" class="hidden" style="margin-top:10px;font-size:12px;color:var(--danger)"></div>
       </article>
     </section>
+
+    <!-- ═══ History ═══ -->
+    <button id="historyToggle" class="history-toggle hidden">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      History <span id="historyCount">0</span>
+    </button>
+    <div id="historyPanel" class="history-panel hidden"></div>
   </main>
 
   <script>
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Swift-Search-RS v4.1 Frontend
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════════
+    // Swift Search v4.2 Frontend
+    // ════════════════════════════════════════════════════════════════
 
-    const DEFAULT_FOCUS_MODE = "lite";
-    const DEFAULT_LITE_RESULTS = 30;
-    const endpointBases = resolveEndpointBases();
-    let activeEndpoint = `${endpointBases[0] || "http://127.0.0.1:8000"}/search`;
-    let maxResultsTouched = false;
-    let fetchedModels = [];
+    const dom = {};
+    ['queryInput','runBtn','provider','apiKey','baseUrl','modelInput','modelSelect',
+     'fetchModelsBtn','enableLlm','maxResults','settingsToggle','settingsBody',
+     'progressWrap','progressBar','progressLabel','resultsSection',
+     'sourcesList','sourceCount','answerBox','answerPanel','modeLabel','llmError',
+     'dbModal','historyToggle','historyPanel','historyCount','modeBar'
+    ].forEach(id => dom[id] = document.getElementById(id));
 
-    const dom = {
-      queryInput: document.getElementById("queryInput"),
-      focusMode: document.getElementById("focusMode"),
-      maxResults: document.getElementById("maxResults"),
-      enableLlm: document.getElementById("enableLlm"),
-      llmPanel: document.getElementById("llmPanel"),
-      apiKey: document.getElementById("apiKey"),
-      provider: document.getElementById("provider"),
-      modelInput: document.getElementById("modelInput"),
-      modelSelect: document.getElementById("modelSelect"),
-      baseUrl: document.getElementById("baseUrl"),
-      runBtn: document.getElementById("runBtn"),
-      clearBtn: document.getElementById("clearBtn"),
-      fetchModelsBtn: document.getElementById("fetchModelsBtn"),
-      fetchIndicator: document.getElementById("fetchIndicator"),
-      progressBar: document.getElementById("progressBar"),
-      searchMs: document.getElementById("searchMs"),
-      focusLabel: document.getElementById("focusLabel"),
-      searchStatus: document.getElementById("searchStatus"),
-      llmMs: document.getElementById("llmMs"),
-      llmStatus: document.getElementById("llmStatus"),
-      llmError: document.getElementById("llmError"),
-      sourcesList: document.getElementById("sourcesList"),
-      sourceCount: document.getElementById("sourceCount"),
-      answerBox: document.getElementById("answerBox"),
-      citationBox: document.getElementById("citationBox"),
-      endpointLabel: document.getElementById("endpointLabel"),
-    };
+    let focusMode = 'lite';
+    let historyEnabled = false;
+    let progressInterval = null;
 
-    function nowMs() { return performance.now(); }
-
-    function resolveEndpointBases() {
-      const c = [];
-      if (window.location.origin && window.location.origin !== "null") c.push(window.location.origin);
-      c.push("http://127.0.0.1:8000");
-      c.push("http://localhost:8000");
-      return Array.from(new Set(c));
-    }
-
-    function resolveEndpointCandidates(path) {
-      return endpointBases.map(b => `${b}${path}`);
+    function bases() {
+      const c = new Set();
+      if (location.origin && location.origin !== 'null') c.add(location.origin);
+      c.add('http://127.0.0.1:8000');
+      c.add('http://localhost:8000');
+      return [...c];
     }
 
     const providerPresets = {
-      openai: { runtimeProvider: "openai", baseUrl: "", model: "gpt-4o-mini" },
-      openai_compatible: { runtimeProvider: "openai_compatible", baseUrl: "", model: "" },
-      cerebras: { runtimeProvider: "cerebras", baseUrl: "https://api.cerebras.ai/v1", model: "llama-3.3-70b" },
-      groq: { runtimeProvider: "groq", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
-      ollama: { runtimeProvider: "ollama", baseUrl: "http://localhost:11434/v1", model: "llama3" },
-      anthropic: { runtimeProvider: "anthropic", baseUrl: "", model: "claude-3-5-haiku-latest" },
-      gemini: { runtimeProvider: "gemini", baseUrl: "", model: "gemini-2.0-flash" },
-      xai: { runtimeProvider: "xai", baseUrl: "https://api.x.ai/v1", model: "grok-2-latest" },
-      deepseek: { runtimeProvider: "deepseek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat" },
-      cohere: { runtimeProvider: "cohere", baseUrl: "", model: "command-r-plus" },
-      openrouter: { runtimeProvider: "openai", baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-4o-mini" },
-      together: { runtimeProvider: "openai", baseUrl: "https://api.together.xyz/v1", model: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo" },
-      fireworks: { runtimeProvider: "openai", baseUrl: "https://api.fireworks.ai/inference/v1", model: "accounts/fireworks/models/llama-v3p1-70b-instruct" },
-      perplexity: { runtimeProvider: "openai", baseUrl: "https://api.perplexity.ai", model: "sonar-pro" },
-      mistral_api: { runtimeProvider: "openai", baseUrl: "https://api.mistral.ai/v1", model: "mistral-large-latest" },
-      sambanova: { runtimeProvider: "openai", baseUrl: "https://api.sambanova.ai/v1", model: "Meta-Llama-3.1-70B-Instruct" },
-      nvidia_nim: { runtimeProvider: "openai", baseUrl: "https://integrate.api.nvidia.com/v1", model: "meta/llama-3.1-70b-instruct" },
-      azure_openai: { runtimeProvider: "openai", baseUrl: "", model: "gpt-4o-mini" },
+      cerebras:{base:'https://api.cerebras.ai/v1',model:'llama-3.3-70b',rt:'openai'},
+      groq:{base:'https://api.groq.com/openai/v1',model:'llama-3.3-70b-versatile',rt:'groq'},
+      openai:{base:'',model:'gpt-4o-mini',rt:'openai'},
+      openai_compatible:{base:'',model:'',rt:'openai_compatible'},
+      anthropic:{base:'',model:'claude-3-5-haiku-latest',rt:'anthropic'},
+      gemini:{base:'',model:'gemini-2.0-flash',rt:'gemini'},
+      xai:{base:'https://api.x.ai/v1',model:'grok-2-latest',rt:'xai'},
+      deepseek:{base:'https://api.deepseek.com/v1',model:'deepseek-chat',rt:'deepseek'},
+      ollama:{base:'http://localhost:11434/v1',model:'llama3',rt:'ollama'},
+      openrouter:{base:'https://openrouter.ai/api/v1',model:'openai/gpt-4o-mini',rt:'openai'},
+      together:{base:'https://api.together.xyz/v1',model:'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',rt:'openai'},
+      fireworks:{base:'https://api.fireworks.ai/inference/v1',model:'accounts/fireworks/models/llama-v3p1-70b-instruct',rt:'openai'},
+      perplexity:{base:'https://api.perplexity.ai',model:'sonar-pro',rt:'openai'},
+      mistral_api:{base:'https://api.mistral.ai/v1',model:'mistral-large-latest',rt:'openai'},
+      sambanova:{base:'https://api.sambanova.ai/v1',model:'Meta-Llama-3.1-70B-Instruct',rt:'openai'},
+      nvidia_nim:{base:'https://integrate.api.nvidia.com/v1',model:'meta/llama-3.1-70b-instruct',rt:'openai'},
     };
 
-    function selectedProviderKey() { return dom.provider.value.trim() || "cerebras"; }
-    function providerPreset() { return providerPresets[selectedProviderKey()] || providerPresets.cerebras; }
-
-    function escapeHtml(str) {
-      return String(str || "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
+    function preset() { return providerPresets[dom.provider.value] || providerPresets.cerebras }
+    function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+    function cleanText(s,max=12000) {
+      let o = String(s||'').replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/<\|[^|]+\|>/g,'').replace(/^data:\s*/gim,'').trim();
+      return o.length > max ? o.slice(0,max)+'...' : o;
     }
 
-    function cleanDisplayText(str, maxLen = 8000) {
-      let out = String(str || "");
-      out = out.replace(/<think>[\s\S]*?<\/think>/gi, "");
-      out = out.replace(/<\|[^|]+\|>/g, "");
-      out = out.replace(/^data:\s*/gim, "");
-      out = out.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
-      out = out.trim();
-      if (out.length > maxLen) out = out.slice(0, maxLen) + "...";
-      return out;
-    }
-
-    function getEffectiveModel() {
-      if (dom.modelSelect.style.display !== "none" && dom.modelSelect.value) {
-        return dom.modelSelect.value;
+    // ═══ Modal / History Init ═══
+    function initHistory(yes) {
+      dom.dbModal.classList.add('hidden');
+      localStorage.setItem('swift_history_choice','done');
+      if (yes) {
+        historyEnabled = true;
+        postApi('/api/history/enable').then(() => refreshHistory());
+        dom.historyToggle.classList.remove('hidden');
       }
-      return dom.modelInput.value.trim();
     }
 
-    // ═══ Progress Animation ═══
-    let progressInterval = null;
-    function startProgress() {
-      dom.progressBar.classList.remove("hidden");
-      const bar = dom.progressBar.querySelector(".bar");
-      bar.style.width = "0%";
-      let pct = 0;
-      progressInterval = setInterval(() => {
-        pct += Math.random() * 8;
-        if (pct > 92) pct = 92;
-        bar.style.width = `${pct}%`;
-      }, 600);
+    async function refreshHistory() {
+      if (!historyEnabled) return;
+      try {
+        const data = await postApi('/api/history','GET');
+        if (data && data.entries) {
+          dom.historyCount.textContent = data.entries.length;
+          renderHistory(data.entries);
+        }
+      } catch(e) {}
     }
+
+    function renderHistory(entries) {
+      if (!entries.length) { dom.historyPanel.innerHTML='<div style="color:var(--muted);font-size:12px;padding:8px;text-align:center">No history yet</div>'; return }
+      dom.historyPanel.innerHTML = entries.slice(0,20).map(e => `
+        <div class="history-entry">
+          <span class="history-query">${escHtml(e.query)}</span>
+          <div class="history-meta">
+            <span>${e.focus_mode}</span>
+            <span>${e.sources_count} sources</span>
+            <span>${e.timestamp}</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // ═══ Mode Pills ═══
+    dom.modeBar.addEventListener('click', e => {
+      const pill = e.target.closest('.mode-pill');
+      if (!pill) return;
+      dom.modeBar.querySelectorAll('.mode-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      focusMode = pill.dataset.mode;
+      dom.modeLabel.textContent = focusMode;
+    });
+
+    // ═══ Settings Toggle ═══
+    dom.settingsToggle.addEventListener('click', () => {
+      dom.settingsBody.classList.toggle('hidden');
+      if (!dom.settingsBody.classList.contains('hidden')) dom.settingsBody.classList.add('slide-down');
+    });
+    dom.provider.addEventListener('change', () => {
+      const p = preset();
+      if (p.base && !dom.baseUrl.value.trim()) dom.baseUrl.value = p.base;
+      dom.modelInput.value = p.model;
+      dom.modelSelect.classList.add('hidden');
+      dom.modelInput.classList.remove('hidden');
+    });
+
+    // ═══ Model Fetcher ═══
+    dom.fetchModelsBtn.addEventListener('click', async () => {
+      const key = dom.apiKey.value.trim(), url = dom.baseUrl.value.trim() || preset().base;
+      if (!key || !url) { alert('Enter API Key & Base URL first'); return }
+      dom.fetchModelsBtn.disabled = true;
+      try {
+        const data = await postApi('/api/models','POST',{api_key:key,base_url:url});
+        if (data?.models?.length) {
+          dom.modelSelect.innerHTML = `<option value="">Select (${data.models.length})</option>` +
+            data.models.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('');
+          dom.modelSelect.classList.remove('hidden');
+          dom.modelInput.classList.add('hidden');
+          dom.modelSelect.addEventListener('change', () => { if (dom.modelSelect.value) dom.modelInput.value = dom.modelSelect.value });
+        }
+      } catch(e) { alert('Failed: '+e.message) }
+      dom.fetchModelsBtn.disabled = false;
+    });
+
+    // ═══ Progress ═══
+    function startProgress(label) {
+      dom.progressWrap.classList.remove('hidden');
+      dom.progressLabel.classList.remove('hidden');
+      dom.progressLabel.textContent = label || 'Searching...';
+      dom.progressBar.style.width = '0%';
+      let pct = 0;
+      progressInterval = setInterval(() => { pct += Math.random()*6; if(pct>92)pct=92; dom.progressBar.style.width=pct+'%' }, 500);
+    }
+    function updateProgress(label) { dom.progressLabel.textContent = label }
     function finishProgress() {
       clearInterval(progressInterval);
-      const bar = dom.progressBar.querySelector(".bar");
-      bar.style.width = "100%";
-      setTimeout(() => { dom.progressBar.classList.add("hidden"); bar.style.width = "0%"; }, 800);
+      dom.progressBar.style.width = '100%';
+      setTimeout(() => { dom.progressWrap.classList.add('hidden'); dom.progressLabel.classList.add('hidden') }, 600);
     }
 
-    // ═══ Skeleton Loading ═══
-    function showSourceSkeleton() {
-      dom.sourcesList.innerHTML = "";
-      for (let i = 0; i < 5; i++) {
-        const div = document.createElement("div");
-        div.className = "source-card";
-        div.style.animationDelay = `${i * 80}ms`;
-        div.innerHTML = `
-          <div class="skeleton w-40" style="height:12px;margin-bottom:8px"></div>
-          <div class="skeleton w-80" style="height:14px;margin-bottom:6px"></div>
-          <div class="skeleton w-60" style="height:12px"></div>
-        `;
-        dom.sourcesList.appendChild(div);
-      }
+    // ═══ Show/Hide Results ═══
+    function showSkeletonSources() {
+      dom.resultsSection.classList.remove('hidden');
+      dom.sourcesList.innerHTML = Array.from({length:4},(_,i) =>
+        `<div class="source-card" style="animation-delay:${i*60}ms"><div class="skeleton w-40"></div><div class="skeleton w-80"></div><div class="skeleton w-60"></div></div>`
+      ).join('');
+      dom.answerBox.innerHTML = `<div style="display:flex;align-items:center;gap:10px;padding:20px 0"><span class="spinner"></span><span class="pulse" style="color:var(--accent);font-size:13px">Searching 90+ engines...</span></div>`;
     }
 
-    function showAnswerLoading() {
-      dom.answerBox.innerHTML = `
-        <div class="flex items-center gap-3" style="padding:24px 0">
-          <span class="spinner"></span>
-          <span style="color:var(--accent);font-size:14px" class="pulse">Searching 90+ engines...</span>
-        </div>
-      `;
-    }
-
-    function showLlmGenerating() {
-      dom.answerBox.innerHTML = `
-        <div class="flex items-center gap-3" style="padding:24px 0">
-          <span class="spinner"></span>
-          <span style="color:var(--accent-2);font-size:14px" class="pulse">Synthesizing answer from sources...</span>
-        </div>
-      `;
-    }
-
-    // ═══ UI State Management ═══
-    function setIdle() {
-      dom.endpointLabel.textContent = `Endpoint: ${activeEndpoint}`;
-      dom.searchMs.textContent = "-";
-      dom.searchStatus.textContent = "idle";
-      dom.searchStatus.style.color = "var(--accent-2)";
-      dom.llmMs.textContent = "-";
-      dom.llmStatus.textContent = "idle";
-      dom.llmStatus.style.color = "var(--accent-2)";
-      dom.llmError.textContent = "";
-      dom.llmError.classList.add("hidden");
-      dom.sourcesList.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">Run a search to see results</div>';
-      dom.sourceCount.textContent = "0 results";
-      dom.answerBox.textContent = "";
-      dom.citationBox.innerHTML = "";
-      dom.focusLabel.textContent = dom.focusMode.value || DEFAULT_FOCUS_MODE;
-    }
-
-    function toggleLlmPanel() {
-      if (dom.enableLlm.checked) {
-        dom.llmPanel.classList.remove("hidden");
-        dom.llmPanel.classList.add("slide-down");
-      } else {
-        dom.llmPanel.classList.add("hidden");
-        dom.llmPanel.classList.remove("slide-down");
-      }
-      syncMaxResultsHint();
-      applyProviderPreset();
-    }
-
-    function syncMaxResultsHint() {
-      const mode = dom.focusMode.value || DEFAULT_FOCUS_MODE;
-      if (mode === "lite") {
-        dom.maxResults.placeholder = "Default: 30";
-        if (!dom.maxResults.value.trim() && !maxResultsTouched) {
-          dom.maxResults.value = String(DEFAULT_LITE_RESULTS);
-          dom.maxResults.dataset.autofill = "1";
-        }
-      } else {
-        dom.maxResults.placeholder = "Auto (uncapped)";
-        if (!maxResultsTouched || dom.maxResults.dataset.autofill === "1") {
-          dom.maxResults.value = "";
-          dom.maxResults.dataset.autofill = "";
-        }
-      }
-    }
-
-    function applyProviderPreset() {
-      const preset = providerPreset();
-      if (preset.baseUrl && !dom.baseUrl.value.trim()) dom.baseUrl.value = preset.baseUrl;
-      if (!getEffectiveModel() && preset.model) dom.modelInput.value = preset.model;
-    }
-
-    // ═══ Render Functions ═══
     function renderSources(items) {
-      dom.sourcesList.innerHTML = "";
-      if (!items || items.length === 0) {
-        dom.sourcesList.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">No sources found</div>';
-        dom.sourceCount.textContent = "0 results";
-        return;
-      }
-
-      dom.sourceCount.textContent = `${items.length} results`;
-      dom.sourceCount.className = "badge badge-success";
-
-      for (const [idx, item] of items.entries()) {
-        const div = document.createElement("div");
-        div.className = "source-card";
-        div.style.animationDelay = `${idx * 40}ms`;
-        const snippet = cleanDisplayText(item.snippet || "", 200);
-        const title = cleanDisplayText(item.title || item.url, 140);
-        const url = String(item.url || "").trim();
-
-        div.innerHTML = `
-          <div class="flex items-center gap-2" style="margin-bottom:6px">
-            <span style="color:var(--muted);font-size:10px;font-weight:500">#${idx + 1}</span>
-            <span class="badge" style="font-size:10px">${escapeHtml(item.engine || "unknown")}</span>
+      if (!items?.length) { dom.sourcesList.innerHTML='<div class="answer-empty">No sources found</div>'; dom.sourceCount.textContent='0'; return }
+      dom.sourceCount.textContent = items.length;
+      dom.sourceCount.className = 'badge badge-success';
+      dom.sourcesList.innerHTML = items.map((item,i) => `
+        <div class="source-card" style="animation-delay:${i*30}ms">
+          <div class="source-meta">
+            <span class="source-num">#${i+1}</span>
+            <span class="engine-badge">${escHtml(item.engine||'unknown')}</span>
           </div>
-          <a href="${escapeHtml(url)}" target="_blank" rel="noopener" style="font-size:13px;font-weight:500;word-break:break-word;line-height:1.4">${escapeHtml(title)}</a>
-          ${snippet ? `<p style="color:var(--muted);font-size:12px;margin-top:5px;line-height:1.5">${escapeHtml(snippet)}</p>` : ""}
-        `;
-        dom.sourcesList.appendChild(div);
-      }
+          <a href="${escHtml(item.url)}" target="_blank" rel="noopener" class="source-title">${escHtml(item.title||item.url)}</a>
+          ${item.snippet ? `<div class="source-snippet">${escHtml(item.snippet).slice(0,180)}</div>` : ''}
+        </div>
+      `).join('');
     }
 
-    function renderCitations(items) {
-      dom.citationBox.innerHTML = "";
-      if (!items || items.length === 0) return;
-      for (const [idx, item] of items.slice(0, 15).entries()) {
-        if (!item || !item.url) continue;
-        const a = document.createElement("a");
-        a.href = item.url;
-        a.target = "_blank";
-        a.rel = "noopener";
-        a.className = "citation-pill";
-        a.style.animationDelay = `${idx * 50}ms`;
-        a.classList.add("fade-up");
-        a.textContent = `[${idx + 1}] ${item.engine || "source"}`;
-        dom.citationBox.appendChild(a);
-      }
-    }
-
-    // ═══ Dynamic Model Fetcher ═══
-    async function fetchModels() {
-      const apiKey = dom.apiKey.value.trim();
-      const baseUrl = dom.baseUrl.value.trim();
-
-      if (!apiKey || !baseUrl) {
-        alert("Enter an API Key and Base URL first to fetch models.");
-        return;
-      }
-
-      dom.fetchIndicator.classList.remove("hidden");
-      dom.fetchModelsBtn.disabled = true;
-
-      try {
-        const candidates = resolveEndpointCandidates("/api/models");
-        let lastErr = "No endpoint";
-
-        for (const endpoint of candidates) {
-          try {
-            const res = await fetch(endpoint, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ api_key: apiKey, base_url: baseUrl }),
-            });
-            const data = await res.json();
-
-            if (data.models && Array.isArray(data.models) && data.models.length > 0) {
-              fetchedModels = data.models;
-
-              // Populate dropdown
-              dom.modelSelect.innerHTML = `<option value="">Select a model (${data.models.length} available)</option>`;
-              for (const m of data.models) {
-                const opt = document.createElement("option");
-                opt.value = m;
-                opt.textContent = m;
-                dom.modelSelect.appendChild(opt);
-              }
-
-              // Show dropdown, hide text input
-              dom.modelSelect.style.display = "";
-              dom.modelInput.style.display = "none";
-              dom.modelSelect.classList.add("fade-in");
-              return;
-            } else if (data.error) {
-              lastErr = data.error;
-            }
-          } catch (e) {
-            lastErr = e.message;
-          }
+    function animateAnswer(text) {
+      dom.answerBox.innerHTML = '';
+      const lines = text.split('\n');
+      let wi = 0;
+      for (const line of lines) {
+        if (!line.trim()) { dom.answerBox.appendChild(document.createElement('br')); continue }
+        const div = document.createElement('div');
+        div.style.marginBottom = '4px';
+        for (const word of line.split(/(\s+)/)) {
+          const span = document.createElement('span');
+          span.textContent = word;
+          span.style.animation = `typeIn 120ms ease-out ${wi*12}ms both`;
+          div.appendChild(span);
+          if (word.trim()) wi++;
         }
-        alert(`Could not fetch models: ${lastErr}`);
-      } finally {
-        dom.fetchIndicator.classList.add("hidden");
-        dom.fetchModelsBtn.disabled = false;
+        dom.answerBox.appendChild(div);
       }
     }
 
-    // ═══ API Call Helper ═══
-    async function postSearch(path, payload) {
-      let lastError = new Error("No working API endpoint found");
-      const candidates = resolveEndpointCandidates(path);
-
-      for (const endpoint of candidates) {
+    // ═══ API Helper ═══
+    async function postApi(path, method='POST', body=null) {
+      for (const base of bases()) {
         try {
-          const res = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-
+          const opts = { method, headers: {'Content-Type':'application/json'} };
+          if (body && method !== 'GET') opts.body = JSON.stringify(body);
+          const res = await fetch(base + path, opts);
           const text = await res.text();
-          let data = {};
-          try {
-            data = text ? JSON.parse(text) : {};
-          } catch {
-            if (text.trim().startsWith("<!doctype html") || text.trim().startsWith("<html")) {
-              lastError = new Error(`Endpoint ${endpoint} returned HTML`);
-              continue;
-            }
-            lastError = new Error(`Invalid JSON from ${endpoint}`);
-            continue;
-          }
-
-          if (!res.ok) {
-            const msg = data?.error || `Request failed (${res.status})`;
-            if (res.status === 404 || res.status === 405) { lastError = new Error(msg); continue; }
-            throw new Error(msg);
-          }
-
-          activeEndpoint = endpoint;
-          dom.endpointLabel.textContent = `Endpoint: ${activeEndpoint}`;
-          return data;
-        } catch (err) {
-          lastError = err instanceof Error ? err : new Error(String(err));
-          continue;
-        }
+          try { return JSON.parse(text) } catch { continue }
+        } catch { continue }
       }
-      throw lastError;
+      throw new Error('No reachable endpoint');
     }
 
-    function basePayload(query, focusMode, maxResults) {
-      const payload = { query, focus_mode: focusMode };
-      if (typeof maxResults === "number" && Number.isFinite(maxResults) && maxResults > 0) payload.max_results = maxResults;
-      return payload;
-    }
-
-    function parseMaxResults(focusMode) {
-      const raw = dom.maxResults.value.trim();
-      if (!raw) return focusMode === "lite" ? DEFAULT_LITE_RESULTS : null;
-      const parsed = Number(raw);
-      if (!Number.isFinite(parsed)) return focusMode === "lite" ? DEFAULT_LITE_RESULTS : null;
-      return Math.max(5, Math.min(900, Math.floor(parsed)));
-    }
-
-    // ═══ Main Search Flow ═══
-    async function runBenchmark() {
+    // ═══ Main Search ═══
+    async function runSearch() {
       const query = dom.queryInput.value.trim();
-      if (!query) { dom.queryInput.focus(); return; }
+      if (!query) { dom.queryInput.focus(); return }
 
-      const focusMode = dom.focusMode.value || DEFAULT_FOCUS_MODE;
-      const maxResults = parseMaxResults(focusMode);
-
-      dom.focusLabel.textContent = focusMode;
-      dom.focusLabel.className = "badge";
       dom.runBtn.disabled = true;
-      dom.citationBox.innerHTML = "";
-      dom.llmError.textContent = "";
-      dom.llmError.classList.add("hidden");
+      dom.llmError.classList.add('hidden');
+      const useLlm = dom.enableLlm.checked;
+      const apiKey = dom.apiKey.value.trim();
+      const model = dom.modelInput.value.trim();
+      const baseUrl = dom.baseUrl.value.trim();
+      const p = preset();
+      const maxR = parseInt(dom.maxResults.value) || (focusMode==='lite' ? 30 : null);
 
-      showSourceSkeleton();
-      showAnswerLoading();
-      startProgress();
+      showSkeletonSources();
+      const progressText = focusMode === 'research' && useLlm ? 'Searching → Deep Research mode...' : 'Searching 90+ engines...';
+      startProgress(progressText);
 
       try {
-        dom.searchStatus.textContent = "searching";
-        dom.searchStatus.style.color = "var(--accent)";
+        const payload = { query, focus_mode: focusMode };
+        if (maxR) payload.max_results = maxR;
 
-        const useLlm = dom.enableLlm.checked;
-        const apiKey = dom.apiKey.value.trim();
-        const model = getEffectiveModel();
-        const baseUrl = dom.baseUrl.value.trim();
-        const preset = providerPreset();
-        const provider = preset.runtimeProvider;
-
-        // Build payload
-        const phaseMax = focusMode === "lite" ? Math.min(maxResults ?? DEFAULT_LITE_RESULTS, 35) : maxResults;
-        const payload = basePayload(query, focusMode, phaseMax);
-
-        // Include LLM config in the SAME request if enabled
         if (useLlm && apiKey && model) {
-          const llm = { provider, api_key: apiKey, model, timeout_ms: 45000 };
+          const llm = { provider: p.rt, api_key: apiKey, model, timeout_ms: focusMode==='research' ? 60000 : 45000 };
           if (baseUrl) llm.base_url = baseUrl;
-          else if (preset.baseUrl) llm.base_url = preset.baseUrl;
+          else if (p.base) llm.base_url = p.base;
           payload.llm = llm;
         }
 
-        const phaseStart = nowMs();
-
-        // Use the appropriate endpoint
-        let endpoint = "/search";
+        let endpoint = '/search';
         if (useLlm && apiKey && model) {
-          endpoint = focusMode === "research" ? "/search/research-llm" : "/search/lite-llm";
+          endpoint = focusMode === 'research' ? '/search/research-llm' : '/search/lite-llm';
         }
 
-        dom.searchStatus.textContent = "scraping";
+        if (focusMode === 'research' && useLlm) updateProgress('Scraping sources...');
 
-        const response = await postSearch(endpoint, payload);
-        const elapsed = Math.round(nowMs() - phaseStart);
+        const data = await postApi(endpoint, 'POST', payload);
 
         finishProgress();
 
-        // Render sources
-        const sources = Array.isArray(response.search_results) ? response.search_results : [];
+        const sources = data.search_results || [];
         renderSources(sources);
-        dom.searchMs.textContent = `${(elapsed / 1000).toFixed(1)}s`;
 
-        // Render LLM answer
-        if (response.llm_answer) {
-          dom.searchStatus.textContent = "done";
-          dom.searchStatus.style.color = "var(--success)";
-          dom.llmStatus.textContent = "done";
-          dom.llmStatus.style.color = "var(--success)";
-          dom.llmMs.textContent = `${(elapsed / 1000).toFixed(1)}s`;
-
-          const answer = cleanDisplayText(response.llm_answer, 12000);
+        if (data.llm_answer) {
+          const answer = cleanText(data.llm_answer);
           animateAnswer(answer);
-          renderCitations(sources);
-        } else if (response.llm_error) {
-          dom.searchStatus.textContent = "done";
-          dom.searchStatus.style.color = "var(--success)";
-          dom.llmStatus.textContent = "error";
-          dom.llmStatus.style.color = "var(--danger)";
-          dom.llmError.textContent = response.llm_error;
-          dom.llmError.classList.remove("hidden");
-          dom.answerBox.textContent = "LLM synthesis failed. Sources shown on the left.";
-          renderCitations(sources);
+          dom.modeLabel.textContent = focusMode;
+        } else if (data.llm_error) {
+          dom.answerBox.innerHTML = '<div class="answer-empty">AI synthesis failed. Sources shown on the left.</div>';
+          dom.llmError.textContent = data.llm_error;
+          dom.llmError.classList.remove('hidden');
         } else {
-          dom.searchStatus.textContent = "done";
-          dom.searchStatus.style.color = "var(--success)";
-          dom.llmStatus.textContent = useLlm ? "skip" : "off";
-          dom.llmStatus.style.color = "var(--muted)";
-          dom.answerBox.textContent = useLlm ? "No LLM answer returned." : "LLM disabled. Sources shown on the left.";
-          renderCitations(sources);
+          dom.answerBox.innerHTML = useLlm
+            ? '<div class="answer-empty">No AI answer returned.</div>'
+            : '<div class="answer-empty">AI disabled — browse sources on the left.</div>';
         }
 
         // Save settings
-        localStorage.setItem("swift_llm_provider", selectedProviderKey());
-        localStorage.setItem("swift_llm_model", model);
-        localStorage.setItem("swift_llm_base_url", baseUrl || preset.baseUrl || "");
-        localStorage.setItem("swift_llm_api_key", apiKey);
-      } catch (err) {
+        localStorage.setItem('swift_provider', dom.provider.value);
+        localStorage.setItem('swift_model', model);
+        localStorage.setItem('swift_base_url', baseUrl || p.base);
+        localStorage.setItem('swift_api_key', apiKey);
+        localStorage.setItem('swift_llm_on', useLlm ? '1' : '0');
+
+        // Refresh history
+        if (historyEnabled) setTimeout(refreshHistory, 1000);
+
+      } catch(err) {
         finishProgress();
-        dom.searchStatus.textContent = "error";
-        dom.searchStatus.style.color = "var(--danger)";
-        dom.llmStatus.textContent = "error";
-        dom.llmStatus.style.color = "var(--danger)";
-        dom.llmError.textContent = err.message || String(err);
-        dom.llmError.classList.remove("hidden");
-        dom.answerBox.textContent = `Error: ${err.message || err}`;
-        dom.sourcesList.innerHTML = '<div style="color:var(--danger);font-size:13px;padding:20px 0;text-align:center">Search failed. Check server logs.</div>';
+        dom.answerBox.innerHTML = `<div class="answer-empty" style="color:var(--danger)">Error: ${escHtml(err.message)}</div>`;
       } finally {
         dom.runBtn.disabled = false;
       }
     }
 
-    // ═══ Typewriter Answer Animation ═══
-    function animateAnswer(text) {
-      dom.answerBox.innerHTML = "";
-      const lines = text.split("\n");
-      let wordIndex = 0;
-
-      for (const line of lines) {
-        if (line.trim() === "") {
-          dom.answerBox.appendChild(document.createElement("br"));
-          continue;
-        }
-        const lineDiv = document.createElement("div");
-        lineDiv.style.marginBottom = "4px";
-
-        const words = line.split(/(\s+)/);
-        for (const word of words) {
-          const span = document.createElement("span");
-          span.textContent = word;
-          span.style.animation = `typewriter 150ms ease-out ${wordIndex * 15}ms both`;
-          lineDiv.appendChild(span);
-          if (word.trim()) wordIndex++;
-        }
-
-        dom.answerBox.appendChild(lineDiv);
-      }
-    }
-
     // ═══ Init ═══
-    function loadSavedSettings() {
-      const sp = localStorage.getItem("swift_llm_provider");
-      const sm = localStorage.getItem("swift_llm_model");
-      const su = localStorage.getItem("swift_llm_base_url");
-      const sk = localStorage.getItem("swift_llm_api_key");
-      if (sp && Array.from(dom.provider.options).some(o => o.value === sp)) dom.provider.value = sp;
+    function loadSettings() {
+      const sp = localStorage.getItem('swift_provider');
+      const sm = localStorage.getItem('swift_model');
+      const su = localStorage.getItem('swift_base_url');
+      const sk = localStorage.getItem('swift_api_key');
+      const so = localStorage.getItem('swift_llm_on');
+      if (sp) dom.provider.value = sp;
       if (sm) dom.modelInput.value = sm;
       if (su) dom.baseUrl.value = su;
-      if (sk) { dom.apiKey.value = sk; dom.enableLlm.checked = true; }
-      dom.focusMode.value = DEFAULT_FOCUS_MODE;
+      if (sk) dom.apiKey.value = sk;
+      if (so === '1') dom.enableLlm.checked = true;
+      if (!dom.modelInput.value) { const p = preset(); dom.modelInput.value = p.model; if (p.base && !dom.baseUrl.value) dom.baseUrl.value = p.base }
     }
 
     // Events
-    dom.enableLlm.addEventListener("change", toggleLlmPanel);
-    dom.focusMode.addEventListener("change", () => {
-      dom.focusLabel.textContent = dom.focusMode.value || DEFAULT_FOCUS_MODE;
-      syncMaxResultsHint();
-    });
-    dom.provider.addEventListener("change", () => {
-      // Reset model inputs when provider changes
-      dom.modelSelect.style.display = "none";
-      dom.modelInput.style.display = "";
-      dom.modelInput.value = "";
-      dom.baseUrl.value = "";
-      fetchedModels = [];
-      applyProviderPreset();
-    });
-    dom.modelSelect.addEventListener("change", () => {
-      if (dom.modelSelect.value) {
-        dom.modelInput.value = dom.modelSelect.value;
-      }
-    });
-    dom.maxResults.addEventListener("input", () => { maxResultsTouched = true; dom.maxResults.dataset.autofill = ""; });
-    dom.fetchModelsBtn.addEventListener("click", fetchModels);
-    dom.runBtn.addEventListener("click", runBenchmark);
-    dom.clearBtn.addEventListener("click", setIdle);
-    dom.queryInput.addEventListener("keydown", e => { if (e.key === "Enter") runBenchmark(); });
+    dom.runBtn.addEventListener('click', runSearch);
+    dom.queryInput.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch() });
+    dom.historyToggle.addEventListener('click', () => { dom.historyPanel.classList.toggle('hidden'); if (!dom.historyPanel.classList.contains('hidden')) { dom.historyPanel.classList.add('slide-down'); refreshHistory() } });
 
-    loadSavedSettings();
-    toggleLlmPanel();
-    syncMaxResultsHint();
-    applyProviderPreset();
-    setIdle();
+    // Startup
+    loadSettings();
+    if (localStorage.getItem('swift_history_choice') === 'done') {
+      dom.dbModal.classList.add('hidden');
+      // Check if history was previously enabled
+      const sk = localStorage.getItem('swift_api_key');
+      if (sk) {
+        // Auto-enable history if user had it before
+        historyEnabled = true;
+        dom.historyToggle.classList.remove('hidden');
+        postApi('/api/history/enable','POST').then(() => refreshHistory()).catch(()=>{});
+      }
+    }
   </script>
 </body>
 </html>
