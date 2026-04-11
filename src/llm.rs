@@ -27,7 +27,7 @@ use crate::models::{LlmConfig, SourceResult};
 
 const MAX_CONTEXT_CHUNKS_LITE: usize = 25;
 const BATCH_SIZE_RESEARCH: usize = 50;
-const MAX_CONTEXT_CHARS_LITE: usize = 16_000;
+const MAX_CONTEXT_CHARS_LITE: usize = 10_000;
 const MAX_CONTEXT_CHARS_RESEARCH_BATCH: usize = 12_000;
 const DEFAULT_LLM_TIMEOUT_MS: u64 = 45_000;
 const RESEARCH_BATCH_TIMEOUT_MS: u64 = 60_000;
@@ -478,7 +478,7 @@ pub(crate) fn namespaced_model(provider: &str, model: &str) -> String {
 // Context Building
 // =============================================================================
 
-fn build_ranked_context(_query: &str, sources: &[SourceResult], research_mode: bool) -> String {
+fn build_ranked_context(query: &str, sources: &[SourceResult], research_mode: bool) -> String {
     if sources.is_empty() {
         return String::new();
     }
@@ -486,11 +486,60 @@ fn build_ranked_context(_query: &str, sources: &[SourceResult], research_mode: b
     let max_chunks = if research_mode { BATCH_SIZE_RESEARCH } else { MAX_CONTEXT_CHUNKS_LITE };
     let max_chars = if research_mode { MAX_CONTEXT_CHARS_RESEARCH_BATCH } else { MAX_CONTEXT_CHARS_LITE };
 
+    // Extract query keywords for relevance scoring
+    let query_lower = query.to_lowercase();
+    let stop_words: std::collections::HashSet<&str> = [
+        "what","is","the","a","an","of","in","to","for","and","or","how",
+        "does","do","can","about","with","from","that","this","are","was",
+        "were","be","been","being","have","has","had","will","would","it",
+        "its","on","at","by","but","not","so","if","than","then","my","me",
+        "we","you","your","who","which","when","where","why","all","each",
+    ].iter().cloned().collect();
+
+    let keywords: Vec<String> = query_lower
+        .split_whitespace()
+        .filter(|w| w.len() > 2 && !stop_words.contains(w))
+        .map(|w| w.to_string())
+        .collect();
+
+    // Score each source by keyword relevance
+    let mut scored: Vec<(usize, f32)> = sources.iter().enumerate().map(|(idx, src)| {
+        let text_lower = format!("{} {}", src.title, src.extracted_text).to_lowercase();
+        if keywords.is_empty() {
+            return (idx, 1.0);
+        }
+        let mut score: f32 = 0.0;
+        for kw in &keywords {
+            // Title match = 3x weight
+            if src.title.to_lowercase().contains(kw.as_str()) {
+                score += 3.0;
+            }
+            // Body match = 1x weight
+            if text_lower.contains(kw.as_str()) {
+                score += 1.0;
+            }
+        }
+        // Normalize by keyword count
+        let relevance = score / (keywords.len() as f32 * 4.0);
+        (idx, relevance)
+    }).collect();
+
+    // Sort by relevance descending
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Filter out sources with zero relevance (completely off-topic)
+    let min_relevance = if research_mode { 0.0 } else { 0.05 };
+
     let mut context = String::new();
-    for (idx, source) in sources.iter().take(max_chunks).enumerate() {
+    let mut used = 0;
+    for (idx, relevance) in scored {
+        if used >= max_chunks || relevance < min_relevance {
+            break;
+        }
+        let source = &sources[idx];
         let block = format!(
             "[{}] {} {} ({})\n{}\n\n",
-            idx + 1,
+            used + 1,
             credibility_tag(&source.url),
             source.title,
             source.url,
@@ -501,6 +550,7 @@ fn build_ranked_context(_query: &str, sources: &[SourceResult], research_mode: b
             break;
         }
         context.push_str(&block);
+        used += 1;
     }
 
     context
@@ -598,22 +648,25 @@ fn current_datetime_str() -> String {
 
 fn build_lite_prompts(query: &str, context: &str) -> (String, String) {
     let system = format!(
-        "You are a synthesis engine for web search results. Current date: {}. \
-         Always prioritize evidence from [High Trust] sources over [Forum Discussion] and [General Web]. \
-         If sources conflict, mention that briefly and use the highest-trust evidence. \
-         Use only provided context — never hallucinate or add information not in the sources. \
-         Every factual sentence must include at least one source citation like [1] or [2]. \
-         Prioritize recent/current data. Flag any information that appears outdated. \
-         End with a 'Sources Used:' section mapping source IDs to URLs.",
+        "You are a precise search synthesis engine. Current date: {}. \
+         CRITICAL RULES: \
+         1. STRICTLY answer the SPECIFIC question asked. Do NOT discuss unrelated topics. \
+         2. If the user asks about 'OpenAI', answer ONLY about OpenAI — NOT Google, NOT Anthropic. \
+         3. If the user asks about a specific product/company, focus ONLY on that entity. \
+         4. Use ONLY information from the provided sources — never hallucinate. \
+         5. Every factual statement MUST cite the source like [1], [2]. \
+         6. Prioritize [High Trust] sources. Flag outdated information. \
+         7. If no source directly answers the query, say so honestly.",
         current_datetime_str()
     );
 
     let user = format!(
-        "Query:\n{}\n\nUse only this curated context:\n{}\n\n\
-         Return the best answer in 5-10 detailed bullet points with explanation. \
-         Each point should be substantive (2-3 sentences minimum). \
-         Cite each factual point with [n] where n maps to source IDs from context. \
-         Finish with:\nSources Used:\n[n] <url>",
+        "USER'S EXACT QUESTION: {}\n\n\
+         SOURCES (use ONLY relevant ones):\n{}\n\n\
+         Answer the user's EXACT question in 5-8 focused bullet points. \
+         Each bullet: 2-3 sentences with [n] citations. \
+         IGNORE sources that are not directly relevant to the question. \
+         End with: Sources Used: [n] <url>",
         query, context
     );
 
