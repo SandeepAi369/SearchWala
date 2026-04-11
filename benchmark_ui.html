@@ -31,6 +31,9 @@
 
     @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
     @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+    @keyframes scaleIn{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
+    @keyframes slideRight{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+    @keyframes glowPulse{0%,100%{box-shadow:0 0 0 0 rgba(32,178,170,0)}50%{box-shadow:0 0 12px 3px rgba(32,178,170,.2)}}
     @keyframes spin{to{transform:rotate(360deg)}}
     @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
     @keyframes typing{from{width:0}to{width:100%}}
@@ -52,18 +55,19 @@
     /* ═══ Home (pre-search) ═══ */
     .home-hero{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:60px 0}
     .home-title{font-size:28px;font-weight:800;letter-spacing:-.02em;margin-bottom:24px;color:var(--ink)}
-    .search-box{width:100%;position:relative}
-    .search-input{width:100%;padding:16px 52px 16px 20px;font-size:16px;font-family:inherit;font-weight:400;background:var(--surface);border:1px solid var(--border-2);border-radius:16px;color:var(--ink);outline:none;transition:border .2s,box-shadow .2s}
+    .search-box{width:100%;display:flex;align-items:center;gap:12px}
+    .search-input{flex:1;padding:16px 20px;font-size:16px;font-family:inherit;font-weight:400;background:var(--surface);border:1px solid var(--border-2);border-radius:16px;color:var(--ink);outline:none;transition:border .25s,box-shadow .25s}
     .search-input::placeholder{color:var(--muted)}
-    .search-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(32,178,170,.1)}
-    .search-submit{position:absolute;right:6px;top:50%;transform:translateY(-50%);background:var(--accent);border:none;border-radius:10px;width:38px;height:38px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s}
-    .search-submit:hover{background:var(--accent-2)}
-    .search-submit:disabled{opacity:.4;cursor:not-allowed}
-    .search-submit svg{width:18px;height:18px;color:#fff}
-    .mode-row{display:flex;gap:4px;margin-top:12px;flex-wrap:wrap}
-    .mode-chip{padding:5px 14px;border-radius:20px;font-size:12px;font-weight:500;background:transparent;border:1px solid var(--border);color:var(--muted);cursor:pointer;transition:all .15s}
-    .mode-chip:hover{border-color:var(--border-2);color:var(--ink-2)}
-    .mode-chip.active{background:var(--accent-bg);border-color:rgba(32,178,170,.25);color:var(--accent)}
+    .search-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(32,178,170,.12)}
+    .search-submit{flex-shrink:0;background:var(--accent);border:none;border-radius:14px;width:50px;height:50px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .2s;animation:scaleIn .3s ease-out both}
+    .search-submit:hover{background:var(--accent-2);transform:scale(1.08);box-shadow:0 4px 20px rgba(32,178,170,.3)}
+    .search-submit:active{transform:scale(.95)}
+    .search-submit:disabled{opacity:.4;cursor:not-allowed;transform:none!important;box-shadow:none!important}
+    .search-submit svg{width:20px;height:20px;color:#fff}
+    .mode-row{display:flex;gap:6px;margin-top:14px;flex-wrap:wrap;justify-content:center}
+    .mode-chip{padding:6px 16px;border-radius:20px;font-size:12px;font-weight:500;background:transparent;border:1px solid var(--border);color:var(--muted);cursor:pointer;transition:all .2s}
+    .mode-chip:hover{border-color:var(--border-2);color:var(--ink-2);transform:translateY(-1px)}
+    .mode-chip.active{background:var(--accent-bg);border-color:rgba(32,178,170,.3);color:var(--accent);animation:glowPulse 2s ease-in-out 1}
 
     /* ═══ Results page ═══ */
     .results-page{padding:24px 0 40px}
@@ -73,14 +77,14 @@
     .sources-strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:20px;animation:fadeUp .3s ease-out .05s both}
     .sources-strip::-webkit-scrollbar{height:3px}
     .sources-strip::-webkit-scrollbar-thumb{background:var(--border-2);border-radius:4px}
-    .src-chip{flex-shrink:0;display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);font-size:12px;color:var(--ink-2);text-decoration:none;transition:all .15s;max-width:200px}
+    .src-chip{flex-shrink:0;display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);font-size:12px;color:var(--ink-2);text-decoration:none;transition:all .2s;max-width:200px;animation:slideRight .3s ease-out both}
     .src-chip:hover{border-color:var(--accent);text-decoration:none;background:var(--bg-3)}
     .src-chip img{width:16px;height:16px;border-radius:3px}
     .src-chip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .src-num{color:var(--muted);font-size:10px;font-weight:600;min-width:16px}
 
     /* Answer area */
-    .answer-area{animation:fadeUp .35s ease-out .1s both}
+    .answer-area{animation:fadeUp .4s ease-out .15s both}
     .answer-label{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--accent);margin-bottom:12px}
     .answer-label svg{width:16px;height:16px}
     .answer-content{font-size:15px;line-height:1.85;color:var(--ink);word-break:break-word}
@@ -182,7 +186,7 @@
         <div class="home-title">What do you want to know?</div>
         <div class="search-box">
           <input id="queryInput" class="search-input" type="text" placeholder="Ask anything..." autofocus />
-          <button id="runBtn" class="search-submit" onclick="runSearch()">
+          <button id="runBtn" class="search-submit" onclick="runSearch()" title="Search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
           </button>
         </div>
@@ -487,7 +491,9 @@
       const model = dom.modelInput.value.trim();
       const base = dom.baseUrl.value.trim() || (presets[prov]||{}).base || '';
       const useLlm = dom.enableLlm.checked;
-      const maxR = parseInt(dom.maxResults.value) || 30;
+      // DEEP RESEARCH = 200 sources minimum, NOT 30
+      const userMax = parseInt(dom.maxResults.value) || 30;
+      const maxR = (focusMode === 'research') ? Math.max(userMax, 200) : userMax;
 
       const payload = { query, focus_mode: focusMode, max_results: maxR };
 
