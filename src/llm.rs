@@ -14,6 +14,7 @@
 //   - Research: Multi-batch iterative, 50/batch, 64K total → detailed report
 // ============================================================================
 
+use std::fmt::Write;
 use std::time::Duration;
 
 use axum::response::sse::Event;
@@ -530,26 +531,28 @@ fn build_ranked_context(query: &str, sources: &[SourceResult], research_mode: bo
     // Filter out sources with zero relevance (completely off-topic)
     let min_relevance = if research_mode { 0.0 } else { 0.05 };
 
-    let mut context = String::new();
+    // v5.0: Pre-allocate buffer + use write!() to eliminate intermediate String allocs
+    let mut context = String::with_capacity(max_chars.min(16_384));
     let mut used = 0;
     for (idx, relevance) in scored {
         if used >= max_chunks || relevance < min_relevance {
             break;
         }
         let source = &sources[idx];
-        let block = format!(
-            "[{}] {} {} ({})\n{}\n\n",
-            used + 1,
-            credibility_tag(&source.url),
-            source.title,
-            source.url,
-            source.extracted_text.trim()
-        );
+        let trimmed_text = source.extracted_text.trim();
+        let cred = credibility_tag(&source.url);
 
-        if context.len() + block.len() > max_chars {
+        // Estimate block size to check capacity before writing
+        let est_len = 10 + cred.len() + source.title.len() + source.url.len() + trimmed_text.len();
+        if context.len() + est_len > max_chars {
             break;
         }
-        context.push_str(&block);
+
+        let _ = write!(
+            context,
+            "[{}] {} {} ({})\n{}\n\n",
+            used + 1, cred, source.title, source.url, trimmed_text
+        );
         used += 1;
     }
 
@@ -566,22 +569,23 @@ fn build_research_batch_context(
         return String::new();
     }
 
-    let mut context = String::new();
+    // v5.0: Pre-allocate + write!() — zero intermediate format!() allocations
+    let mut context = String::with_capacity(MAX_CONTEXT_CHARS_RESEARCH_BATCH.min(16_384));
     for (idx, source) in sources.iter().enumerate() {
         let global_id = global_offset + idx + 1;
-        let block = format!(
-            "[{}] {} {} ({})\n{}\n\n",
-            global_id,
-            credibility_tag(&source.url),
-            source.title,
-            source.url,
-            source.extracted_text.trim()
-        );
+        let trimmed = source.extracted_text.trim();
+        let cred = credibility_tag(&source.url);
 
-        if context.len() + block.len() > MAX_CONTEXT_CHARS_RESEARCH_BATCH {
+        let est_len = 10 + cred.len() + source.title.len() + source.url.len() + trimmed.len();
+        if context.len() + est_len > MAX_CONTEXT_CHARS_RESEARCH_BATCH {
             break;
         }
-        context.push_str(&block);
+
+        let _ = write!(
+            context,
+            "[{}] {} {} ({})\n{}\n\n",
+            global_id, cred, source.title, source.url, trimmed
+        );
     }
 
     context

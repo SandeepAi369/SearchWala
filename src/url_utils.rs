@@ -93,41 +93,86 @@ pub fn dedup_key(url: &str) -> String {
     }
 }
 
-/// Deduplicate a list of URLs, preserving order, limited to max_count
+/// Deduplicate a list of URLs, preserving order, limited to max_count.
+/// v5.0: Each URL is parsed ONCE via url::Url, then reused for normalize + skip + dedup_key.
 pub fn deduplicate(urls: Vec<String>, max_count: usize, focus_mode: Option<&str>) -> Vec<String> {
     let mut seen = HashSet::new();
-    let mut unique = Vec::new();
+    let mut unique = Vec::with_capacity(max_count.min(urls.len()));
+
+    let focus_lower = focus_mode.map(|m| m.to_lowercase());
 
     for raw_url in urls {
-        // Normalize first
-        let url = match normalize_url(&raw_url) {
-            Some(u) => u,
-            None => continue,
+        // Parse URL ONCE (was parsed 3 times before: normalize + should_skip + dedup_key)
+        let raw_trimmed = raw_url.trim();
+        if raw_trimmed.is_empty() {
+            continue;
+        }
+
+        let mut parsed = match Url::parse(raw_trimmed) {
+            Ok(u) => u,
+            Err(_) => continue,
         };
 
-        // Check focus mode overrides
-        let mut bypass_skip = false;
-        if let Some(mode) = focus_mode {
-            let lower_mode = mode.to_lowercase();
-            if lower_mode == "reddit" && url.contains("reddit.com") {
-                bypass_skip = true;
-            } else if lower_mode == "youtube" && (url.contains("youtube.com") || url.contains("youtu.be")) {
-                bypass_skip = true;
+        // Must be http(s)
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            continue;
+        }
+
+        // Normalize in-place: remove fragment + tracking params
+        parsed.set_fragment(None);
+        let filtered_query: Vec<(String, String)> = parsed
+            .query_pairs()
+            .filter(|(key, _)| {
+                let k = key.to_lowercase();
+                !config::TRACKING_PARAMS.iter().any(|&t| t == k.as_str())
+            })
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        if filtered_query.is_empty() {
+            parsed.set_query(None);
+        } else {
+            let qs: String = filtered_query
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("&");
+            parsed.set_query(Some(&qs));
+        }
+
+        let url_str = parsed.to_string();
+
+        // Focus mode bypass check (using already-parsed URL)
+        let host = parsed.host_str().unwrap_or("").to_lowercase();
+        let bypass_skip = match focus_lower.as_deref() {
+            Some("reddit") => host.contains("reddit.com"),
+            Some("youtube") => host.contains("youtube.com") || host.contains("youtu.be"),
+            _ => false,
+        };
+
+        // Domain blocklist check (using already-parsed host)
+        if !bypass_skip {
+            let lower_url = url_str.to_lowercase();
+            let blocked_domain = config::SKIP_DOMAINS.iter().any(|d| lower_url.contains(d));
+            let blocked_ext = config::SKIP_EXTENSIONS.iter().any(|e| parsed.path().to_lowercase().ends_with(e));
+            if blocked_domain || blocked_ext {
+                continue;
             }
         }
 
-        // Skip blocked URLs
-        if !bypass_skip && should_skip(&url) {
-            continue;
-        }
+        // Dedup key (using already-parsed components)
+        let path = parsed.path().trim_end_matches('/');
+        let query = parsed.query().unwrap_or("");
+        let key = if query.is_empty() {
+            format!("{}{}", host, path.to_lowercase())
+        } else {
+            format!("{}{}?{}", host, path.to_lowercase(), query)
+        };
 
-        // Deduplicate
-        let key = dedup_key(&url);
-        if seen.contains(&key) {
+        if !seen.insert(key) {
             continue;
         }
-        seen.insert(key);
-        unique.push(url);
+        unique.push(url_str);
 
         if unique.len() >= max_count {
             break;
