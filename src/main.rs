@@ -1,5 +1,5 @@
 // ============================================================================
-// Swift-Search-RS v4.2.0
+// Swift-Search-RS v5.0.1
 // ============================================================================
 //
 // Native Rust meta-search + extraction + optional BYOK LLM synthesis.
@@ -46,7 +46,7 @@ struct AppState {
     history_db: cache::HistoryDb,
 }
 
-const BENCHMARK_UI: &str = include_str!("../benchmark_ui.html");
+const SEARCH_UI: &str = include_str!("../ui.html");
 
 /// POST /search - Main search endpoint
 async fn search_handler(
@@ -273,7 +273,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
     let uptime = state.start_time.elapsed().as_secs();
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: "5.0.0".to_string(),
+        version: "5.0.1".to_string(),
         engines: config::enabled_engines(),
         uptime_seconds: uptime,
     })
@@ -282,7 +282,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
 /// GET /config - Configuration info
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
-        version: "5.0.0".to_string(),
+        version: "5.0.1".to_string(),
         engines: config::enabled_engines(),
         max_urls: config::max_urls(),
         scrape_timeout_secs: config::scrape_timeout_secs(),
@@ -297,7 +297,7 @@ async fn config_handler() -> impl IntoResponse {
 
 /// GET / - Root endpoint
 async fn root_handler() -> impl IntoResponse {
-    Html(BENCHMARK_UI)
+    Html(SEARCH_UI)
 }
 
 /// POST /api/models - Dynamic model fetcher
@@ -327,7 +327,7 @@ async fn models_handler(
 async fn about_handler() -> impl IntoResponse {
     Json(serde_json::json!({
         "name": "Swift-Search-RS",
-        "version": "5.0.0",
+        "version": "5.0.1",
         "language": "Rust",
         "description": "Ultra-fast native meta-search & scrape API with iterative deep research LLM synthesis",
         "features": [
@@ -457,7 +457,7 @@ async fn main() {
     let engines = config::enabled_engines();
 
     tracing::info!("============================================");
-    tracing::info!("  Swift-Search-RS v4.2.0");
+    tracing::info!("  Swift-Search-RS v5.0.1");
     tracing::info!("  Language: Rust");
     tracing::info!("  Engines: {} total", engines.len());
     tracing::info!("  Max URLs: {}", config::max_urls());
@@ -484,7 +484,6 @@ async fn main() {
     let app = Router::new()
         .route("/", get(root_handler))
         .route("/index.html", get(root_handler))
-        .route("/benchmark_ui.html", get(root_handler))
         .route("/ui", get(root_handler))
         .route("/about", get(about_handler))
         .route("/health", get(health_handler))

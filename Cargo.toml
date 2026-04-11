@@ -1,8 +1,8 @@
 [package]
 name = "swift-search-rs"
-version = "3.0.0"
+version = "5.0.1"
 edition = "2021"
-description = "Ultra-fast search & scrape API in pure Rust — native multi-engine meta-search + readability extraction"
+description = "High-performance meta-search engine aggregating 90+ search engines with stealth WAF bypass, BM25 ranking, 5-tier content extraction, and optional BYOK LLM synthesis — all in pure Rust"
 authors = ["Sandeep"]
 license = "Apache-2.0"
 
