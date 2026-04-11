@@ -221,6 +221,60 @@ const BROWSER_PROFILES: &[BrowserProfile] = &[
         accept_language: "en-US,en;q=0.9",
         referer: "https://www.google.com/",
     },
+    // ── Chrome 131 — Windows 11 (2026 latest) ──
+    BrowserProfile {
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"131\"",
+        sec_ch_ua_mobile: "?0",
+        sec_ch_ua_platform: "\"Windows\"",
+        accept_language: "en-US,en;q=0.9",
+        referer: "https://www.google.com/",
+    },
+    // ── Chrome 131 — macOS Sequoia ──
+    BrowserProfile {
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"131\"",
+        sec_ch_ua_mobile: "?0",
+        sec_ch_ua_platform: "\"macOS\"",
+        accept_language: "en-US,en;q=0.9",
+        referer: "https://www.google.com/",
+    },
+    // ── Edge 131 — Windows 11 ──
+    BrowserProfile {
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+        sec_ch_ua: "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\", \"Microsoft Edge\";v=\"131\"",
+        sec_ch_ua_mobile: "?0",
+        sec_ch_ua_platform: "\"Windows\"",
+        accept_language: "en-US,en;q=0.9",
+        referer: "https://www.bing.com/",
+    },
+    // ── Firefox 133 — Windows 11 ──
+    BrowserProfile {
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+        sec_ch_ua: "",
+        sec_ch_ua_mobile: "",
+        sec_ch_ua_platform: "",
+        accept_language: "en-US,en;q=0.5",
+        referer: "https://www.google.com/",
+    },
+    // ── Safari 18.2 — macOS Sequoia ──
+    BrowserProfile {
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+        sec_ch_ua: "",
+        sec_ch_ua_mobile: "",
+        sec_ch_ua_platform: "",
+        accept_language: "en-US,en;q=0.9",
+        referer: "https://duckduckgo.com/",
+    },
+    // ── Firefox 133 — Linux ──
+    BrowserProfile {
+        user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
+        sec_ch_ua: "",
+        sec_ch_ua_mobile: "",
+        sec_ch_ua_platform: "",
+        accept_language: "en-US,en;q=0.5",
+        referer: "https://search.brave.com/",
+    },
 ];
 
 pub struct BrowserHeaders {
@@ -284,13 +338,37 @@ pub fn apply_browser_headers(
     // Chrome/Edge send client hints; Firefox/Safari do not
     if !headers.sec_ch_ua.is_empty() {
         req = req.header("Sec-CH-UA", headers.sec_ch_ua);
+        // v5.0: Additional client hints that Cloudflare/Akamai WAFs now check
+        req = req.header("Sec-CH-UA-Arch", "\"x86\"");
+        req = req.header("Sec-CH-UA-Bitness", "\"64\"");
+        req = req.header("Sec-CH-UA-Full-Version-List", headers.sec_ch_ua);
     }
     if !headers.sec_ch_ua_mobile.is_empty() {
         req = req.header("Sec-CH-UA-Mobile", headers.sec_ch_ua_mobile);
     }
     if !headers.sec_ch_ua_platform.is_empty() {
         req = req.header("Sec-CH-UA-Platform", headers.sec_ch_ua_platform);
+        // v5.0: Platform version hint (modern WAFs validate this)
+        let platform_ver = if headers.sec_ch_ua_platform.contains("Windows") {
+            "\"15.0.0\""
+        } else if headers.sec_ch_ua_platform.contains("macOS") {
+            "\"15.2.0\""
+        } else if headers.sec_ch_ua_platform.contains("Chrome OS") {
+            "\"14541.0.0\""
+        } else {
+            "\"6.8.0\""
+        };
+        req = req.header("Sec-CH-UA-Platform-Version", platform_ver);
     }
+
+    // v5.0: Randomize Accept header variants (evade fingerprint-based blocking)
+    let mut rng = rand::thread_rng();
+    let accept_variants = [
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    ];
+    req = req.header("Accept", accept_variants[rng.gen_range(0..accept_variants.len())]);
 
     req
 }

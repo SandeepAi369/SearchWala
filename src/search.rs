@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use scraper::{Html, Selector};
+use scraper::Html;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -537,15 +537,25 @@ async fn scrape_url_inner(
 
     let html_bytes = &bytes[..bytes.len().min(max_bytes)];
     let html = String::from_utf8_lossy(html_bytes).to_string();
-    let title = extractor::extract_title(&html);
 
+    // ── Single-pass DOM extraction: title + text in one parse ──
+    // v5.0 fix: eliminates the double Html::parse_document() bottleneck
     if matches!(focus_mode, Some("youtube")) || target_url.contains("youtube.com/watch") {
-        if let Some(desc) = extract_youtube_short_description(&html) {
+        // YouTube fast path: try JSON-LD first (no DOM parse needed)
+        if let Some(desc) = extract_youtube_json_ld(&html) {
+            let title = extractor::extract_title(&html);
+            return ScrapeResult::Ok(title, desc);
+        }
+        // Fallback: single DOM parse for both meta desc + title
+        let doc = Html::parse_document(&html);
+        let title = extractor::extract_title_from_doc_pub(&doc);
+        if let Some(desc) = extractor::extract_youtube_meta(&doc) {
             return ScrapeResult::Ok(title, desc);
         }
     }
 
-    let text = extractor::extract_article_text(&html);
+    // Normal pages: single DOM parse for both title + article text
+    let (title, text) = extractor::extract_title_and_text(&html);
     if text.len() < config::min_text_length() {
         return ScrapeResult::Skip;
     }
@@ -553,21 +563,9 @@ async fn scrape_url_inner(
     ScrapeResult::Ok(title, text)
 }
 
-fn extract_youtube_short_description(html: &str) -> Option<String> {
-    // Try meta tag first
-    if let Ok(selector) = Selector::parse("meta[name='description']") {
-        let doc = Html::parse_document(html);
-        if let Some(meta) = doc.select(&selector).next() {
-            if let Some(content) = meta.value().attr("content") {
-                let cleaned = content.trim();
-                if !cleaned.is_empty() && cleaned.len() > 30 {
-                    return Some(cleaned.to_string());
-                }
-            }
-        }
-    }
-
-    // Try JSON-LD shortDescription
+/// Extract YouTube shortDescription from JSON-LD without any DOM parsing.
+fn extract_youtube_json_ld(html: &str) -> Option<String> {
+    // Try JSON-LD shortDescription (zero DOM parse — pure string scan)
     let marker = "\"shortDescription\":\"";
     let start = html.find(marker)? + marker.len();
     let rest = &html[start..];

@@ -101,6 +101,17 @@ static SEL_BODY: LazyLock<Option<Selector>> = LazyLock::new(|| {
 static SEL_LINKS: LazyLock<Option<Selector>> = LazyLock::new(|| {
     Selector::parse("a").ok()
 });
+// ── Pre-compiled rich-tag selectors for score_element (was compiled per element!) ──
+static SEL_BLOCKQUOTE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("blockquote").ok());
+static SEL_PRE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("pre").ok());
+static SEL_CODE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("code").ok());
+static SEL_TABLE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("table").ok());
+static SEL_FIGURE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("figure").ok());
+static SEL_UL: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("ul").ok());
+static SEL_OL: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("ol").ok());
+// ── YouTube meta selector (was compiled per YouTube URL!) ──
+static SEL_META_DESC: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("meta[name='description']").ok());
+
 
 // =============================================================================
 // Public API
@@ -340,11 +351,14 @@ fn score_element(element: &ElementRef, p_sel: &Selector) -> f64 {
         }
     }
 
-    // Bonus for rich-content children
-    let rich_tags = ["blockquote", "pre", "code", "table", "figure", "ul", "ol"];
-    for tag in rich_tags {
-        if let Ok(sel) = Selector::parse(tag) {
-            let count = element.select(&sel).count();
+    // Bonus for rich-content children (pre-compiled selectors — zero alloc)
+    let rich_sels: [&Option<Selector>; 7] = [
+        &*SEL_BLOCKQUOTE, &*SEL_PRE, &*SEL_CODE, &*SEL_TABLE,
+        &*SEL_FIGURE, &*SEL_UL, &*SEL_OL,
+    ];
+    for sel_opt in rich_sels {
+        if let Some(sel) = sel_opt {
+            let count = element.select(sel).count();
             score += count as f64 * 3.0;
         }
     }
@@ -567,4 +581,130 @@ fn clean_and_deduplicate(text: &str) -> String {
     let result = MULTI_NEWLINE.replace_all(&result, "\n\n");
 
     result.trim().to_string()
+}
+
+// =============================================================================
+// Combined Title + Text Extraction (Single DOM Parse)
+// Eliminates the double Html::parse_document() bottleneck.
+// =============================================================================
+
+/// Extract both title and article text from HTML with a single DOM parse.
+/// This saves ~50% of DOM parsing overhead vs calling extract_title + extract_article_text separately.
+pub fn extract_title_and_text(html: &str) -> (String, String) {
+    let document = Html::parse_document(html);
+
+    // --- Title extraction (inlined from extract_title) ---
+    let title = extract_title_from_doc(&document);
+
+    // --- Article text extraction (inlined from extract_article_text) ---
+    // Strategy 1: Structured class/ID selectors
+    if let Some(text) = try_structured_extraction(&document) {
+        let cleaned = clean_and_deduplicate(&text);
+        if cleaned.len() >= 100 {
+            return (title, cleaned);
+        }
+    }
+
+    // Strategy 2: Semantic HTML5 elements
+    if let Some(text) = try_semantic_extraction(&document) {
+        let cleaned = clean_and_deduplicate(&text);
+        if cleaned.len() >= 80 {
+            return (title, cleaned);
+        }
+    }
+
+    // Strategy 3: Scored container (text density)
+    if let Some(text) = try_scored_extraction(&document) {
+        let cleaned = clean_and_deduplicate(&text);
+        if cleaned.len() >= 60 {
+            return (title, cleaned);
+        }
+    }
+
+    // Strategy 4: Content element fallback
+    let fallback = fallback_content_element_extraction(&document);
+    if !fallback.is_empty() {
+        let cleaned = clean_and_deduplicate(&fallback);
+        if cleaned.len() >= 40 {
+            return (title, cleaned);
+        }
+    }
+
+    // Strategy 5: Full body text
+    if let Some(body_sel) = SEL_BODY.as_ref() {
+        if let Some(body) = document.select(body_sel).next() {
+            let body_text = extract_visible_text(&body);
+            let cleaned = clean_and_deduplicate(&body_text);
+            return (title, cleaned);
+        }
+    }
+
+    (title, String::new())
+}
+
+/// Extract title from an already-parsed DOM document (no re-parse).
+pub fn extract_title_from_doc(document: &scraper::Html) -> String {
+    // Try og:title
+    if let Some(sel) = SEL_OG_TITLE.as_ref() {
+        if let Some(meta) = document.select(sel).next() {
+            if let Some(content) = meta.value().attr("content") {
+                let text = content.trim().to_string();
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+        }
+    }
+
+    // Try <title>
+    if let Some(sel) = SEL_TITLE.as_ref() {
+        if let Some(title) = document.select(sel).next() {
+            let text = title.text().collect::<String>().trim().to_string();
+            if !text.is_empty() {
+                return text;
+            }
+        }
+    }
+
+    // Try meta[name="title"]
+    if let Some(sel) = SEL_META_TITLE.as_ref() {
+        if let Some(meta) = document.select(sel).next() {
+            if let Some(content) = meta.value().attr("content") {
+                let text = content.trim().to_string();
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+        }
+    }
+
+    // Try <h1>
+    if let Some(sel) = SEL_H1.as_ref() {
+        if let Some(h1) = document.select(sel).next() {
+            return h1.text().collect::<String>().trim().to_string();
+        }
+    }
+
+    String::new()
+}
+
+/// Extract YouTube meta description from an already-parsed DOM (no re-parse).
+pub fn extract_youtube_meta(document: &scraper::Html) -> Option<String> {
+    if let Some(sel) = SEL_META_DESC.as_ref() {
+        if let Some(meta) = document.select(sel).next() {
+            if let Some(content) = meta.value().attr("content") {
+                let cleaned = content.trim();
+                if !cleaned.is_empty() && cleaned.len() > 30 {
+                    return Some(cleaned.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+
+/// Public wrapper for title extraction from pre-parsed document.
+pub fn extract_title_from_doc_pub(document: &scraper::Html) -> String {
+    extract_title_from_doc(document)
 }
