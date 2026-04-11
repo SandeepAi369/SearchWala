@@ -164,6 +164,17 @@
     .modal-btn-ghost{background:transparent;border:1px solid var(--border-2);color:var(--muted)}
     .modal-btn-ghost:hover{color:var(--ink)}
 
+    /* Mode dropdown in topbar */
+    .mode-dropdown{position:relative;display:inline-block}
+    .mode-dropdown-btn{display:flex;align-items:center;gap:5px;padding:6px 12px;border:1px solid var(--border);border-radius:var(--r-sm);background:transparent;color:var(--muted);font-size:12px;cursor:pointer;transition:all .15s}
+    .mode-dropdown-btn:hover{border-color:var(--border-2);color:var(--ink-2);background:var(--bg-3)}
+    .mode-dropdown-btn .mode-label{color:var(--accent);font-weight:600}
+    .mode-menu{position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--bg-2);border:1px solid var(--border-2);border-radius:var(--r);padding:6px;min-width:180px;z-index:50;animation:fadeUp .15s ease-out both;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+    .mode-menu-item{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:6px;font-size:13px;color:var(--ink-2);cursor:pointer;transition:all .1s;border:none;background:transparent;width:100%;text-align:left}
+    .mode-menu-item:hover{background:var(--surface);color:var(--ink)}
+    .mode-menu-item.active{background:var(--accent-bg);color:var(--accent)}
+    .mode-menu-item .mode-icon{font-size:14px;width:20px;text-align:center}
+
     .skel{background:linear-gradient(90deg,var(--surface) 25%,var(--surface-2) 50%,var(--surface) 75%);background-size:400% 100%;animation:shimmer 1.8s linear infinite;border-radius:4px;height:14px;margin-bottom:8px}
     .skel.w30{width:30%}.skel.w50{width:50%}.skel.w70{width:70%}.skel.w90{width:90%}
     .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border-2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
@@ -189,6 +200,20 @@
         Swift Search
       </div>
       <div class="topbar-actions">
+        <div class="mode-dropdown">
+          <button class="mode-dropdown-btn" onclick="toggleModeMenu()">
+            <span id="modeIcon">⚡</span>
+            <span id="modeLabelBtn" class="mode-label">Lite</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div id="modeMenu" class="mode-menu hidden">
+            <button class="mode-menu-item active" data-mode="lite" onclick="selectMode(this)"><span class="mode-icon">⚡</span>Lite</button>
+            <button class="mode-menu-item" data-mode="research" onclick="selectMode(this)"><span class="mode-icon">🔬</span>Deep Research</button>
+            <button class="mode-menu-item" data-mode="academic" onclick="selectMode(this)"><span class="mode-icon">🎓</span>Academic</button>
+            <button class="mode-menu-item" data-mode="reddit" onclick="selectMode(this)"><span class="mode-icon">💬</span>Reddit</button>
+            <button class="mode-menu-item" data-mode="youtube" onclick="selectMode(this)"><span class="mode-icon">▶</span>YouTube</button>
+          </div>
+        </div>
         <button class="icon-btn" onclick="toggleHistory()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           History
@@ -326,7 +351,6 @@
     let searchStartTime = 0;
     let progressInterval = null;
     let currentAnswer = '';      // For TTS
-    let ttsUtterance = null;
     let ttsPlaying = false;
 
     // Presets
@@ -428,13 +452,38 @@
     dom.modeBar.addEventListener('click',e=>{
       const chip=e.target.closest('.mode-chip');
       if(!chip)return;
-      // Remove active from ALL chips
       dom.modeBar.querySelectorAll('.mode-chip').forEach(c=>c.classList.remove('active'));
-      // Add active to clicked chip
       chip.classList.add('active');
       focusMode=chip.dataset.mode;
-      // Update status display
       dom.statusMode.textContent=focusMode;
+      // Sync topbar dropdown
+      syncModeUI();
+    });
+
+    // ═══ Mode dropdown (topbar) ═══
+    const modeLabels={lite:'Lite',research:'Deep Research',academic:'Academic',reddit:'Reddit',youtube:'YouTube'};
+    const modeIcons={lite:'⚡',research:'🔬',academic:'🎓',reddit:'💬',youtube:'▶'};
+    function toggleModeMenu(){$('modeMenu').classList.toggle('hidden')}
+    function selectMode(el){
+      focusMode=el.dataset.mode;
+      // Update dropdown
+      $('modeMenu').querySelectorAll('.mode-menu-item').forEach(i=>i.classList.remove('active'));
+      el.classList.add('active');
+      $('modeMenu').classList.add('hidden');
+      syncModeUI();
+      // Sync mode-row chips
+      dom.modeBar.querySelectorAll('.mode-chip').forEach(c=>{
+        c.classList.toggle('active',c.dataset.mode===focusMode);
+      });
+      dom.statusMode.textContent=focusMode;
+    }
+    function syncModeUI(){
+      $('modeLabelBtn').textContent=modeLabels[focusMode]||'Lite';
+      $('modeIcon').textContent=modeIcons[focusMode]||'⚡';
+    }
+    // Close dropdown on click outside
+    document.addEventListener('click',e=>{
+      if(!e.target.closest('.mode-dropdown'))$('modeMenu').classList.add('hidden');
     });
 
     // ═══ History ═══
@@ -479,51 +528,53 @@
       },1500);
     }
 
-    // ═══ TTS (Web Speech API — Microsoft Edge voices) ═══
+    // ═══ TTS — Microsoft Edge Neural Voice (en-US-AvaNeural, from XeL Studio) ═══
+    let ttsAudio=null;
     function toggleTTS(){
       if(ttsPlaying){
-        speechSynthesis.cancel();
+        if(ttsAudio){ttsAudio.pause();ttsAudio=null}
         ttsPlaying=false;
-        dom.ttsLabel.textContent='Listen';
         dom.ttsBtn.classList.remove('playing');
         dom.ttsBtn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg><span id="ttsLabel">Listen</span>`;
         return;
       }
       if(!currentAnswer)return;
 
-      // Clean text for speech
+      // Clean text for TTS
       const text=currentAnswer
         .replace(/\*\*/g,'').replace(/#{1,6}\s*/g,'')
         .replace(/\[(\d+)\]/g,'').replace(/https?:\/\/\S+/g,'')
         .replace(/[`\[\]]/g,'').replace(/\n{2,}/g,'. ')
         .replace(/\n/g,' ').replace(/\s+/g,' ').trim()
         .slice(0,5000);
-
       if(!text)return;
 
-      ttsUtterance=new SpeechSynthesisUtterance(text);
-      // Try to get a good voice
-      const voices=speechSynthesis.getVoices();
-      const preferred=voices.find(v=>v.name.includes('Microsoft')&&v.name.includes('Online'))
-        ||voices.find(v=>v.name.includes('Google'))
-        ||voices.find(v=>v.lang.startsWith('en'));
-      if(preferred)ttsUtterance.voice=preferred;
-      ttsUtterance.rate=1.1;
-      ttsUtterance.pitch=1;
+      // Show loading state
+      dom.ttsBtn.classList.add('playing');
+      dom.ttsBtn.innerHTML=`<span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span><span id="ttsLabel">Loading...</span>`;
 
-      ttsUtterance.onend=()=>{
+      // Call edge-tts backend
+      const url=apiBase()+'/api/tts?text='+encodeURIComponent(text);
+      ttsAudio=new Audio(url);
+      ttsAudio.oncanplay=()=>{
+        ttsPlaying=true;
+        dom.ttsBtn.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">Playing</span>`;
+      };
+      ttsAudio.onended=()=>{
         ttsPlaying=false;
+        ttsAudio=null;
         dom.ttsBtn.classList.remove('playing');
         dom.ttsBtn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg><span id="ttsLabel">Listen</span>`;
       };
-
-      speechSynthesis.speak(ttsUtterance);
-      ttsPlaying=true;
-      dom.ttsBtn.classList.add('playing');
-      dom.ttsBtn.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">Playing...</span>`;
+      ttsAudio.onerror=()=>{
+        ttsPlaying=false;
+        ttsAudio=null;
+        dom.ttsBtn.classList.remove('playing');
+        dom.ttsBtn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg><span id="ttsLabel">Listen</span>`;
+        alert('TTS unavailable. Is edge-tts installed?');
+      };
+      ttsAudio.play().catch(()=>{});
     }
-    // Load voices
-    speechSynthesis.onvoiceschanged=()=>speechSynthesis.getVoices();
 
     // ═══ Rendering ═══
     function renderSourceStrip(items){

@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::{
-    extract::Json,
+    extract::{Json, Query},
     http::StatusCode,
     response::{Html, IntoResponse, sse::{Event, Sse}},
     routing::{get, post},
@@ -352,6 +352,92 @@ async fn about_handler() -> impl IntoResponse {
     }))
 }
 
+// =============================================================================
+// TTS — Microsoft Edge Neural Voice (en-US-AvaNeural, same as XeL Studio)
+// =============================================================================
+
+#[derive(serde::Deserialize)]
+struct TtsQuery {
+    text: String,
+}
+
+/// GET /api/tts?text=Hello+world → audio/mpeg
+async fn tts_handler(
+    Query(params): Query<TtsQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let text = params.text.trim().to_string();
+    if text.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Missing 'text' parameter".into()));
+    }
+
+    // Cap at 5000 chars (same as XeL Studio)
+    let capped = if text.len() > 5000 {
+        text.chars().take(5000).collect::<String>()
+    } else {
+        text.clone()
+    };
+
+    // Clean for TTS (remove markdown)
+    let cleaned: String = capped
+        .replace("**", "")
+        .replace("##", "")
+        .replace("###", "")
+        .replace('`', "")
+        .replace('[', "")
+        .replace(']', "")
+        .replace("\n\n", ". ")
+        .replace('\n', " ");
+
+    let edge_tts_path = std::env::var("EDGE_TTS_PATH")
+        .unwrap_or_else(|_| {
+            // Try common locations
+            for path in &[
+                "/home/sandeep/.local/bin/edge-tts",
+                "/usr/local/bin/edge-tts",
+                "/usr/bin/edge-tts",
+            ] {
+                if std::path::Path::new(path).exists() {
+                    return path.to_string();
+                }
+            }
+            "edge-tts".to_string() // fallback to PATH
+        });
+
+    let tmp_path = format!("/tmp/swift_tts_{}.mp3", std::process::id());
+
+    let output = tokio::process::Command::new(&edge_tts_path)
+        .arg("--text")
+        .arg(&cleaned)
+        .arg("--voice")
+        .arg("en-US-AvaNeural")
+        .arg("--rate")
+        .arg("+15%")
+        .arg("--write-media")
+        .arg(&tmp_path)
+        .output()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("edge-tts not found: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("edge-tts error: {stderr}")));
+    }
+
+    let audio_bytes = tokio::fs::read(&tmp_path).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read error: {e}")))?;
+
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, "audio/mpeg"),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        audio_bytes,
+    ))
+}
+
 #[tokio::main]
 async fn main() {
     let _ = dotenvy::dotenv();
@@ -410,6 +496,7 @@ async fn main() {
         .route("/api/history/enable", post(history_enable_handler))
         .route("/api/history/disable", post(history_disable_handler))
         .route("/api/history/status", get(history_status_handler))
+        .route("/api/tts", get(tts_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
