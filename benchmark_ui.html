@@ -176,6 +176,13 @@
     .skel.w30{width:30%}.skel.w50{width:50%}.skel.w70{width:70%}.skel.w90{width:90%}
     .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border-2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
 
+
+    /* ═══ Specialized Domain Selector ═══ */
+    .domain-pills{display:flex;gap:4px;padding:4px 6px;margin-top:4px;flex-wrap:wrap}
+    .domain-pill{padding:4px 10px;border-radius:12px;font-size:10px;font-weight:600;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;transition:all .15s;text-transform:uppercase;letter-spacing:.5px}
+    .domain-pill:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+    .domain-pill.active{border-color:#6366f1;color:#fff;background:linear-gradient(135deg,#3b82f6,#6366f1)}
+    .mode-menu-divider{height:1px;background:var(--border);margin:4px 8px}
     /* ═══ Searching Animation ═══ */
     @keyframes searchPulse{0%,100%{box-shadow:0 0 0 0 rgba(59,130,246,0)}50%{box-shadow:0 0 20px 4px rgba(59,130,246,.18)}}
     @keyframes orbitalSpin{to{transform:rotate(360deg)}}
@@ -223,6 +230,13 @@
             <button class="mode-menu-item active" data-mode="lite" onclick="selectMode(this)"><span class="mode-icon">⚡</span>Lite</button>
             <button class="mode-menu-item" data-mode="research" onclick="selectMode(this)"><span class="mode-icon">🔬</span>Deep Research</button>
             <button class="mode-menu-item" data-mode="academic" onclick="selectMode(this)"><span class="mode-icon">🎓</span>Academic</button>
+            <div class="mode-menu-divider"></div>
+            <button class="mode-menu-item" data-mode="specialized_tech" onclick="selectMode(this)"><span class="mode-icon">💻</span>Tech</button>
+            <button class="mode-menu-item" data-mode="specialized_science" onclick="selectMode(this)"><span class="mode-icon">🧬</span>Science</button>
+            <button class="mode-menu-item" data-mode="specialized_finance" onclick="selectMode(this)"><span class="mode-icon">📊</span>Finance</button>
+            <button class="mode-menu-item" data-mode="specialized_health" onclick="selectMode(this)"><span class="mode-icon">🏥</span>Health</button>
+            <button class="mode-menu-item" data-mode="specialized_news" onclick="selectMode(this)"><span class="mode-icon">📰</span>News</button>
+            <div class="mode-menu-divider"></div>
             <button class="mode-menu-item" data-mode="reddit" onclick="selectMode(this)"><span class="mode-icon">💬</span>Reddit</button>
             <button class="mode-menu-item" data-mode="youtube" onclick="selectMode(this)"><span class="mode-icon">▶</span>YouTube</button>
           </div>
@@ -381,7 +395,18 @@
     };
 
     function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
-    function cleanAnswer(s){return String(s||'').replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/<\|[^|]+\|>/g,'').replace(/^data:\s*/gim,'').trim()}
+    function cleanAnswer(s){
+      return String(s||'')
+        .replace(/<think>[\s\S]*?<\/think>/gi,'')       // Standard <think>...</think>
+        .replace(/<think>[\s\S]*/gi,'')                   // Unclosed <think> (model forgot to close)
+        .replace(/<\|[^|]+\|>/g,'')                       // Special tokens like <|end|>
+        .replace(/^data:\s*/gim,'')                        // SSE data: prefix
+        .replace(/<\/think>/gi,'')                         // Orphaned </think>
+        .replace(/\[THINKING\][\s\S]*?\[\/THINKING\]/gi,'')  // [THINKING]...[/THINKING] variant
+        .replace(/\*\*Thinking:\*\*[\s\S]*?\n\n/gi,'')       // **Thinking:** blocks
+        .replace(/^\s*>\s*Internal:.*$/gim,'')             // > Internal: notes
+        .trim()
+    }
     function domain(url){try{return new URL(url).hostname.replace('www.','')}catch{return url}}
     function favicon(url){return `https://www.google.com/s2/favicons?domain=${domain(url)}&sz=32`}
 
@@ -459,8 +484,8 @@
     }
 
     // ═══ Mode dropdown (topbar) ═══
-    const modeLabels={lite:'Lite',research:'Deep Research',academic:'Academic',reddit:'Reddit',youtube:'YouTube'};
-    const modeIcons={lite:'⚡',research:'🔬',academic:'🎓',reddit:'💬',youtube:'▶'};
+    const modeLabels={lite:'Lite',research:'Deep Research',academic:'Academic',specialized_tech:'Tech',specialized_science:'Science',specialized_finance:'Finance',specialized_health:'Health',specialized_news:'News',reddit:'Reddit',youtube:'YouTube'};
+    const modeIcons={lite:'⚡',research:'🔬',academic:'🎓',specialized_tech:'💻',specialized_science:'🧬',specialized_finance:'📊',specialized_health:'🏥',specialized_news:'📰',reddit:'💬',youtube:'▶'};
     function toggleModeMenu(){$('modeMenu').classList.toggle('hidden')}
     function selectMode(el){
       focusMode=el.dataset.mode;
@@ -561,7 +586,11 @@
 
     // Split into sentence-based chunks (larger = fewer transitions = smoother)
     function ttsSplit(text){
-      const sentences=text.split(/(?<=[.!?])\s+/).filter(s=>s.length>3);
+      // Smart TTS chunking: split on sentence boundaries, respect pauses
+      // Clean common artifacts before splitting
+      text=text.replace(/\[(\d+)\]/g,'').replace(/https?:\/\/\S+/g,'')
+        .replace(/\s{3,}/g,' ').replace(/\.{3,}/g,'.').trim();
+      const sentences=text.split(/(?<=[.!?;:])\s+/).filter(s=>s.length>5);
       if(!sentences.length)return [text];
       const chunks=[];
       let buf=[];let wc=0;
@@ -709,7 +738,7 @@
 
       saveSettings();
       startStatus();
-      updateStatus(focusMode==='research'?'Deep Research: querying 90+ engines...':'Searching 90+ engines...');
+      updateStatus(focusMode==='research'?'Deep Research: querying 90+ engines...':focusMode.startsWith('specialized')?`Specialized ${(modeLabels[focusMode]||'').toUpperCase()}: querying curated engines...`:'Searching engines...');
 
       const prov=dom.provider.value;
       const key=dom.apiKey.value.trim();
@@ -719,7 +748,7 @@
 
       // DEEP RESEARCH = 200 sources minimum, NOT 30
       const userMax=parseInt(dom.maxResults.value)||30;
-      const maxR=(focusMode==='research')?Math.max(userMax,200):userMax;
+      const maxR=(focusMode==='research')?Math.max(userMax,200):focusMode.startsWith('specialized')?Math.max(userMax,80):userMax;
 
       const payload={query,focus_mode:focusMode,max_results:maxR};
 
@@ -730,6 +759,10 @@
       let endpoint='/search';
       if(useLlm&&key&&model){
         endpoint=focusMode==='research'?'/search/research-llm':'/search/lite-llm';
+      }
+      // Specialized mode timeout: mid-tier between lite (45s) and research (90s)
+      if(useLlm&&key&&model&&focusMode.startsWith('specialized')){
+        payload.llm.timeout_ms=60000;
       }
 
       try{

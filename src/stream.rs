@@ -284,6 +284,7 @@ fn apply_focus_mode(query: &str, focus_mode: Option<&str>) -> String {
         Some("reddit") => format!("{} site:reddit.com", base),
         Some("youtube") => format!("{} site:youtube.com", base),
         Some("academic") => format!("{} site:edu OR site:gov OR site:nature.com", base),
+        Some(m) if m.starts_with("specialized") => base.to_string(),
         Some("lite") | _ => base.to_string(),
     }
 }

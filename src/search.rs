@@ -39,10 +39,21 @@ pub async fn execute_search(
 
     let is_lite_mode = matches!(normalized_focus.as_deref(), Some("lite"));
     let is_research_mode = matches!(normalized_focus.as_deref(), Some("research"));
-    let use_ranked_chunk_path = is_lite_mode;
+
+    // Specialized mode detection: "specialized_tech", "specialized_science", etc.
+    let is_specialized = normalized_focus.as_ref().map_or(false, |m| m.starts_with("specialized"));
+    let specialized_domain = if is_specialized {
+        normalized_focus.as_ref().and_then(|m| m.strip_prefix("specialized_")).map(|s| s.to_string())
+    } else {
+        None
+    };
+
+    let use_ranked_chunk_path = is_lite_mode || is_specialized;
 
     let max_urls = if is_lite_mode {
         max_results.unwrap_or_else(config::max_urls).min(35)
+    } else if is_specialized {
+        max_results.unwrap_or(100).min(150)
     } else {
         max_results.unwrap_or_else(config::max_urls).min(900)
     };
@@ -61,6 +72,9 @@ pub async fn execute_search(
 
     let query_variations = if is_lite_mode {
         vec![effective_query.clone()]
+    } else if is_specialized {
+        let domain = specialized_domain.as_deref().unwrap_or("general");
+        engines::generate_specialized_variations(&effective_query, domain)
     } else {
         engines::generate_query_variations(&effective_query)
     };
@@ -78,8 +92,23 @@ pub async fn execute_search(
         query_variations.len()
     );
 
-    let enabled = config::enabled_engines();
-    let engine_instances = engines::get_engines(&enabled);
+    // ══════════════════════════════════════════════════════════════════════
+    // SMART ENGINE TIERING WITH FALLBACK
+    // Phase 1: Dispatch primary/specialized engines
+    // Phase 2: If results < FALLBACK_THRESHOLD, instantly dispatch backups
+    // This ensures we ALWAYS get data, even when top engines fail.
+    // ══════════════════════════════════════════════════════════════════════
+
+    let primary_engine_list = if is_specialized {
+        let domain = specialized_domain.as_deref().unwrap_or("general");
+        engines::specialized_engines(domain)
+    } else if is_lite_mode {
+        engines::primary_engines()
+    } else {
+        config::enabled_engines()
+    };
+
+    let engine_instances = engines::get_engines(&primary_engine_list);
     let base_search_client = build_search_client(None);
     let proxy_pool = ProxyPoolManager::from_env();
     if proxy_pool.has_proxies() {
@@ -88,63 +117,45 @@ pub async fn execute_search(
     let engine_concurrency = config::engine_concurrency().max(1).min(24);
     let engine_semaphore = Arc::new(Semaphore::new(engine_concurrency));
 
-    let mut search_futures = Vec::new();
-    let mut dispatch_index: u64 = 0;
-
-    for variation in &query_variations {
-        for engine in &engine_instances {
-            let base_client = base_search_client.clone();
-            let query_variant = variation.clone();
-            let engine_name = engine.name().to_string();
-            let jitter = config::random_jitter_ms(jitter_min, jitter_max);
-            let proxy_hint = proxy_pool.next_proxy();
-            let pool = proxy_pool.clone();
-            let sem = engine_semaphore.clone();
-            let extra_spread = (dispatch_index % engine_concurrency as u64) * 15;
-            let engine = engine.as_ref();
-            dispatch_index += 1;
-
-            search_futures.push(async move {
-                let _permit = match sem.acquire().await {
-                    Ok(p) => p,
-                    Err(_) => return Vec::new(),
-                };
-
-                let delay = jitter.saturating_add(extra_spread);
-                if delay > 0 {
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
-                }
-
-                let client = if let Some(proxy) = proxy_hint.as_deref() {
-                    tracing::debug!("Engine {} using proxy hint {}", engine_name, proxy);
-                    build_search_client(Some(proxy))
-                } else {
-                    base_client
-                };
-
-                let results = engine.search(&client, &query_variant).await;
-
-                if let Some(proxy) = proxy_hint {
-                    if results.is_empty() {
-                        pool.mark_proxy_failure(&proxy);
-                    } else {
-                        pool.mark_proxy_success(&proxy);
-                    }
-                }
-
-                tracing::info!("Engine [{}] variant [{}]: {} results", engine_name, query_variant, results.len());
-                results
-            });
-        }
-    }
-
-    let engine_results = futures::future::join_all(search_futures).await;
-
     let mut all_results: Vec<RawSearchResult> = Vec::new();
-    for batch in engine_results {
-        all_results.extend(batch);
+
+    // ── Phase 1: Primary engines ──
+    let primary_results = dispatch_engines(
+        &engine_instances, &query_variations, &base_search_client,
+        &proxy_pool, &engine_semaphore, jitter_min, jitter_max,
+        engine_concurrency,
+    ).await;
+    all_results.extend(primary_results);
+
+    tracing::info!(
+        "Phase 1 (primary): {} results from {} engines",
+        all_results.len(), primary_engine_list.len()
+    );
+
+    // ── Phase 2: Smart fallback — if too few results, add backup engines ──
+    if all_results.len() < engines::FALLBACK_THRESHOLD {
+        tracing::warn!(
+            "⚠️ FALLBACK TRIGGERED: only {} results from primary engines (threshold={}). Dispatching backups...",
+            all_results.len(), engines::FALLBACK_THRESHOLD
+        );
+
+        let backup_list = engines::backup_engines();
+        let backup_instances = engines::get_engines(&backup_list);
+        let backup_variations = vec![effective_query.clone()]; // single variation for speed
+
+        let backup_results = dispatch_engines(
+            &backup_instances, &backup_variations, &base_search_client,
+            &proxy_pool, &engine_semaphore, 20, 80, // tighter jitter for urgency
+            engine_concurrency,
+        ).await;
+
+        tracing::info!("Phase 2 (backup): {} additional results from {} backup engines",
+            backup_results.len(), backup_list.len()
+        );
+        all_results.extend(backup_results);
     }
 
+    let enabled = primary_engine_list;
     let total_raw = all_results.len();
     tracing::info!("Meta-search total raw results={} engines={}", total_raw, enabled.len());
 
@@ -178,7 +189,7 @@ pub async fn execute_search(
     let scrape_client = build_scrape_client();
 
     // ── Research mode sends ALL sources to iterative LLM ──
-    let llm_top_k: usize = if is_research_mode { 200 } else { 25 };
+    let llm_top_k: usize = if is_research_mode { 200 } else if is_specialized { 50 } else { 25 };
 
     // ══════════════════════════════════════════════════════════════════════
     // FIX: Create LLM channel AFTER scraping so we can feed data INLINE
@@ -359,8 +370,81 @@ fn apply_focus_mode(query: &str, focus_mode: Option<&str>) -> String {
         Some("reddit") => format!("{} site:reddit.com", base),
         Some("youtube") => format!("{} site:youtube.com", base),
         Some("academic") => format!("{} site:edu OR site:gov OR site:nature.com", base),
+        Some(m) if m.starts_with("specialized") => base.to_string(), // domain handled by engine selection
         Some("research") | Some("lite") | _ => base.to_string(),
     }
+}
+
+// =============================================================================
+// Engine Dispatch Helper — used for both primary and backup phases
+// =============================================================================
+
+async fn dispatch_engines(
+    engine_instances: &[Box<dyn engines::SearchEngine>],
+    query_variations: &[String],
+    base_client: &reqwest::Client,
+    proxy_pool: &ProxyPoolManager,
+    engine_semaphore: &Arc<Semaphore>,
+    jitter_min: u64,
+    jitter_max: u64,
+    engine_concurrency: usize,
+) -> Vec<RawSearchResult> {
+    let mut search_futures = Vec::new();
+    let mut dispatch_index: u64 = 0;
+
+    for variation in query_variations {
+        for engine in engine_instances {
+            let base_client = base_client.clone();
+            let query_variant = variation.clone();
+            let engine_name = engine.name().to_string();
+            let jitter = config::random_jitter_ms(jitter_min, jitter_max);
+            let proxy_hint = proxy_pool.next_proxy();
+            let pool = proxy_pool.clone();
+            let sem = engine_semaphore.clone();
+            let extra_spread = (dispatch_index % engine_concurrency as u64) * 15;
+            let engine = engine.as_ref();
+            dispatch_index += 1;
+
+            search_futures.push(async move {
+                let _permit = match sem.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => return Vec::new(),
+                };
+
+                let delay = jitter.saturating_add(extra_spread);
+                if delay > 0 {
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+
+                let client = if let Some(proxy) = proxy_hint.as_deref() {
+                    tracing::debug!("Engine {} using proxy hint {}", engine_name, proxy);
+                    build_search_client(Some(proxy))
+                } else {
+                    base_client
+                };
+
+                let results = engine.search(&client, &query_variant).await;
+
+                if let Some(proxy) = proxy_hint {
+                    if results.is_empty() {
+                        pool.mark_proxy_failure(&proxy);
+                    } else {
+                        pool.mark_proxy_success(&proxy);
+                    }
+                }
+
+                tracing::info!("Engine [{}] variant [{}]: {} results", engine_name, query_variant, results.len());
+                results
+            });
+        }
+    }
+
+    let engine_results = futures::future::join_all(search_futures).await;
+    let mut all: Vec<RawSearchResult> = Vec::new();
+    for batch in engine_results {
+        all.extend(batch);
+    }
+    all
 }
 
 // =============================================================================

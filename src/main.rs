@@ -273,7 +273,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
     let uptime = state.start_time.elapsed().as_secs();
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: "4.2.0".to_string(),
+        version: "4.3.0".to_string(),
         engines: config::enabled_engines(),
         uptime_seconds: uptime,
     })
@@ -282,7 +282,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
 /// GET /config - Configuration info
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
-        version: "4.2.0".to_string(),
+        version: "4.3.0".to_string(),
         engines: config::enabled_engines(),
         max_urls: config::max_urls(),
         scrape_timeout_secs: config::scrape_timeout_secs(),
@@ -327,14 +327,16 @@ async fn models_handler(
 async fn about_handler() -> impl IntoResponse {
     Json(serde_json::json!({
         "name": "Swift-Search-RS",
-        "version": "4.2.0",
+        "version": "4.3.0",
         "language": "Rust",
         "description": "Ultra-fast native meta-search & scrape API with iterative deep research LLM synthesis",
         "features": [
-            "90+ search engines",
+            "90+ search engines with smart fallback",
             "Iterative multi-batch deep research",
+            "Specialized domain modes (Tech/Science/Finance/Health/News)",
             "Time-aware LLM with chrono injection",
             "Dual database (TempDb + HistoryDb)",
+            "Smart engine tiering — primary + backup resilience",
             "Dynamic model fetching",
             "OpenAI-compatible provider support"
         ],
