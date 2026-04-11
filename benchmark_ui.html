@@ -177,6 +177,17 @@
     .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border-2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
 
 
+
+    /* ═══ Category/Domain Selector (separate from mode) ═══ */
+    .category-dropdown{position:relative}
+    .category-dropdown-btn{display:flex;align-items:center;gap:5px;padding:5px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--ink-2);font-size:12px;cursor:pointer;transition:all .15s;white-space:nowrap}
+    .category-dropdown-btn:hover{border-color:var(--accent);color:var(--accent)}
+    .category-dropdown-btn.active-category{border-color:#6366f1;color:#fff;background:linear-gradient(135deg,#3b82f6,#6366f1);box-shadow:0 2px 8px rgba(99,102,241,.25)}
+    .category-menu{position:absolute;top:calc(100% + 6px);right:0;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:6px;min-width:150px;box-shadow:0 8px 30px rgba(0,0,0,.3);z-index:100}
+    .category-menu-item{display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:6px;font-size:13px;color:var(--ink-2);cursor:pointer;transition:all .1s;border:none;background:transparent;width:100%;text-align:left}
+    .category-menu-item:hover{background:var(--surface);color:var(--ink)}
+    .category-menu-item.active{background:var(--accent-bg);color:var(--accent)}
+    .category-menu-item .cat-icon{font-size:14px;width:20px;text-align:center}
     /* ═══ Specialized Domain Selector ═══ */
     .domain-pills{display:flex;gap:4px;padding:4px 6px;margin-top:4px;flex-wrap:wrap}
     .domain-pill{padding:4px 10px;border-radius:12px;font-size:10px;font-weight:600;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;transition:all .15s;text-transform:uppercase;letter-spacing:.5px}
@@ -220,6 +231,21 @@
         Swift Search
       </div>
       <div class="topbar-actions">
+        <div class="category-dropdown">
+          <button id="categoryBtn" class="category-dropdown-btn" onclick="toggleCategoryMenu()" title="Domain Focus">
+            <span id="catIcon">🎯</span>
+            <span id="catLabelBtn">All</span>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div id="categoryMenu" class="category-menu hidden">
+            <button class="category-menu-item active" data-cat="" onclick="selectCategory(this)"><span class="cat-icon">🌐</span>All Domains</button>
+            <button class="category-menu-item" data-cat="tech" onclick="selectCategory(this)"><span class="cat-icon">💻</span>Tech</button>
+            <button class="category-menu-item" data-cat="science" onclick="selectCategory(this)"><span class="cat-icon">🧬</span>Science</button>
+            <button class="category-menu-item" data-cat="finance" onclick="selectCategory(this)"><span class="cat-icon">📊</span>Finance</button>
+            <button class="category-menu-item" data-cat="health" onclick="selectCategory(this)"><span class="cat-icon">🏥</span>Health</button>
+            <button class="category-menu-item" data-cat="news" onclick="selectCategory(this)"><span class="cat-icon">📰</span>News</button>
+          </div>
+        </div>
         <div class="mode-dropdown">
           <button class="mode-dropdown-btn" onclick="toggleModeMenu()">
             <span id="modeIcon">⚡</span>
@@ -230,12 +256,6 @@
             <button class="mode-menu-item active" data-mode="lite" onclick="selectMode(this)"><span class="mode-icon">⚡</span>Lite</button>
             <button class="mode-menu-item" data-mode="research" onclick="selectMode(this)"><span class="mode-icon">🔬</span>Deep Research</button>
             <button class="mode-menu-item" data-mode="academic" onclick="selectMode(this)"><span class="mode-icon">🎓</span>Academic</button>
-            <div class="mode-menu-divider"></div>
-            <button class="mode-menu-item" data-mode="specialized_tech" onclick="selectMode(this)"><span class="mode-icon">💻</span>Tech</button>
-            <button class="mode-menu-item" data-mode="specialized_science" onclick="selectMode(this)"><span class="mode-icon">🧬</span>Science</button>
-            <button class="mode-menu-item" data-mode="specialized_finance" onclick="selectMode(this)"><span class="mode-icon">📊</span>Finance</button>
-            <button class="mode-menu-item" data-mode="specialized_health" onclick="selectMode(this)"><span class="mode-icon">🏥</span>Health</button>
-            <button class="mode-menu-item" data-mode="specialized_news" onclick="selectMode(this)"><span class="mode-icon">📰</span>News</button>
             <div class="mode-menu-divider"></div>
             <button class="mode-menu-item" data-mode="reddit" onclick="selectMode(this)"><span class="mode-icon">💬</span>Reddit</button>
             <button class="mode-menu-item" data-mode="youtube" onclick="selectMode(this)"><span class="mode-icon">▶</span>YouTube</button>
@@ -484,24 +504,52 @@
     }
 
     // ═══ Mode dropdown (topbar) ═══
-    const modeLabels={lite:'Lite',research:'Deep Research',academic:'Academic',specialized_tech:'Tech',specialized_science:'Science',specialized_finance:'Finance',specialized_health:'Health',specialized_news:'News',reddit:'Reddit',youtube:'YouTube'};
-    const modeIcons={lite:'⚡',research:'🔬',academic:'🎓',specialized_tech:'💻',specialized_science:'🧬',specialized_finance:'📊',specialized_health:'🏥',specialized_news:'📰',reddit:'💬',youtube:'▶'};
-    function toggleModeMenu(){$('modeMenu').classList.toggle('hidden')}
+    // ═══ Mode dropdown (search modes) ═══
+    const modeLabels={lite:'Lite',research:'Deep Research',academic:'Academic',reddit:'Reddit',youtube:'YouTube'};
+    const modeIcons={lite:'⚡',research:'🔬',academic:'🎓',reddit:'💬',youtube:'▶'};
+    function toggleModeMenu(){$('modeMenu').classList.toggle('hidden');$('categoryMenu').classList.add('hidden')}
     function selectMode(el){
       focusMode=el.dataset.mode;
       $('modeMenu').querySelectorAll('.mode-menu-item').forEach(i=>i.classList.remove('active'));
       el.classList.add('active');
       $('modeMenu').classList.add('hidden');
       syncModeUI();
-      dom.statusMode.textContent=focusMode;
+      dom.statusMode.textContent=getEffectiveFocus();
     }
     function syncModeUI(){
       $('modeLabelBtn').textContent=modeLabels[focusMode]||'Lite';
       $('modeIcon').textContent=modeIcons[focusMode]||'⚡';
     }
-    // Close dropdown on click outside
+
+    // ═══ Category dropdown (domain specialization) ═══
+    const catLabels={'':'All',tech:'Tech',science:'Science',finance:'Finance',health:'Health',news:'News'};
+    const catIcons={'':'🌐',tech:'💻',science:'🧬',finance:'📊',health:'🏥',news:'📰'};
+    let selectedCategory='';
+
+    function toggleCategoryMenu(){$('categoryMenu').classList.toggle('hidden');$('modeMenu').classList.add('hidden')}
+    function selectCategory(el){
+      selectedCategory=el.dataset.cat||'';
+      $('categoryMenu').querySelectorAll('.category-menu-item').forEach(i=>i.classList.remove('active'));
+      el.classList.add('active');
+      $('categoryMenu').classList.add('hidden');
+      $('catLabelBtn').textContent=catLabels[selectedCategory]||'All';
+      $('catIcon').textContent=catIcons[selectedCategory]||'🌐';
+      // Visual: highlight button when a domain is active
+      const btn=$('categoryBtn');
+      if(selectedCategory){btn.classList.add('active-category')}else{btn.classList.remove('active-category')}
+    }
+
+    // Build the actual focus_mode string for the backend
+    // If category is set, override focus to specialized_{category}
+    function getEffectiveFocus(){
+      if(selectedCategory) return 'specialized_'+selectedCategory;
+      return focusMode;
+    }
+
+    // Close all dropdowns on click outside
     document.addEventListener('click',e=>{
       if(!e.target.closest('.mode-dropdown'))$('modeMenu').classList.add('hidden');
+      if(!e.target.closest('.category-dropdown'))$('categoryMenu').classList.add('hidden');
     });
 
     // ═══ History ═══
@@ -698,8 +746,12 @@
     }
     function toggleAllSources(){dom.allSourcesGrid.classList.toggle('hidden')}
 
-    function renderAnswer(text){
-      let html=esc(text)
+    // ═══ Typewriter Engine ═══
+    let typewriterAbort=false;
+    let typewriterTimer=null;
+
+    function formatMarkdownToHtml(text){
+      return esc(text)
         .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
         .replace(/^## (.*$)/gm,'<h2>$1</h2>')
         .replace(/^### (.*$)/gm,'<h3>$1</h3>')
@@ -708,7 +760,68 @@
         .replace(/\[(\d+)\]/g,'<sup style="color:var(--accent);font-size:11px;cursor:default">[$1]</sup>')
         .replace(/\n\n/g,'</p><p>')
         .replace(/\n/g,'<br>');
-      dom.answerContent.innerHTML='<p>'+html+'</p>';
+    }
+
+    function renderAnswer(text){
+      dom.answerContent.innerHTML='<p>'+formatMarkdownToHtml(text)+'</p>';
+    }
+
+    function typewriterRender(text){
+      // Stop any previous typewriter
+      typewriterAbort=true;
+      if(typewriterTimer)clearTimeout(typewriterTimer);
+
+      // Split text into words (preserve whitespace/newlines between them)
+      const words=text.match(/\S+|\n+/g)||[];
+      if(!words.length){renderAnswer(text);return}
+
+      typewriterAbort=false;
+      let wordIndex=0;
+      let accumulated='';
+
+      // Add blinking cursor CSS if not already present
+      if(!document.getElementById('twCursorStyle')){
+        const style=document.createElement('style');
+        style.id='twCursorStyle';
+        style.textContent=`
+          .tw-cursor::after{content:'▎';color:var(--accent);animation:twBlink .8s step-end infinite;font-weight:300}
+          @keyframes twBlink{0%,100%{opacity:1}50%{opacity:0}}
+        `;
+        document.head.appendChild(style);
+      }
+
+      function typeNext(){
+        if(typewriterAbort||wordIndex>=words.length){
+          // Done — render final without cursor
+          dom.answerContent.innerHTML='<p>'+formatMarkdownToHtml(text)+'</p>';
+          return;
+        }
+
+        // Add next word
+        const word=words[wordIndex];
+        if(word.match(/^\n+$/)){
+          accumulated+=word;
+        }else{
+          accumulated+=(accumulated&&!accumulated.endsWith('\n')?' ':'')+word;
+        }
+        wordIndex++;
+
+        // Render with cursor
+        dom.answerContent.innerHTML='<p>'+formatMarkdownToHtml(accumulated)+'</p><span class="tw-cursor"></span>';
+
+        // Auto-scroll to bottom of answer
+        dom.answerContent.scrollTop=dom.answerContent.scrollHeight;
+
+        // Calculate delay: faster for short words, slight pause at sentence ends
+        let delay=22; // base speed: ~45 words/sec
+        if(word.match(/[.!?:;]$/)) delay=80;  // pause at sentence end
+        else if(word.match(/[,]$/)) delay=45;  // short pause at comma
+        else if(wordIndex<15) delay=35;        // slightly slower at start (dramatic effect)
+
+        typewriterTimer=setTimeout(typeNext,delay);
+      }
+
+      typeNext();
     }
 
     // ═══ Main Search ═══
@@ -716,8 +829,10 @@
       const query=dom.queryInput.value.trim();
       if(!query)return;
 
-      // Stop any TTS
+      // Stop any TTS and typewriter
       ttsReset();
+      typewriterAbort=true;
+      if(typewriterTimer)clearTimeout(typewriterTimer);
 
       // Hide home hero, show results
       document.querySelector('.center-wrap').classList.remove('home-active');
@@ -736,9 +851,13 @@
       dom.runBtn.classList.add('searching');
       $('searchOrbital').classList.remove('hidden');
 
+      // Compute effective focus ONCE at the start (mode + category combined)
+      const effectiveFocus=getEffectiveFocus();
+
       saveSettings();
       startStatus();
-      updateStatus(focusMode==='research'?'Deep Research: querying 90+ engines...':focusMode.startsWith('specialized')?`Specialized ${(modeLabels[focusMode]||'').toUpperCase()}: querying curated engines...`:'Searching engines...');
+      dom.statusMode.textContent=effectiveFocus;
+      updateStatus(effectiveFocus==='research'?'Deep Research: querying 90+ engines...':effectiveFocus.startsWith('specialized')?`Specialized ${(catLabels[selectedCategory]||'').toUpperCase()}: querying curated engines...`:'Searching engines...');
 
       const prov=dom.provider.value;
       const key=dom.apiKey.value.trim();
@@ -748,25 +867,25 @@
 
       // DEEP RESEARCH = 200 sources minimum, NOT 30
       const userMax=parseInt(dom.maxResults.value)||30;
-      const maxR=(focusMode==='research')?Math.max(userMax,200):focusMode.startsWith('specialized')?Math.max(userMax,80):userMax;
+      const maxR=(effectiveFocus==='research')?Math.max(userMax,200):effectiveFocus.startsWith('specialized')?Math.max(userMax,80):userMax;
 
-      const payload={query,focus_mode:focusMode,max_results:maxR};
+      const payload={query,focus_mode:effectiveFocus,max_results:maxR};
 
       if(useLlm&&key&&model){
-        payload.llm={provider:prov,api_key:key,model,base_url:base,timeout_ms:focusMode==='research'?90000:45000};
+        payload.llm={provider:prov,api_key:key,model,base_url:base,timeout_ms:effectiveFocus==='research'?90000:45000};
       }
 
       let endpoint='/search';
       if(useLlm&&key&&model){
-        endpoint=focusMode==='research'?'/search/research-llm':'/search/lite-llm';
+        endpoint=effectiveFocus==='research'?'/search/research-llm':'/search/lite-llm';
       }
       // Specialized mode timeout: mid-tier between lite (45s) and research (90s)
-      if(useLlm&&key&&model&&focusMode.startsWith('specialized')){
+      if(useLlm&&key&&model&&effectiveFocus.startsWith('specialized')){
         payload.llm.timeout_ms=60000;
       }
 
       try{
-        if(focusMode==='research'&&useLlm)updateStatus('Scraping 200+ sources for deep research...');
+        if(effectiveFocus==='research'&&useLlm)updateStatus('Scraping 200+ sources for deep research...');
 
         const data=await api(endpoint,'POST',payload);
         stopStatus();
@@ -777,7 +896,7 @@
 
         if(data.llm_answer){
           currentAnswer=cleanAnswer(data.llm_answer);
-          renderAnswer(currentAnswer);
+          typewriterRender(currentAnswer);
           dom.ttsBtn.classList.remove('hidden');
         }else if(data.llm_error){
           dom.answerContent.innerHTML='<div style="color:var(--muted);padding:20px 0">AI could not generate an answer. Browse sources above.</div>';
