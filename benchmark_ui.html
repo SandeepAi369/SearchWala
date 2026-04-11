@@ -68,11 +68,7 @@
     .search-submit:disabled{opacity:.4;cursor:not-allowed;transform:none!important;box-shadow:none!important}
     .search-submit svg{width:20px;height:20px;color:#fff}
 
-    /* ═══ Mode bar — always visible under search ═══ */
-    .mode-row{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;justify-content:center}
-    .mode-chip{padding:6px 16px;border-radius:20px;font-size:12px;font-weight:500;background:transparent;border:1px solid var(--border);color:var(--muted);cursor:pointer;transition:all .2s;user-select:none}
-    .mode-chip:hover{border-color:var(--border-2);color:var(--ink-2);transform:translateY(-1px)}
-    .mode-chip.active{background:var(--accent-bg);border-color:rgba(32,178,170,.3);color:var(--accent)}
+
 
     /* ═══ Status bar ═══ */
     .status-bar{display:flex;align-items:center;justify-content:center;gap:12px;padding:10px;margin-top:10px;font-size:12px;color:var(--muted);animation:fadeIn .3s ease-out both}
@@ -239,13 +235,6 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
           </button>
         </div>
-        <div class="mode-row" id="modeBar">
-          <button class="mode-chip active" data-mode="lite">⚡ Lite</button>
-          <button class="mode-chip" data-mode="research">🔬 Deep Research</button>
-          <button class="mode-chip" data-mode="academic">🎓 Academic</button>
-          <button class="mode-chip" data-mode="reddit">💬 Reddit</button>
-          <button class="mode-chip" data-mode="youtube">▶ YouTube</button>
-        </div>
         <!-- Status bar -->
         <div id="statusBar" class="status-bar hidden">
           <span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span>
@@ -342,7 +331,7 @@
       modelInput:$('modelInput'), modelSelect:$('modelSelect'),
       enableLlm:$('enableLlm'), maxResults:$('maxResults'),
       drawerOverlay:$('drawerOverlay'), settingsDrawer:$('settingsDrawer'),
-      dbModal:$('dbModal'), modeBar:$('modeBar'),
+      dbModal:$('dbModal'),
     };
 
     let focusMode = 'lite';
@@ -448,33 +437,16 @@
       $('fetchBtn').textContent='⟳ Fetch';
     }
 
-    // ═══ Mode chips — FIXED: always clickable ═══
-    dom.modeBar.addEventListener('click',e=>{
-      const chip=e.target.closest('.mode-chip');
-      if(!chip)return;
-      dom.modeBar.querySelectorAll('.mode-chip').forEach(c=>c.classList.remove('active'));
-      chip.classList.add('active');
-      focusMode=chip.dataset.mode;
-      dom.statusMode.textContent=focusMode;
-      // Sync topbar dropdown
-      syncModeUI();
-    });
-
     // ═══ Mode dropdown (topbar) ═══
     const modeLabels={lite:'Lite',research:'Deep Research',academic:'Academic',reddit:'Reddit',youtube:'YouTube'};
     const modeIcons={lite:'⚡',research:'🔬',academic:'🎓',reddit:'💬',youtube:'▶'};
     function toggleModeMenu(){$('modeMenu').classList.toggle('hidden')}
     function selectMode(el){
       focusMode=el.dataset.mode;
-      // Update dropdown
       $('modeMenu').querySelectorAll('.mode-menu-item').forEach(i=>i.classList.remove('active'));
       el.classList.add('active');
       $('modeMenu').classList.add('hidden');
       syncModeUI();
-      // Sync mode-row chips
-      dom.modeBar.querySelectorAll('.mode-chip').forEach(c=>{
-        c.classList.toggle('active',c.dataset.mode===focusMode);
-      });
       dom.statusMode.textContent=focusMode;
     }
     function syncModeUI(){
@@ -528,19 +500,87 @@
       },1500);
     }
 
-    // ═══ TTS — Microsoft Edge Neural Voice (en-US-AvaNeural, from XeL Studio) ═══
+    // ═══ TTS — Chunked Edge Neural Voice (en-US-AvaNeural) ═══
+    // Smart chunking: split text into sentences, play first chunk instantly,
+    // prefetch remaining chunks for seamless playback (XeL Studio pattern)
     let ttsAudio=null;
-    function toggleTTS(){
-      if(ttsPlaying){
-        if(ttsAudio){ttsAudio.pause();ttsAudio=null}
-        ttsPlaying=false;
-        dom.ttsBtn.classList.remove('playing');
-        dom.ttsBtn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg><span id="ttsLabel">Listen</span>`;
-        return;
+    let ttsChunks=[];
+    let ttsChunkIdx=0;
+    let ttsChunkUrls=[];
+    let ttsAbort=false;
+
+    const TTS_ICON=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>`;
+
+    function ttsReset(){
+      ttsAbort=true;
+      if(ttsAudio){ttsAudio.pause();ttsAudio.src='';ttsAudio=null}
+      ttsPlaying=false;
+      ttsChunks=[];ttsChunkIdx=0;ttsChunkUrls=[];
+      dom.ttsBtn.classList.remove('playing');
+      dom.ttsBtn.innerHTML=TTS_ICON+`<span id="ttsLabel">Listen</span>`;
+    }
+
+    // Split text into small sentence-based chunks for fast TTS
+    function ttsSplit(text){
+      const sentences=text.split(/(?<=[.!?])\s+/).filter(s=>s.length>5);
+      if(!sentences.length)return [text];
+      const chunks=[];
+      let buf=[];let words=0;
+      const FIRST_MAX=30,CHUNK_MAX=50;
+      let isFirst=true;
+      for(const s of sentences){
+        const w=s.split(' ').length;
+        const max=isFirst?FIRST_MAX:CHUNK_MAX;
+        if(words+w<=max){buf.push(s);words+=w}
+        else{
+          if(buf.length){chunks.push(buf.join(' '));isFirst=false}
+          buf=[s];words=w;
+        }
       }
+      if(buf.length)chunks.push(buf.join(' '));
+      return chunks.length?chunks:[text];
+    }
+
+    // Play chunk at index, chain to next
+    async function ttsPlayChunk(idx){
+      if(ttsAbort||idx>=ttsChunks.length){ttsReset();return}
+      ttsChunkIdx=idx;
+      const total=ttsChunks.length;
+      dom.ttsBtn.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">${idx+1}/${total}</span>`;
+
+      // Get URL (may already be prefetched)
+      let url=ttsChunkUrls[idx];
+      if(!url){
+        try{
+          const res=await fetch(apiBase()+'/api/tts?text='+encodeURIComponent(ttsChunks[idx]));
+          if(!res.ok)throw new Error('TTS error');
+          const blob=await res.blob();
+          url=URL.createObjectURL(blob);
+          ttsChunkUrls[idx]=url;
+        }catch(e){ttsReset();return}
+      }
+      if(ttsAbort)return;
+
+      ttsAudio=new Audio(url);
+      ttsAudio.onended=()=>ttsPlayChunk(idx+1);
+      ttsAudio.onerror=()=>ttsPlayChunk(idx+1);
+      ttsAudio.play().catch(()=>{});
+
+      // Prefetch next 3 chunks
+      for(let i=idx+1;i<Math.min(idx+4,ttsChunks.length);i++){
+        if(!ttsChunkUrls[i]){
+          const ci=i;
+          fetch(apiBase()+'/api/tts?text='+encodeURIComponent(ttsChunks[ci]))
+            .then(r=>r.blob()).then(b=>{ttsChunkUrls[ci]=URL.createObjectURL(b)}).catch(()=>{});
+        }
+      }
+    }
+
+    function toggleTTS(){
+      if(ttsPlaying){ttsReset();return}
       if(!currentAnswer)return;
 
-      // Clean text for TTS
+      // Clean text
       const text=currentAnswer
         .replace(/\*\*/g,'').replace(/#{1,6}\s*/g,'')
         .replace(/\[(\d+)\]/g,'').replace(/https?:\/\/\S+/g,'')
@@ -549,31 +589,15 @@
         .slice(0,5000);
       if(!text)return;
 
-      // Show loading state
+      ttsAbort=false;
+      ttsPlaying=true;
+      ttsChunks=ttsSplit(text);
+      ttsChunkUrls=new Array(ttsChunks.length).fill(null);
       dom.ttsBtn.classList.add('playing');
-      dom.ttsBtn.innerHTML=`<span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span><span id="ttsLabel">Loading...</span>`;
+      dom.ttsBtn.innerHTML=`<span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span><span id="ttsLabel">1/${ttsChunks.length}</span>`;
 
-      // Call edge-tts backend
-      const url=apiBase()+'/api/tts?text='+encodeURIComponent(text);
-      ttsAudio=new Audio(url);
-      ttsAudio.oncanplay=()=>{
-        ttsPlaying=true;
-        dom.ttsBtn.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">Playing</span>`;
-      };
-      ttsAudio.onended=()=>{
-        ttsPlaying=false;
-        ttsAudio=null;
-        dom.ttsBtn.classList.remove('playing');
-        dom.ttsBtn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg><span id="ttsLabel">Listen</span>`;
-      };
-      ttsAudio.onerror=()=>{
-        ttsPlaying=false;
-        ttsAudio=null;
-        dom.ttsBtn.classList.remove('playing');
-        dom.ttsBtn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg><span id="ttsLabel">Listen</span>`;
-        alert('TTS unavailable. Is edge-tts installed?');
-      };
-      ttsAudio.play().catch(()=>{});
+      // Start playing first chunk immediately
+      ttsPlayChunk(0);
     }
 
     // ═══ Rendering ═══
