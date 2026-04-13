@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-PROCESS_PATTERN="swift-search-rs"
+PROCESS_PATTERN="qrux"
 THRESHOLD_MB="${1:-35}"
 INTERVAL_SEC="${2:-1}"
 
@@ -23,7 +23,7 @@ while true; do
   pids=$(pgrep -f "$PROCESS_PATTERN" || true)
 
   if [[ -z "$pids" ]]; then
-    echo "[$(date '+%H:%M:%S')] waiting: no swift-search-rs process found"
+    echo "[$(date '+%H:%M:%S')] waiting: no qrux process found"
     sleep "$INTERVAL_SEC"
     continue
   fi

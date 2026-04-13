@@ -1,5 +1,5 @@
 // ============================================================================
-// Swift Search Agent v4.2 - LLM Synthesis Engine
+// Qrux v5.0.1 - LLM Synthesis Engine
 //
 // Iterative Deep Research:
 //   Research mode processes sources in batches of 50, calling the LLM

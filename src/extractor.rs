@@ -1,5 +1,5 @@
 // ============================================================================
-// Swift Search Agent v4.1 - Trafilatura-Level Content Extractor
+// Qrux v5.0.1 - Trafilatura-Level Content Extractor
 // Advanced multi-strategy extraction with:
 // - Paragraph-level deduplication (anti-boilerplate like trafilatura)
 // - Link density penalty

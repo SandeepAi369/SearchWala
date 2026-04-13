@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Swift Search Agent v3.0 — URL Utilities
+// Qrux v5.0.1 — URL Utilities
 // Advanced URL normalization, deduplication, and filtering
 // ══════════════════════════════════════════════════════════════════════════════
 

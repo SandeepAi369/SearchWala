@@ -1,5 +1,5 @@
 // ============================================================================
-// Swift-Search-RS v5.0.1
+// Qrux v5.0.1
 // ============================================================================
 //
 // Native Rust meta-search + extraction + optional BYOK LLM synthesis.
@@ -326,7 +326,7 @@ async fn models_handler(
 /// GET /about - Service metadata
 async fn about_handler() -> impl IntoResponse {
     Json(serde_json::json!({
-        "name": "Swift-Search-RS",
+        "name": "Qrux",
         "version": "5.0.1",
         "language": "Rust",
         "description": "Ultra-fast native meta-search & scrape API with iterative deep research LLM synthesis",
@@ -405,7 +405,7 @@ async fn tts_handler(
             "edge-tts".to_string() // fallback to PATH
         });
 
-    let tmp_path = format!("/tmp/swift_tts_{}.mp3", std::process::id());
+    let tmp_path = format!("/tmp/qrux_tts_{}.mp3", std::process::id());
 
     let output = tokio::process::Command::new(&edge_tts_path)
         .arg("--text")
@@ -447,7 +447,7 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "swift_search_rs=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "qrux=info,tower_http=info".into()),
         )
         .with_target(false)
         .compact()
@@ -457,7 +457,7 @@ async fn main() {
     let engines = config::enabled_engines();
 
     tracing::info!("============================================");
-    tracing::info!("  Swift-Search-RS v5.0.1");
+    tracing::info!("  Qrux v5.0.1");
     tracing::info!("  Language: Rust");
     tracing::info!("  Engines: {} total", engines.len());
     tracing::info!("  Max URLs: {}", config::max_urls());

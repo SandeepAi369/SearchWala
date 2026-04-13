@@ -1,5 +1,5 @@
 // ============================================================================
-// Swift Search Agent v4.2 - Search Orchestrator
+// Qrux v5.0.1 - Search Orchestrator
 // Iterative deep research: multi-batch LLM synthesis
 // TempDb session tracking + HistoryDb persistence
 // ============================================================================
@@ -64,7 +64,7 @@ pub async fn execute_search(
     if enable_copilot.unwrap_or(false) {
         if let Some(cfg) = &llm_config {
             let rewritten = crate::copilot::rewrite_query(&effective_query, cfg).await;
-            tracing::info!("Swift-Copilot rewrote query: [{}] -> [{}]", effective_query, rewritten);
+            tracing::info!("Qrux-Copilot rewrote query: [{}] -> [{}]", effective_query, rewritten);
             copilot_out = Some(rewritten.clone());
             effective_query = rewritten;
         }

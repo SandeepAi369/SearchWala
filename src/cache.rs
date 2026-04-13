@@ -1,10 +1,10 @@
 // ============================================================================
-// Swift Search Agent v4.2 — Dual Database System
+// Qrux v5.0.1 — Dual Database System
 //
 // 1. TempDb   — In-memory HashMap for active search sessions.
 //               Auto-wipes completely when a task finishes.
 //
-// 2. HistoryDb — Optional persistent JSON-lines file (~/.swift-search/history.json).
+// 2. HistoryDb — Optional persistent JSON-lines file (~/.qrux/history.json).
 //               Stores past queries + LLM answers. Enabled via UI prompt.
 // ============================================================================
 
@@ -160,7 +160,7 @@ impl HistoryDb {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".to_string());
-        let dir = PathBuf::from(home).join(".swift-search");
+        let dir = PathBuf::from(home).join(".qrux");
         let file_path = dir.join("history.json");
 
         Self {

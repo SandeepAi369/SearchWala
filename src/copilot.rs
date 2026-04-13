@@ -8,7 +8,7 @@ pub async fn rewrite_query(query: &str, llm_config: &LlmConfig) -> String {
     let model = namespaced_model(&llm_config.provider, &llm_config.model);
     let timeout_ms = llm_config.timeout_ms.unwrap_or(5000).clamp(2000, 10000);
 
-    let system_prompt = "You are Swift-Search-Rs Copilot. Rewrite the user's query into an optimized, highly dense search engine query string. Return ONLY the rewritten query string without any quotes, brackets, or explanations. Target exact keywords.";
+    let system_prompt = "You are Qrux Copilot. Rewrite the user's query into an optimized, highly dense search engine query string. Return ONLY the rewritten query string without any quotes, brackets, or explanations. Target exact keywords.";
     
     let chat_req = ChatRequest::new(vec![
         ChatMessage::system(system_prompt),
@@ -28,11 +28,11 @@ pub async fn rewrite_query(query: &str, llm_config: &LlmConfig) -> String {
             }
         }
         Ok(Err(e)) => {
-            tracing::debug!("Swift-Copilot LLM Error: {}", e);
+            tracing::debug!("Qrux-Copilot LLM Error: {}", e);
             query.to_string()
         }
         Err(_) => {
-            tracing::debug!("Swift-Copilot LLM Timeout");
+            tracing::debug!("Qrux-Copilot LLM Timeout");
             query.to_string()
         }
     }

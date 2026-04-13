@@ -1,5 +1,5 @@
 // ============================================================================
-// Swift Search Agent v4.0 - Data Models
+// Qrux v5.0.1 - Data Models
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ pub struct SearchRequest {
     pub focus_mode: Option<String>,
     /// Optional BYOK LLM config for synthesized answer generation.
     pub llm: Option<LlmConfig>,
-    /// Enable the Swift Copilot pre-computation rewriter
+    /// Enable the Qrux Copilot pre-computation rewriter
     pub enable_copilot: Option<bool>,
 }
 

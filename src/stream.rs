@@ -1,5 +1,5 @@
 // ============================================================================
-// Swift Search Agent v4.1 - Streaming Search (SSE)
+// Qrux v5.0.1 - Streaming Search (SSE)
 // Mirrors search.rs fixes: scrape client, retry on 403/429, research mode
 // ============================================================================
 
@@ -32,7 +32,7 @@ pub fn execute_stream_search(
     
     tokio::spawn(async move {
         let start = std::time::Instant::now();
-        let _ = tx.send(Ok(Event::default().data(serde_json::json!({"type": "info", "text": "Starting Swift Meta-Search Pipeline..."}).to_string()))).await;
+        let _ = tx.send(Ok(Event::default().data(serde_json::json!({"type": "info", "text": "Starting Qrux Meta-Search Pipeline..."}).to_string()))).await;
 
         let normalized_focus = focus_mode
             .as_deref()
@@ -55,7 +55,7 @@ pub fn execute_stream_search(
         let mut effective_query = apply_focus_mode(&query, normalized_focus.as_deref());
         if enable_copilot.unwrap_or(false) {
             if let Some(cfg) = &llm_config {
-                let _ = tx.send(Ok(Event::default().data(serde_json::json!({"type": "info", "text": "Swift Copilot rewriting query..."}).to_string()))).await;
+                let _ = tx.send(Ok(Event::default().data(serde_json::json!({"type": "info", "text": "Qrux Copilot rewriting query..."}).to_string()))).await;
                 let rewritten = crate::copilot::rewrite_query(&effective_query, cfg).await;
                 let _ = tx.send(Ok(Event::default().data(serde_json::json!({"type": "copilot_query", "text": &rewritten}).to_string()))).await;
                 effective_query = rewritten;

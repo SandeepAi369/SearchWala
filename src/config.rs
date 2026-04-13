@@ -1,5 +1,5 @@
 // ============================================================================
-// Swift Search Agent v4.1 - Configuration
+// Qrux v5.0.1 - Configuration
 // Advanced browser fingerprinting, WAF bypass, and stealth scraping config
 // ============================================================================
 

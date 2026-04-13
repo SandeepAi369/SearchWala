@@ -1,12 +1,12 @@
 <div align="center">
 
-# ⚡ Swift Search RS
+# ⚡ Qrux
 
 ### The Fastest Open-Source Meta-Search Engine — Built in Pure Rust
 
-[![Version](https://img.shields.io/badge/version-5.0.1-blue?style=flat-square)](https://github.com/SandeepAi369/Swift-Search-Rs)
+[![Version](https://img.shields.io/badge/version-5.0.1-blue?style=flat-square)](https://github.com/SandeepAi369/Qrux)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
-[![Engines](https://img.shields.io/badge/search%20engines-90+-brightgreen?style=flat-square)](https://github.com/SandeepAi369/Swift-Search-Rs)
+[![Engines](https://img.shields.io/badge/search%20engines-90+-brightgreen?style=flat-square)](https://github.com/SandeepAi369/Qrux)
 [![License](https://img.shields.io/badge/license-Apache%202.0-purple?style=flat-square)](./LICENSE)
 
 **90+ search engines** · **Stealth WAF bypass** · **BM25 ranking** · **5-tier content extraction** · **BYOK LLM synthesis**
@@ -21,9 +21,9 @@
 
 ## 🏆 How It's Different
 
-Most meta-search tools (SearXNG, Searx, etc.) simply proxy queries and return URLs. Swift Search RS goes **5 levels deeper**:
+Most meta-search tools (SearXNG, Searx, etc.) simply proxy queries and return URLs. Qrux goes **5 levels deeper**:
 
-| Capability | SearXNG | Perplexity | **Swift Search RS** |
+| Capability | SearXNG | Perplexity | **Qrux** |
 |---|:---:|:---:|:---:|
 | Meta-search across engines | ✅ ~70 | ❌ proprietary | ✅ **90+ engines** |
 | Full article text extraction | ❌ | ❌ (summary only) | ✅ **5-tier extractor** |
@@ -73,7 +73,7 @@ This bypasses Cloudflare, Akamai, and Imperva WAFs consistently — something no
 <details>
 <summary><b>📖 5-Tier Content Extraction — Not Just URLs</b></summary>
 
-While other search tools give you links, Swift Search RS **scrapes and extracts the actual article text**:
+While other search tools give you links, Qrux **scrapes and extracts the actual article text**:
 
 1. **Structured Selectors** — `.entry-content`, `.article-body`, `#main-content` (35+ CMS patterns)
 2. **Semantic HTML5** — `<article>`, `<main>`, `[role="main"]`, `[itemprop="articleBody"]`
@@ -87,7 +87,7 @@ Plus: paragraph deduplication, boilerplate line regex filtering, and per-paragra
 <details>
 <summary><b>🧠 BM25 Paragraph-Level Ranking</b></summary>
 
-Raw results aren't enough — relevance matters. Swift Search RS breaks every scraped article into paragraph-sized chunks and scores them using the **Okapi BM25 algorithm** (the same ranking model underlying Elasticsearch):
+Raw results aren't enough — relevance matters. Qrux breaks every scraped article into paragraph-sized chunks and scores them using the **Okapi BM25 algorithm** (the same ranking model underlying Elasticsearch):
 
 - Term frequency (TF) analysis per chunk
 - Inverse document frequency (IDF) across all chunks
@@ -132,7 +132,7 @@ Each mode uses a separate **Category pill** in the UI — composable with any se
 ## 🏗️ Architecture
 
 ```
-  Client Request           Swift Search RS v5.0.1
+  Client Request           Qrux v5.0.1
   ┌──────────┐        ┌────────────────────────────────────────────────┐
   │ POST     │        │                                                │
   │ /search  │───────►│  1. Query Snowballing (3 variations)           │
@@ -164,7 +164,7 @@ Phase 1: Primary engines (fast, reliable)
 ## 📁 Project Structure
 
 ```
-Swift-Search-Rs/
+Qrux/
 ├── Cargo.toml               # Dependencies & release optimizations (LTO, strip)
 ├── Dockerfile               # Multi-stage Docker build (~15MB final image)
 ├── LICENSE                   # Apache 2.0
@@ -208,21 +208,21 @@ Swift-Search-Rs/
 ### Build from Source
 
 ```bash
-git clone https://github.com/SandeepAi369/Swift-Search-Rs.git
-cd Swift-Search-Rs
+git clone https://github.com/SandeepAi369/Qrux.git
+cd Qrux
 
 # Build optimized release binary
 cargo build --release
 
 # Run (starts on http://localhost:8000)
-./target/release/swift-search-rs
+./target/release/qrux
 ```
 
 ### Docker
 
 ```bash
-docker build -t swift-search-rs .
-docker run -p 8000:8000 swift-search-rs
+docker build -t qrux .
+docker run -p 8000:8000 qrux
 ```
 
 ### Verify
@@ -388,7 +388,7 @@ All environment variables are optional — sensible defaults built-in.
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `8000` | HTTP server listen port |
-| `RUST_LOG` | `swift_search_rs=info` | Log verbosity level |
+| `RUST_LOG` | `qrux=info` | Log verbosity level |
 
 ---
 

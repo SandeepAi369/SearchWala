@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Swift Search Agent v3.0 — Multi-stage Docker Build
+# Qrux v5.0.1 — Multi-stage Docker Build
 # Final image: ~15MB, runs on 512MB VPS or HF Spaces
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -26,11 +26,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/swift-search-rs /app/swift-search-rs
+COPY --from=builder /app/target/release/qrux /app/qrux
 
 # Default environment
 ENV PORT=7860
-ENV RUST_LOG=swift_search_rs=info
+ENV RUST_LOG=qrux=info
 ENV ENGINES=duckduckgo,brave,yahoo,qwant,mojeek
 ENV MAX_URLS=15
 ENV CONCURRENCY=8
@@ -38,4 +38,4 @@ ENV SCRAPE_TIMEOUT=10
 
 EXPOSE 7860
 
-CMD ["/app/swift-search-rs"]
+CMD ["/app/qrux"]
