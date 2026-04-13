@@ -51,7 +51,7 @@ pub async fn execute_search(
     let use_ranked_chunk_path = is_lite_mode || is_specialized;
 
     let max_urls = if is_lite_mode {
-        max_results.unwrap_or_else(config::max_urls).min(35)
+        max_results.unwrap_or_else(config::max_urls).min(50)
     } else if is_specialized {
         max_results.unwrap_or(100).min(150)
     } else {
@@ -70,14 +70,8 @@ pub async fn execute_search(
         }
     }
 
-    let query_variations = if is_lite_mode {
-        vec![effective_query.clone()]
-    } else if is_specialized {
-        let domain = specialized_domain.as_deref().unwrap_or("general");
-        engines::generate_specialized_variations(&effective_query, domain)
-    } else {
-        engines::generate_query_variations(&effective_query)
-    };
+    // Single query — no snowballing. User's query is sacred.
+    let query_variations = vec![effective_query.clone()];
 
     let jitter_min = config::jitter_min_ms();
     let jitter_max = config::jitter_max_ms();
