@@ -62,6 +62,19 @@ pub fn execute_stream_search(
             }
         }
 
+        // ─── Time-enrichment: auto-inject current year for recency ───
+        {
+            let q_lower = effective_query.to_lowercase();
+            let recency_keywords = ["latest", "current", "recent", "today", "new", "now",
+                "this year", "right now", "as of", "updated", "newest"];
+            let has_recency_hint = recency_keywords.iter().any(|kw| q_lower.contains(kw));
+            let has_year = (2020..=2030).any(|y| q_lower.contains(&y.to_string()));
+            if has_recency_hint && !has_year {
+                let year = chrono::Utc::now().format("%Y").to_string();
+                effective_query = format!("{} {}", effective_query, year);
+            }
+        }
+
         let _ = tx.send(Ok(Event::default().data(serde_json::json!({"type": "info", "text": format!("Searching engines for: {}", effective_query)}).to_string()))).await;
 
         // Single query — no snowballing

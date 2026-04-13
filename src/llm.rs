@@ -647,12 +647,20 @@ fn ensure_trailing_slash(url: &str) -> String {
 // =============================================================================
 
 fn current_datetime_str() -> String {
-    chrono::Utc::now().format("%B %d, %Y at %H:%M UTC").to_string()
+    let now = chrono::Utc::now();
+    format!(
+        "{} (Year: {})",
+        now.format("%A, %B %d, %Y at %H:%M UTC"),
+        now.format("%Y")
+    )
 }
 
 fn build_lite_prompts(query: &str, context: &str) -> (String, String) {
+    let now = current_datetime_str();
+    let year = chrono::Utc::now().format("%Y").to_string();
     let system = format!(
-        "You are a precise search synthesis engine. Current date: {}. \
+        "You are a precise search synthesis engine. \
+         TODAY'S DATE: {}. \
          CRITICAL RULES: \
          1. STRICTLY answer the SPECIFIC question asked. Do NOT discuss unrelated topics. \
          2. If the user asks about 'OpenAI', answer ONLY about OpenAI — NOT Google, NOT Anthropic. \
@@ -660,8 +668,12 @@ fn build_lite_prompts(query: &str, context: &str) -> (String, String) {
          4. Use ONLY information from the provided sources — never hallucinate. \
          5. Every factual statement MUST cite the source like [1], [2]. \
          6. Prioritize [High Trust] sources. Flag outdated information. \
-         7. If no source directly answers the query, say so honestly.",
-        current_datetime_str()
+         7. If no source directly answers the query, say so honestly. \
+         8. RECENCY IS CRITICAL: Today is {}. Always prefer the MOST RECENT information from sources. \
+            If a source mentions dates from {} or later, prioritize that over older data. \
+            If the user asks about 'latest', 'current', 'now', or 'today', always provide the MOST UP-TO-DATE answer possible. \
+            NEVER present old/outdated data as current unless explicitly noting it is historical.",
+        now, now, year
     );
 
     let user = format!(
@@ -670,6 +682,7 @@ fn build_lite_prompts(query: &str, context: &str) -> (String, String) {
          Answer the user's EXACT question in 5-8 focused bullet points. \
          Each bullet: 2-3 sentences with [n] citations. \
          IGNORE sources that are not directly relevant to the question. \
+         If the question is about recent/current events, prioritize the NEWEST sources. \
          End with: Sources Used: [n] <url>",
         query, context
     );
