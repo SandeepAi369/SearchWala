@@ -115,7 +115,7 @@ async fn search_lite_llm_handler(
 
     let response = search::execute_search(
         &query,
-        body.max_results.or(Some(30)),
+        body.max_results.or(Some(50)),
         Some("lite".to_string()),
         Some(llm_cfg),
         body.enable_copilot,

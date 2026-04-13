@@ -43,7 +43,7 @@ pub fn execute_stream_search(
         let llm_enabled = llm_config.is_some();
         let use_ranked_chunk_path = is_lite_mode;
         let max_urls = if is_lite_mode {
-            max_results.unwrap_or_else(config::max_urls).min(35)
+            max_results.unwrap_or_else(config::max_urls).min(50)
         } else {
             max_results.unwrap_or_else(config::max_urls).min(900)
         };
@@ -64,11 +64,8 @@ pub fn execute_stream_search(
 
         let _ = tx.send(Ok(Event::default().data(serde_json::json!({"type": "info", "text": format!("Searching engines for: {}", effective_query)}).to_string()))).await;
 
-        let query_variations = if is_lite_mode {
-            vec![effective_query.clone()]
-        } else {
-            engines::generate_query_variations(&effective_query)
-        };
+        // Single query — no snowballing
+        let query_variations = vec![effective_query.clone()];
 
         let enabled = config::enabled_engines();
         let engine_instances = engines::get_engines(&enabled);
