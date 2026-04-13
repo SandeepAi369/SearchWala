@@ -846,8 +846,14 @@
         // Render with cursor
         dom.answerContent.innerHTML='<p>'+formatMarkdownToHtml(accumulated)+'</p><span class="tw-cursor"></span>';
 
-        // Auto-scroll to bottom of answer
-        dom.answerContent.scrollTop=dom.answerContent.scrollHeight;
+        // Auto-scroll page so new content is always visible
+        // Scroll the WINDOW (not answerContent — it's not the scrollable container)
+        const cursor=dom.answerContent.querySelector('.tw-cursor');
+        if(cursor){
+          cursor.scrollIntoView({behavior:'smooth',block:'end'});
+        }else{
+          window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
+        }
 
         // Calculate delay: faster for short words, slight pause at sentence ends
         let delay=22; // base speed: ~45 words/sec

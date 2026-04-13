@@ -379,20 +379,47 @@ async fn tts_handler(
         text.clone()
     };
 
-    // Clean for TTS (remove markdown)
+    // Aggressive TTS cleaning — strip ALL non-speech artifacts
     let cleaned: String = capped
+        // Strip source references: [1], [2,3], etc.
         .replace("**", "")
         .replace("##", "")
         .replace("###", "")
         .replace('`', "")
-        .replace('[', "")
-        .replace(']', "")
         .replace("\n\n", ". ")
         .replace('\n', " ");
 
+    // Use regex-like manual stripping for brackets/refs
+    let mut result = String::with_capacity(cleaned.len());
+    let mut chars = cleaned.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '[' {
+            // Skip [N] or [N,M] references
+            let mut buf = String::new();
+            let mut is_ref = true;
+            while let Some(&next) = chars.peek() {
+                if next == ']' { chars.next(); break; }
+                if !next.is_ascii_digit() && next != ',' && next != ' ' { is_ref = false; }
+                buf.push(next);
+                chars.next();
+            }
+            if !is_ref { result.push_str(&buf); } // Keep non-numeric bracket content
+        } else {
+            result.push(ch);
+        }
+    }
+
+    // Final cleanup
+    let final_text: String = result
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+
+    // Use unique temp file per request (PID + random) to prevent race conditions
+    let tmp_path = format!("/tmp/qrux_tts_{}_{}.mp3", std::process::id(), rand::random::<u32>());
+
     let edge_tts_path = std::env::var("EDGE_TTS_PATH")
         .unwrap_or_else(|_| {
-            // Try common locations
             for path in &[
                 "/home/sandeep/.local/bin/edge-tts",
                 "/usr/local/bin/edge-tts",
@@ -402,14 +429,12 @@ async fn tts_handler(
                     return path.to_string();
                 }
             }
-            "edge-tts".to_string() // fallback to PATH
+            "edge-tts".to_string()
         });
-
-    let tmp_path = format!("/tmp/qrux_tts_{}.mp3", std::process::id());
 
     let output = tokio::process::Command::new(&edge_tts_path)
         .arg("--text")
-        .arg(&cleaned)
+        .arg(&final_text)
         .arg("--voice")
         .arg("en-US-AvaNeural")
         .arg("--rate")
