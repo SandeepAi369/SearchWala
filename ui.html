@@ -472,7 +472,11 @@
       if(u)dom.baseUrl.value=u;
       if(m)dom.modelInput.value=m;
       if(l!==null)dom.enableLlm.checked=l==='1';
-      if(r)dom.maxResults.value=r;
+      // Migration: if saved max_results is below 50, bump to 50 (new default)
+      if(r){
+        const rv=parseInt(r);
+        dom.maxResults.value=(rv<50)?50:rv;
+      }
       const pr=presets[dom.provider.value]||presets.cerebras;
       if(!dom.modelInput.value)dom.modelInput.value=pr.model;
       if(!dom.baseUrl.value&&pr.base)dom.baseUrl.value=pr.base;
@@ -595,11 +599,12 @@
     }
 
     // ═══ TTS — Cached Chunked Edge Neural Voice (en-US-AvaNeural) ═══
-    // Global cache + aggressive prefetch + audio preloading = zero stutter
+    // Smart 10-word progressive streaming + aggressive text cleaning + no double voice
     let ttsAudio=null;
     let ttsChunks=[];
     let ttsChunkIdx=0;
     let ttsAbort=false;
+    let ttsSessionId=0; // Session guard: prevents double voice from race conditions
     // Global cache: text→blobURL (persists across replays)
     const ttsCache=new Map();
     const TTS_CACHE_MAX=100;
@@ -608,7 +613,14 @@
 
     function ttsReset(){
       ttsAbort=true;
-      if(ttsAudio){ttsAudio.pause();ttsAudio.src='';ttsAudio=null}
+      ttsSessionId++; // Invalidate any in-flight chunks
+      if(ttsAudio){
+        ttsAudio.onended=null;
+        ttsAudio.onerror=null;
+        ttsAudio.pause();
+        ttsAudio.src='';
+        ttsAudio=null;
+      }
       ttsPlaying=false;
       ttsChunks=[];ttsChunkIdx=0;
       dom.ttsBtn.classList.remove('playing');
@@ -632,16 +644,51 @@
       return url;
     }
 
+    // ═══ Aggressive TTS Text Cleaner ═══
+    // Strips ALL non-speech artifacts: markdown, sources, URLs, references, metadata
+    function ttsCleanText(raw){
+      return raw
+        // Strip source references: [1], [2,3], [1][2], (Source 1), etc.
+        .replace(/\[\d+(?:,\s*\d+)*\]/g,'')
+        .replace(/\[\d+\]\[\d+\]/g,'')
+        .replace(/\(Source\s*\d+\)/gi,'')
+        .replace(/Source:\s*\S+/gi,'')
+        // Strip ALL URLs (http, https, www)
+        .replace(/https?:\/\/\S+/g,'')
+        .replace(/www\.\S+/g,'')
+        // Strip markdown formatting
+        .replace(/\*\*\*(.*?)\*\*\*/g,'$1')  // bold+italic
+        .replace(/\*\*(.*?)\*\*/g,'$1')       // bold
+        .replace(/\*(.*?)\*/g,'$1')           // italic
+        .replace(/#{1,6}\s*/g,'')             // headers
+        .replace(/^[-*+]\s+/gm,'')            // list bullets
+        .replace(/^\d+\.\s+/gm,'')            // numbered lists
+        .replace(/[`]/g,'')                   // code ticks
+        .replace(/\[([^\]]+)\]\([^)]+\)/g,'$1') // markdown links [text](url) → text
+        .replace(/[\[\]]/g,'')                // remaining brackets
+        // Strip common LLM artifacts
+        .replace(/^Based on the provided sources[:,.]?/gim,'')
+        .replace(/^According to the sources[:,.]?/gim,'')
+        .replace(/^Here are the (?:focused )?bullet points[^:]*:/gim,'')
+        .replace(/^Here is a (?:comprehensive |detailed )?(?:summary|answer)[^:]*:/gim,'')
+        // Strip special characters that TTS reads literally
+        .replace(/[•·▪▸►→←↓↑|~^]/g,'')
+        .replace(/\s*[—–]\s*/g,', ')          // em/en dashes → comma pause
+        // Normalize whitespace
+        .replace(/\n{2,}/g,'. ')              // double newlines → sentence break
+        .replace(/\n/g,' ')                   // single newlines → space
+        .replace(/\s{2,}/g,' ')               // collapse multiple spaces
+        .replace(/\.{2,}/g,'.')               // collapse dots
+        .replace(/^[\s.,:;\-!?]+/,'')         // strip leading punctuation
+        .trim();
+    }
+
     // Split into smart 10-word chunks for progressive TTS streaming
-    // Each chunk is small enough to start playing almost instantly
     function ttsSplit(text){
-      // Clean common artifacts before splitting
-      text=text.replace(/\[(\d+)\]/g,'').replace(/https?:\/\/\S+/g,'')
-        .replace(/\s{3,}/g,' ').replace(/\.{3,}/g,'.').trim();
       const words=text.split(/\s+/).filter(w=>w.length>0);
       if(!words.length)return [text];
       const chunks=[];
-      const CHUNK_SIZE=10; // 10-word chunks for smart progressive reading
+      const CHUNK_SIZE=10;
       for(let i=0;i<words.length;i+=CHUNK_SIZE){
         const chunk=words.slice(i,i+CHUNK_SIZE).join(' ');
         if(chunk.length>3) chunks.push(chunk);
@@ -649,8 +696,9 @@
       return chunks.length?chunks:[text];
     }
 
-    // Play chunk, aggressively prefetch next 3, chain seamlessly
+    // Play chunk with session guard to prevent double voice
     async function ttsPlayChunk(idx){
+      const mySession=ttsSessionId; // capture session
       if(ttsAbort||idx>=ttsChunks.length){ttsReset();return}
       ttsChunkIdx=idx;
       const total=ttsChunks.length;
@@ -658,23 +706,34 @@
 
       try{
         const url=await ttsFetchChunk(ttsChunks[idx]);
-        if(ttsAbort)return;
+        // Double voice guard: if session changed during fetch, abort
+        if(ttsAbort||mySession!==ttsSessionId)return;
+
+        // Kill any existing audio before creating new one
+        if(ttsAudio){
+          ttsAudio.onended=null;
+          ttsAudio.onerror=null;
+          ttsAudio.pause();
+          ttsAudio.src='';
+        }
 
         ttsAudio=new Audio(url);
 
-        // Aggressively prefetch next 3 chunks while current plays
+        // Prefetch next 3 chunks while current plays
         for(let p=1;p<=3;p++){
           if(idx+p<ttsChunks.length)ttsFetchChunk(ttsChunks[idx+p]).catch(()=>{});
         }
 
         ttsAudio.onended=()=>{
-          if(ttsAbort)return;
+          if(ttsAbort||mySession!==ttsSessionId)return;
           ttsPlayChunk(idx+1);
         };
-        ttsAudio.onerror=()=>ttsPlayChunk(idx+1);
+        ttsAudio.onerror=()=>{
+          if(mySession===ttsSessionId)ttsPlayChunk(idx+1);
+        };
         await ttsAudio.play();
       }catch(e){
-        if(!ttsAbort)ttsPlayChunk(idx+1);
+        if(!ttsAbort&&mySession===ttsSessionId)ttsPlayChunk(idx+1);
       }
     }
 
@@ -682,28 +741,22 @@
       if(ttsPlaying){ttsReset();return}
       if(!currentAnswer)return;
 
-      // Thorough cleanup: strip ALL markdown before reading
-      const text=currentAnswer
-        .replace(/\*\*/g,'').replace(/#{1,6}\s*/g,'')
-        .replace(/\[(\d+)\]/g,'').replace(/https?:\/\/\S+/g,'')
-        .replace(/[`\[\]]/g,'').replace(/\n{2,}/g,'. ')
-        .replace(/\n/g,' ').replace(/\s+/g,' ')
-        .replace(/^[\s.,-]+/,'')  // Strip leading whitespace/punctuation so TTS starts from actual text
-        .trim()
-        .slice(0,5000);
+      // Use aggressive cleaner — strips ALL sources, markdown, artifacts
+      const text=ttsCleanText(currentAnswer).slice(0,5000);
       if(!text||text.length<5)return;
 
       ttsAbort=false;
+      ttsSessionId++; // New session
       ttsPlaying=true;
       ttsChunks=ttsSplit(text);
       dom.ttsBtn.classList.add('playing');
       dom.ttsBtn.innerHTML=`<span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span><span id="ttsLabel">1/${ttsChunks.length}</span>`;
 
-      // Prefetch first 5 chunks immediately for instant start
+      // Prefetch first 5 chunks immediately
       const prefetchCount=Math.min(5,ttsChunks.length);
       for(let i=0;i<prefetchCount;i++)ttsFetchChunk(ttsChunks[i]).catch(()=>{});
 
-      // Start first chunk immediately
+      // Start first chunk
       ttsPlayChunk(0);
     }
 
