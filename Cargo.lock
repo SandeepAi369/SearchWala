@@ -1496,32 +1496,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qrux"
-version = "5.0.1"
-dependencies = [
- "async-trait",
- "axum",
- "chrono",
- "dotenvy",
- "ego-tree 0.9.0",
- "futures",
- "genai",
- "rand 0.8.5",
- "regex",
- "reqwest 0.12.28",
- "scraper",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "urlencoding",
-]
-
-[[package]]
 name = "quinn"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1970,6 +1944,32 @@ dependencies = [
  "precomputed-hash",
  "selectors",
  "tendril",
+]
+
+[[package]]
+name = "searchwala"
+version = "5.0.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "dotenvy",
+ "ego-tree 0.9.0",
+ "futures",
+ "genai",
+ "rand 0.8.5",
+ "regex",
+ "reqwest 0.12.28",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "urlencoding",
 ]
 
 [[package]]
