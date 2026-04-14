@@ -1,5 +1,5 @@
 // ============================================================================
-// Qrux v5.0.1 - Search Engines Module
+// SearchWala v5.0.1 - Search Engines Module
 // Tiered engines: primary (fast) + backup (reliable) + domain-specialized
 // Smart fallback: if primary engines fail, instantly switch to backups
 // ============================================================================

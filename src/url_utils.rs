@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Qrux v5.0.1 — URL Utilities
+// SearchWala v5.0.1 — URL Utilities
 // Advanced URL normalization, deduplication, and filtering
 // ══════════════════════════════════════════════════════════════════════════════
 
