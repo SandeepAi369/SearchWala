@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Qrux v5.0.1 — Multi-stage Docker Build
+# SearchWala v5.0.1 — Multi-stage Docker Build
 # Final image: ~15MB, runs on 512MB VPS or HF Spaces
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -30,7 +30,7 @@ COPY --from=builder /app/target/release/qrux /app/qrux
 
 # Default environment
 ENV PORT=7860
-ENV RUST_LOG=qrux=info
+ENV RUST_LOG=searchwala=info
 ENV ENGINES=duckduckgo,brave,yahoo,qwant,mojeek
 ENV MAX_URLS=15
 ENV CONCURRENCY=8
@@ -38,4 +38,4 @@ ENV SCRAPE_TIMEOUT=10
 
 EXPOSE 7860
 
-CMD ["/app/qrux"]
+CMD ["/app/searchwala"]

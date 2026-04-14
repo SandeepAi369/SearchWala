@@ -1,5 +1,5 @@
 // ============================================================================
-// Qrux v5.0.1 - Configuration
+// SearchWala v5.0.1 - Configuration
 // Advanced browser fingerprinting, WAF bypass, and stealth scraping config
 // ============================================================================
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// Qrux v5.0.1
+// SearchWala v5.0.1
 // ============================================================================
 //
 // Native Rust meta-search + extraction + optional BYOK LLM synthesis.
@@ -326,7 +326,7 @@ async fn models_handler(
 /// GET /about - Service metadata
 async fn about_handler() -> impl IntoResponse {
     Json(serde_json::json!({
-        "name": "Qrux",
+        "name": "SearchWala",
         "version": "5.0.1",
         "language": "Rust",
         "description": "Ultra-fast native meta-search & scrape API with iterative deep research LLM synthesis",
@@ -416,7 +416,7 @@ async fn tts_handler(
         .join(" ");
 
     // Use unique temp file per request (PID + random) to prevent race conditions
-    let tmp_path = format!("/tmp/qrux_tts_{}_{}.mp3", std::process::id(), rand::random::<u32>());
+    let tmp_path = format!("/tmp/searchwala_tts_{}_{}.mp3", std::process::id(), rand::random::<u32>());
 
     let edge_tts_path = std::env::var("EDGE_TTS_PATH")
         .unwrap_or_else(|_| {
@@ -472,7 +472,7 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "qrux=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "searchwala=info,tower_http=info".into()),
         )
         .with_target(false)
         .compact()
@@ -482,7 +482,7 @@ async fn main() {
     let engines = config::enabled_engines();
 
     tracing::info!("============================================");
-    tracing::info!("  Qrux v5.0.1");
+    tracing::info!("  SearchWala v5.0.1");
     tracing::info!("  Language: Rust");
     tracing::info!("  Engines: {} total", engines.len());
     tracing::info!("  Max URLs: {}", config::max_urls());
