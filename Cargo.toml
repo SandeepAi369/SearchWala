@@ -1,6 +1,6 @@
 [package]
 name = "searchwala"
-version = "5.0.1"
+version = "5.2.0"
 edition = "2021"
 description = "High-performance meta-search engine aggregating 90+ search engines with stealth WAF bypass, BM25 ranking, 5-tier content extraction, and optional BYOK LLM synthesis — all in pure Rust"
 authors = ["Sandeep"]

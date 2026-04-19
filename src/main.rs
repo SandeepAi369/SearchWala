@@ -277,7 +277,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
     let uptime = state.start_time.elapsed().as_secs();
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: "5.0.1".to_string(),
+        version: "5.2.0".to_string(),
         engines: config::enabled_engines(),
         uptime_seconds: uptime,
     })
@@ -286,7 +286,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
 /// GET /config - Configuration info
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
-        version: "5.0.1".to_string(),
+        version: "5.2.0".to_string(),
         engines: config::enabled_engines(),
         max_urls: config::max_urls(),
         scrape_timeout_secs: config::scrape_timeout_secs(),
@@ -332,7 +332,7 @@ async fn models_handler(
 async fn about_handler() -> impl IntoResponse {
     Json(serde_json::json!({
         "name": "SearchWala",
-        "version": "5.0.1",
+        "version": "5.2.0",
         "language": "Rust",
         "description": "Ultra-fast native meta-search & scrape API with iterative deep research LLM synthesis",
         "features": [

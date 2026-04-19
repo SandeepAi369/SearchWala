@@ -4,15 +4,15 @@
 
 ### The Smartest Open-Source Meta-Search Engine — Built in Pure Rust
 
-[![Version](https://img.shields.io/badge/version-5.1.0-blue?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
+[![Version](https://img.shields.io/badge/version-5.2.0-blue?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Engines](https://img.shields.io/badge/search%20engines-90+-brightgreen?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
 [![License](https://img.shields.io/badge/license-Apache%202.0-purple?style=flat-square)](./LICENSE)
 
-**90+ search engines** · **Neural Voice Readback** · **Time-Aware AI** · **BM25 ranking** · **Cross-Platform** · **BYOK LLM**
+**90+ search engines** · **RRF Ranking** · **Query Intelligence** · **Neural Voice** · **Intent-Aware LLM** · **BYOK**
 
-*SearchWala is a single-binary meta-search engine that queries 90+ search engines simultaneously, extracts clean article text from every result, ranks them with BM25, synthesizes answers using any LLM provider, and reads results aloud with neural text-to-speech — all in pure Rust, running natively on Windows, macOS, and Linux.*
+*SearchWala is a single-binary meta-search engine that analyzes query intent, queries 90+ search engines simultaneously, ranks results using Reciprocal Rank Fusion (cross-engine consensus), extracts clean text with a 7-tier extractor, synthesizes intent-aware answers using any LLM, and reads results aloud — all in pure Rust.*
 
 [Quick Start](#-quick-start) · [Key Features](#-key-features) · [Voice Support](#-neural-voice-readback) · [Platform Support](#-cross-platform-support) · [Architecture](#%EF%B8%8F-architecture) · [API Reference](#-api-reference) · [Configuration](#%EF%B8%8F-configuration)
 
@@ -284,32 +284,33 @@ SearchWala/
 │   ├── ram_monitor.sh       # Memory usage monitoring utility
 │   └── test_fallback.py     # Engine fallback integration test
 └── src/
-    ├── main.rs              # Axum HTTP server — routes, TTS endpoint, middleware (538 LOC)
+    ├── main.rs              # Axum HTTP server — routes, TTS endpoint, middleware (542 LOC)
     ├── config.rs            # 20 browser profiles, WAF bypass, env config (457 LOC)
-    ├── models.rs            # Request/Response types (serde JSON) (105 LOC)
-    ├── search.rs            # Search orchestration + simultaneous dispatch (648 LOC)
+    ├── models.rs            # Request/Response types (serde JSON) (107 LOC)
+    ├── query_intel.rs       # Query Intelligence — intent, temporal, entity detection (272 LOC) [NEW v5.2.0]
+    ├── search.rs            # Search orchestration + RRF + simultaneous dispatch (665 LOC)
     ├── stream.rs            # SSE streaming pipeline (/search/stream) (482 LOC)
-    ├── ranking.rs           # BM25 paragraph chunking & relevance ranking (202 LOC)
-    ├── llm.rs               # BYOK LLM: 15+ providers, iterative research (1,525 LOC)
-    ├── extractor.rs         # 5-tier content extraction (LazyLock optimized) (710 LOC)
+    ├── ranking.rs           # Hybrid RRF + BM25 paragraph ranking (268 LOC)
+    ├── llm.rs               # BYOK LLM: 15+ providers, intent-aware prompts (1,767 LOC)
+    ├── extractor.rs         # 7-tier content extraction (JSON-LD + meta fallback) (873 LOC)
     ├── url_utils.rs         # URL normalization, single-parse dedup pipeline (183 LOC)
     ├── cache.rs             # TempDb (in-memory) + HistoryDb (~/.searchwala/) (328 LOC)
     ├── copilot.rs           # SearchWala Copilot — LLM-powered query rewriter (36 LOC)
     ├── proxy_pool.rs        # Round-robin proxy rotation with health tracking (121 LOC)
     └── engines/
-        ├── mod.rs           # SearchEngine trait + engine factory + domain modes (167 LOC)
-        ├── generic.rs       # Template engine for 60+ regional variants (585 LOC)
-        ├── duckduckgo.rs    # DuckDuckGo HTML scraper (113 LOC)
-        ├── brave.rs         # Brave Search scraper (128 LOC)
-        ├── yahoo.rs         # Yahoo Search scraper (136 LOC)
-        ├── qwant.rs         # Qwant scraper (110 LOC)
-        ├── mojeek.rs        # Mojeek scraper (119 LOC)
-        ├── startpage.rs     # Startpage scraper (140 LOC)
-        ├── wikipedia.rs     # Wikipedia JSON API engine (61 LOC)
-        └── wiby.rs          # Wiby indie search engine (60 LOC)
+        ├── mod.rs           # SearchEngine trait + engine weights + domain modes (196 LOC)
+        ├── generic.rs       # Template engine for 60+ regional variants (587 LOC)
+        ├── duckduckgo.rs    # DuckDuckGo HTML scraper (115 LOC)
+        ├── brave.rs         # Brave Search scraper (131 LOC)
+        ├── yahoo.rs         # Yahoo Search scraper (138 LOC)
+        ├── qwant.rs         # Qwant scraper (112 LOC)
+        ├── mojeek.rs        # Mojeek scraper (121 LOC)
+        ├── startpage.rs     # Startpage scraper (143 LOC)
+        ├── wikipedia.rs     # Wikipedia JSON API engine (63 LOC)
+        └── wiby.rs          # Wiby indie search engine (62 LOC)
 ```
 
-**Total**: **7,933 lines** (6,954 Rust + 979 HTML/JS) · 22 source files · Zero Python · Zero Node · Zero Java
+**Total**: **8,870 lines** (7,891 Rust + 979 HTML/JS) · 23 source files · Zero Python · Zero Node · Zero Java
 
 ---
 
@@ -429,7 +430,7 @@ SSE streaming — real-time source delivery + LLM token streaming.
 ```json
 {
   "status": "ok",
-  "version": "5.1.0",
+  "version": "5.2.0",
   "engines": ["wikipedia", "duckduckgo", "brave", "...90 total..."],
   "uptime_seconds": 3600
 }
@@ -565,5 +566,5 @@ Licensed under the [Apache License, Version 2.0](./LICENSE).
   <br>
   <sub>Built with 🦀 Rust by <a href="https://xel-studio.vercel.app/">Sandeep</a></sub>
   <br>
-  <sub>7,933 lines of code (6,954 Rust + 979 UI) · 22 source files · Zero runtime dependencies · One binary for all platforms</sub>
+  <sub>8,870 lines of code (7,891 Rust + 979 UI) · 23 source files · Zero runtime dependencies · One binary for all platforms</sub>
 </p>
