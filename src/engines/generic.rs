@@ -503,6 +503,50 @@ pub fn spec_for(name: &str) -> Option<GenericEngineSpec> {
         });
     }
 
+    // ── 2026: New engines for maximum coverage ──
+
+    if n.starts_with("alexandria") {
+        return Some(GenericEngineSpec {
+            endpoint_template: "https://alexandria.org/?q={query}",
+            pages: 2,
+        });
+    }
+
+    if n.starts_with("4get") {
+        return Some(GenericEngineSpec {
+            endpoint_template: "https://4get.ca/web?s={query}",
+            pages: 2,
+        });
+    }
+
+    if n.starts_with("whoogle") {
+        return Some(GenericEngineSpec {
+            endpoint_template: "https://whoogle.io/search?q={query}",
+            pages: 2,
+        });
+    }
+
+    if n.starts_with("librex") {
+        return Some(GenericEngineSpec {
+            endpoint_template: "https://librex.devol.it/search.php?q={query}&type=text",
+            pages: 2,
+        });
+    }
+
+    if n.starts_with("yacy") {
+        return Some(GenericEngineSpec {
+            endpoint_template: "https://yacy.searchlab.eu/yacysearch.html?query={query}",
+            pages: 2,
+        });
+    }
+
+    if n.starts_with("mullvad_leta") {
+        return Some(GenericEngineSpec {
+            endpoint_template: "https://leta.mullvad.net/?q={query}",
+            pages: 2,
+        });
+    }
+
     None
 }
 

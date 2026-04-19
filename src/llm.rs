@@ -1,5 +1,10 @@
 // ============================================================================
-// SearchWala v5.0.1 - LLM Synthesis Engine
+// SearchWala v5.1.0 - LLM Synthesis Engine (Zero-SDK Architecture)
+//
+// All LLM calls use raw reqwest HTTP — no provider SDKs.
+// Supports: OpenAI, Gemini, Anthropic, Groq, Together, OpenRouter,
+//           Cerebras, DeepSeek, xAI, Ollama, Cohere, and any
+//           OpenAI-compatible endpoint.
 //
 // Iterative Deep Research:
 //   Research mode processes sources in batches of 50, calling the LLM
@@ -19,9 +24,7 @@ use std::time::Duration;
 
 use axum::response::sse::Event;
 use futures::StreamExt;
-use genai::chat::{ChatMessage, ChatRequest};
-use genai::resolver::{AuthData, Endpoint};
-use genai::{Client, ServiceTarget};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use tokio::sync::mpsc;
 
 use crate::models::{LlmConfig, SourceResult};
@@ -40,6 +43,600 @@ pub struct LlmExecutionResult {
     pub llm_answer: Option<String>,
     pub llm_error: Option<String>,
     pub batches_processed: usize,
+}
+
+// =============================================================================
+// Internal ChatMessage — replaces genai::chat::ChatMessage
+// =============================================================================
+
+#[derive(Debug, Clone)]
+pub(crate) struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl ChatMessage {
+    pub fn system(content: impl Into<String>) -> Self {
+        Self { role: "system".into(), content: content.into() }
+    }
+    pub fn user(content: impl Into<String>) -> Self {
+        Self { role: "user".into(), content: content.into() }
+    }
+}
+
+// =============================================================================
+// Provider Detection — determines API format, endpoint, and auth strategy
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+enum ApiFormat {
+    /// OpenAI-compatible: POST /chat/completions (used by all providers including Gemini)
+    OpenAiCompatible,
+    /// Google Gemini native: POST /v1beta/models/{model}:generateContent (reserved)
+    Gemini,
+    /// Anthropic Claude: POST /v1/messages
+    Anthropic,
+}
+
+struct ProviderInfo {
+    format: ApiFormat,
+    base_url: String,
+}
+
+fn resolve_provider(config: &LlmConfig) -> ProviderInfo {
+    let provider = config.provider.trim().to_lowercase();
+
+    // If user provided a custom base_url, use it directly (it already includes version path)
+    if let Some(ref base_url) = config.base_url {
+        let url = base_url.trim();
+        if !url.is_empty() {
+            let format = if provider == "anthropic" {
+                ApiFormat::Anthropic
+            } else {
+                // All other providers (including Gemini) use OpenAI-compatible format
+                ApiFormat::OpenAiCompatible
+            };
+            return ProviderInfo {
+                format,
+                base_url: ensure_trailing_slash(url),
+            };
+        }
+    }
+
+    // Default endpoints per provider — base_url includes the full version path
+    // The frontend presets also follow this pattern (e.g. "https://api.groq.com/openai/v1")
+    match provider.as_str() {
+        "gemini" | "google" => ProviderInfo {
+            // Use Google's OpenAI-compatible endpoint (same approach as Perplexica)
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai/".to_string(),
+        },
+        "anthropic" => ProviderInfo {
+            format: ApiFormat::Anthropic,
+            base_url: "https://api.anthropic.com/".to_string(),
+        },
+        "openai" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.openai.com/v1/".to_string(),
+        },
+        "groq" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.groq.com/openai/v1/".to_string(),
+        },
+        "together" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.together.xyz/v1/".to_string(),
+        },
+        "openrouter" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://openrouter.ai/api/v1/".to_string(),
+        },
+        "cerebras" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.cerebras.ai/v1/".to_string(),
+        },
+        "deepseek" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.deepseek.com/v1/".to_string(),
+        },
+        "xai" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.x.ai/v1/".to_string(),
+        },
+        "ollama" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "http://localhost:11434/v1/".to_string(),
+        },
+        "cohere" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.cohere.ai/compatibility/v1/".to_string(),
+        },
+        "fireworks" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.fireworks.ai/inference/v1/".to_string(),
+        },
+        "perplexity" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.perplexity.ai/v1/".to_string(),
+        },
+        "mistral_api" | "mistral" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.mistral.ai/v1/".to_string(),
+        },
+        "sambanova" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.sambanova.ai/v1/".to_string(),
+        },
+        "nvidia_nim" => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://integrate.api.nvidia.com/v1/".to_string(),
+        },
+        // Default: treat as OpenAI-compatible
+        _ => ProviderInfo {
+            format: ApiFormat::OpenAiCompatible,
+            base_url: "https://api.openai.com/v1/".to_string(),
+        },
+    }
+}
+
+// =============================================================================
+// Request/Response Payload Builders
+// =============================================================================
+
+/// Build the full URL for an LLM call.
+/// base_url already includes the version path (e.g. "https://api.groq.com/openai/v1/")
+/// so we just append the endpoint path.
+fn build_chat_url(info: &ProviderInfo, model: &str, stream: bool) -> String {
+    match info.format {
+        ApiFormat::OpenAiCompatible => {
+            format!("{}chat/completions", info.base_url)
+        }
+        ApiFormat::Gemini => {
+            // Native Gemini API (only used when no base_url override)
+            let action = if stream { "streamGenerateContent?alt=sse" } else { "generateContent" };
+            format!("{}v1beta/models/{}:{}", info.base_url.trim_end_matches('/'), model, action)
+        }
+        ApiFormat::Anthropic => {
+            format!("{}v1/messages", info.base_url.trim_end_matches('/'))
+        }
+    }
+}
+
+/// Build auth headers per provider
+fn build_auth_headers(config: &LlmConfig, info: &ProviderInfo) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    match info.format {
+        ApiFormat::Gemini => {
+            // Gemini uses x-goog-api-key header
+            if let Ok(val) = HeaderValue::from_str(&config.api_key) {
+                headers.insert("x-goog-api-key", val);
+            }
+        }
+        ApiFormat::Anthropic => {
+            // Anthropic uses x-api-key + anthropic-version
+            if let Ok(val) = HeaderValue::from_str(&config.api_key) {
+                headers.insert("x-api-key", val);
+            }
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        }
+        ApiFormat::OpenAiCompatible => {
+            // Bearer token auth
+            let bearer = format!("Bearer {}", config.api_key);
+            if let Ok(val) = HeaderValue::from_str(&bearer) {
+                headers.insert(AUTHORIZATION, val);
+            }
+        }
+    }
+
+    headers
+}
+
+/// Build request JSON body per provider format
+fn build_request_body(
+    messages: &[ChatMessage],
+    model: &str,
+    info: &ProviderInfo,
+    stream: bool,
+) -> serde_json::Value {
+    match info.format {
+        ApiFormat::OpenAiCompatible => {
+            let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                })
+            }).collect();
+
+            let mut body = serde_json::json!({
+                "model": model,
+                "messages": msgs,
+            });
+
+            if stream {
+                body["stream"] = serde_json::json!(true);
+            }
+
+            body
+        }
+        ApiFormat::Gemini => {
+            // Gemini uses `system_instruction` (separate from contents)
+            // and `contents` array with role "user" / "model"
+            let mut system_text = String::new();
+            let mut contents: Vec<serde_json::Value> = Vec::new();
+
+            for msg in messages {
+                match msg.role.as_str() {
+                    "system" => {
+                        system_text = msg.content.clone();
+                    }
+                    "user" => {
+                        contents.push(serde_json::json!({
+                            "role": "user",
+                            "parts": [{"text": msg.content}]
+                        }));
+                    }
+                    "assistant" | "model" => {
+                        contents.push(serde_json::json!({
+                            "role": "model",
+                            "parts": [{"text": msg.content}]
+                        }));
+                    }
+                    _ => {
+                        contents.push(serde_json::json!({
+                            "role": "user",
+                            "parts": [{"text": msg.content}]
+                        }));
+                    }
+                }
+            }
+
+            let mut body = serde_json::json!({
+                "contents": contents,
+            });
+
+            if !system_text.is_empty() {
+                body["system_instruction"] = serde_json::json!({
+                    "parts": [{"text": system_text}]
+                });
+            }
+
+            body
+        }
+        ApiFormat::Anthropic => {
+            // Anthropic: system is top-level, messages only contain user/assistant
+            let mut system_text = String::new();
+            let mut msgs: Vec<serde_json::Value> = Vec::new();
+
+            for msg in messages {
+                match msg.role.as_str() {
+                    "system" => {
+                        system_text = msg.content.clone();
+                    }
+                    "user" | "assistant" => {
+                        msgs.push(serde_json::json!({
+                            "role": msg.role,
+                            "content": msg.content,
+                        }));
+                    }
+                    _ => {
+                        msgs.push(serde_json::json!({
+                            "role": "user",
+                            "content": msg.content,
+                        }));
+                    }
+                }
+            }
+
+            let mut body = serde_json::json!({
+                "model": model,
+                "messages": msgs,
+                "max_tokens": 4096,
+            });
+
+            if !system_text.is_empty() {
+                body["system"] = serde_json::json!(system_text);
+            }
+
+            if stream {
+                body["stream"] = serde_json::json!(true);
+            }
+
+            body
+        }
+    }
+}
+
+/// Extract text content from provider-specific JSON response
+fn extract_response_text(json: &serde_json::Value, format: &ApiFormat) -> Option<String> {
+    match format {
+        ApiFormat::OpenAiCompatible => {
+            // choices[0].message.content
+            json.get("choices")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("message"))
+                .and_then(|m| m.get("content"))
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+        }
+        ApiFormat::Gemini => {
+            // candidates[0].content.parts[0].text
+            json.get("candidates")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("content"))
+                .and_then(|c| c.get("parts"))
+                .and_then(|p| p.get(0))
+                .and_then(|p| p.get("text"))
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+        }
+        ApiFormat::Anthropic => {
+            // content[0].text
+            json.get("content")
+                .and_then(|c| c.get(0))
+                .and_then(|b| b.get("text"))
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+        }
+    }
+}
+
+/// Extract error message from API error JSON — universal for all providers.
+/// Tries multiple common error structures since each provider uses different nesting.
+fn extract_error_message(json: &serde_json::Value, _format: &ApiFormat) -> String {
+    // Try: { "error": { "message": "..." } } — OpenAI, Groq, Gemini
+    if let Some(msg) = json
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+    {
+        return msg.to_string();
+    }
+
+    // Try: { "error": "string" } — some providers use a flat error string
+    if let Some(msg) = json.get("error").and_then(|e| e.as_str()) {
+        return msg.to_string();
+    }
+
+    // Try: { "error": { "error": { "message": "..." } } } — deeply nested
+    if let Some(msg) = json
+        .get("error")
+        .and_then(|e| e.get("error"))
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+    {
+        return msg.to_string();
+    }
+
+    // Try: { "message": "..." } — top-level message (Anthropic, some others)
+    if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
+        return msg.to_string();
+    }
+
+    // Try: { "detail": "..." } — FastAPI-style errors
+    if let Some(msg) = json.get("detail").and_then(|m| m.as_str()) {
+        return msg.to_string();
+    }
+
+    // Fallback: stringify the first 300 chars of the JSON
+    let raw = json.to_string();
+    if raw.len() > 300 {
+        format!("{}...", &raw[..300])
+    } else {
+        raw
+    }
+}
+
+// =============================================================================
+// Core LLM Call — Non-Streaming (replaces genai client.exec_chat)
+// =============================================================================
+
+pub(crate) fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .pool_max_idle_per_host(5)
+        .tcp_nodelay(true)
+        .build()
+        .expect("LLM HTTP client error")
+}
+
+/// Make a single non-streaming LLM call. Returns extracted text or error string.
+pub(crate) async fn call_llm(
+    config: &LlmConfig,
+    messages: &[ChatMessage],
+) -> Result<String, String> {
+    let info = resolve_provider(config);
+    let url = build_chat_url(&info, &config.model, false);
+    let headers = build_auth_headers(config, &info);
+    let body = build_request_body(messages, &config.model, &info, false);
+
+    tracing::info!(
+        "LLM call: provider={} model={} format={:?} url={}",
+        config.provider, config.model, info.format,
+        url.split('?').next().unwrap_or(&url) // Don't log API key in Gemini URL params
+    );
+
+    let client = build_http_client();
+
+    let resp = client
+        .post(&url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("http_request_failed: {e}"))?;
+
+    let status = resp.status();
+    let resp_text = resp.text().await.map_err(|e| format!("response_read_error: {e}"))?;
+
+    if !status.is_success() {
+        let error_msg = match serde_json::from_str::<serde_json::Value>(&resp_text) {
+            Ok(json) => extract_error_message(&json, &info.format),
+            Err(_) => resp_text.chars().take(500).collect(),
+        };
+        return Err(format!("http_{}: {}", status.as_u16(), error_msg));
+    }
+
+    let json: serde_json::Value = serde_json::from_str(&resp_text)
+        .map_err(|e| format!("json_parse_error: {e}"))?;
+
+    extract_response_text(&json, &info.format)
+        .ok_or_else(|| {
+            // Log raw response structure for debugging (without API keys)
+            let keys: Vec<&str> = json.as_object()
+                .map(|o| o.keys().map(|k| k.as_str()).collect())
+                .unwrap_or_default();
+            format!("empty_response: could not extract text from response (keys: {:?})", keys)
+        })
+}
+
+// =============================================================================
+// Core LLM Call — SSE Streaming (replaces genai client.exec_chat_stream)
+// =============================================================================
+
+/// Extract a text chunk from a streaming SSE data line per provider format
+fn extract_stream_chunk(data: &str, format: &ApiFormat) -> Option<String> {
+    if data.trim() == "[DONE]" {
+        return None;
+    }
+
+    let json: serde_json::Value = serde_json::from_str(data).ok()?;
+
+    match format {
+        ApiFormat::OpenAiCompatible => {
+            // choices[0].delta.content
+            json.get("choices")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("delta"))
+                .and_then(|d| d.get("content"))
+                .and_then(|t| t.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        }
+        ApiFormat::Gemini => {
+            // candidates[0].content.parts[0].text
+            json.get("candidates")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("content"))
+                .and_then(|c| c.get("parts"))
+                .and_then(|p| p.get(0))
+                .and_then(|p| p.get("text"))
+                .and_then(|t| t.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        }
+        ApiFormat::Anthropic => {
+            // Anthropic SSE: event type = content_block_delta
+            // delta.text for content_block_delta events
+            let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if event_type == "content_block_delta" {
+                json.get("delta")
+                    .and_then(|d| d.get("text"))
+                    .and_then(|t| t.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Stream LLM response chunks via SSE, sending each chunk through tx_sse.
+pub(crate) async fn call_llm_stream(
+    config: &LlmConfig,
+    messages: &[ChatMessage],
+    tx_sse: &mpsc::Sender<Result<Event, std::convert::Infallible>>,
+) -> Result<(), String> {
+    let info = resolve_provider(config);
+    let url = build_chat_url(&info, &config.model, true);
+    let headers = build_auth_headers(config, &info);
+    let body = build_request_body(messages, &config.model, &info, true);
+
+    tracing::info!(
+        "LLM stream: provider={} model={} format={:?}",
+        config.provider, config.model, info.format,
+    );
+
+    // Use a longer timeout for streaming — no overall timeout, just connect timeout
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .pool_max_idle_per_host(5)
+        .tcp_nodelay(true)
+        .build()
+        .map_err(|e| format!("client_build_error: {e}"))?;
+
+    let resp = client
+        .post(&url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("http_request_failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        let error_msg = match serde_json::from_str::<serde_json::Value>(&err_text) {
+            Ok(json) => extract_error_message(&json, &info.format),
+            Err(_) => err_text.chars().take(500).collect(),
+        };
+        return Err(format!("http_{}: {}", status.as_u16(), error_msg));
+    }
+
+    // Read the byte stream and parse SSE data lines
+    let mut stream = resp.bytes_stream();
+    let mut buffer = String::new();
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = match chunk_result {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Err(e) => {
+                tracing::warn!("Stream read error: {e}");
+                break;
+            }
+        };
+
+        buffer.push_str(&chunk);
+
+        // Process complete SSE lines from buffer
+        while let Some(newline_pos) = buffer.find('\n') {
+            let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
+            buffer = buffer[newline_pos + 1..].to_string();
+
+            if line.is_empty() {
+                continue;
+            }
+
+            // SSE format: "data: {...}"
+            let data = if let Some(d) = line.strip_prefix("data: ") {
+                d
+            } else if let Some(d) = line.strip_prefix("data:") {
+                d
+            } else {
+                // Skip event: lines, id: lines, etc.
+                continue;
+            };
+
+            let data = data.trim();
+            if data == "[DONE]" {
+                break;
+            }
+
+            if let Some(text) = extract_stream_chunk(data, &info.format) {
+                let json = serde_json::json!({
+                    "type": "llm_chunk",
+                    "text": text,
+                }).to_string();
+                let _ = tx_sse.send(Ok(Event::default().data(json))).await;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // =============================================================================
@@ -75,23 +672,21 @@ pub async fn summarize_direct(
         context.len(),
     );
 
-    let client = build_client(&llm_config);
-    let model = namespaced_model(&llm_config.provider, &llm_config.model);
     let timeout_ms = llm_config.timeout_ms.unwrap_or(DEFAULT_LLM_TIMEOUT_MS);
 
     let (system_prompt, user_prompt) = build_lite_prompts(query, &context);
 
-    let chat_req = ChatRequest::new(vec![
+    let messages = vec![
         ChatMessage::system(system_prompt),
         ChatMessage::user(user_prompt),
-    ]);
+    ];
 
-    tracing::info!("LLM calling model={} provider={} timeout={}ms", model, llm_config.provider, timeout_ms);
+    tracing::info!("LLM calling model={} provider={} timeout={}ms", llm_config.model, llm_config.provider, timeout_ms);
 
     let call_result = if timeout_ms == 0 {
-        client.exec_chat(&model, chat_req, None).await
+        call_llm(&llm_config, &messages).await
     } else {
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), client.exec_chat(&model, chat_req, None)).await {
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm(&llm_config, &messages)).await {
             Ok(result) => result,
             Err(_) => {
                 return LlmExecutionResult {
@@ -104,8 +699,8 @@ pub async fn summarize_direct(
     };
 
     match call_result {
-        Ok(chat_res) => {
-            let answer = chat_res.first_text().unwrap_or("").trim().to_string();
+        Ok(answer) => {
+            let answer = post_process_answer(&answer, query);
             if answer.is_empty() {
                 LlmExecutionResult {
                     llm_answer: None,
@@ -168,8 +763,6 @@ pub async fn summarize_iterative(
         BATCH_SIZE_RESEARCH
     );
 
-    let client = build_client(&llm_config);
-    let model = namespaced_model(&llm_config.provider, &llm_config.model);
     let timeout_ms = llm_config.timeout_ms.unwrap_or(RESEARCH_BATCH_TIMEOUT_MS);
 
     let mut accumulated_report = String::new();
@@ -211,23 +804,23 @@ pub async fn summarize_iterative(
             )
         };
 
-        let chat_req = ChatRequest::new(vec![
+        let messages = vec![
             ChatMessage::system(system_prompt),
             ChatMessage::user(user_prompt),
-        ]);
+        ];
 
         tracing::info!(
             "LLM batch {}/{} calling model={} context_len={} prev_report_len={}",
             batch_num,
             total_batches,
-            model,
+            llm_config.model,
             context.len(),
             accumulated_report.len()
         );
 
         let call_result = match tokio::time::timeout(
             Duration::from_millis(timeout_ms),
-            client.exec_chat(&model, chat_req, None),
+            call_llm(&llm_config, &messages),
         )
         .await
         {
@@ -255,8 +848,8 @@ pub async fn summarize_iterative(
         };
 
         match call_result {
-            Ok(chat_res) => {
-                let batch_answer = chat_res.first_text().unwrap_or("").trim().to_string();
+            Ok(answer) => {
+                let batch_answer = answer.trim().to_string();
                 if !batch_answer.is_empty() {
                     accumulated_report = batch_answer;
                     tracing::info!(
@@ -364,21 +957,19 @@ pub async fn summarize_from_stream(
         };
     }
 
-    let client = build_client(&llm_config);
-    let model = namespaced_model(&llm_config.provider, &llm_config.model);
     let timeout_ms = llm_config.timeout_ms.unwrap_or(DEFAULT_LLM_TIMEOUT_MS);
 
     let (system_prompt, user_prompt) = build_lite_prompts(query, &context);
 
-    let chat_req = ChatRequest::new(vec![
+    let messages = vec![
         ChatMessage::system(system_prompt),
         ChatMessage::user(user_prompt),
-    ]);
+    ];
 
     let call_result = if timeout_ms == 0 {
-        client.exec_chat(&model, chat_req, None).await
+        call_llm(&llm_config, &messages).await
     } else {
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), client.exec_chat(&model, chat_req, None)).await {
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm(&llm_config, &messages)).await {
             Ok(result) => result,
             Err(_) => {
                 return LlmExecutionResult {
@@ -391,8 +982,8 @@ pub async fn summarize_from_stream(
     };
 
     match call_result {
-        Ok(chat_res) => {
-            let answer = chat_res.first_text().unwrap_or("").trim().to_string();
+        Ok(answer) => {
+            let answer = answer.trim().to_string();
             if answer.is_empty() {
                 LlmExecutionResult {
                     llm_answer: None,
@@ -412,66 +1003,6 @@ pub async fn summarize_from_stream(
             llm_error: Some(format!("llm_error: {err}")),
             batches_processed: 0,
         },
-    }
-}
-
-// =============================================================================
-// Client & Model Helpers
-// =============================================================================
-
-pub(crate) fn build_client(config: &LlmConfig) -> Client {
-    let mut builder = Client::builder();
-
-    let api_key = config.api_key.clone();
-    builder = builder.with_auth_resolver_fn(move |_model_iden| {
-        Ok(Some(AuthData::from_single(api_key.clone())))
-    });
-
-    if let Some(base_url) = config.base_url.as_ref().filter(|u| !u.trim().is_empty()) {
-        let endpoint_url = ensure_trailing_slash(base_url.trim());
-        let api_key = config.api_key.clone();
-
-        builder = builder.with_service_target_resolver_fn(move |service_target: ServiceTarget| {
-            let ServiceTarget { model, .. } = service_target;
-            Ok(ServiceTarget {
-                endpoint: Endpoint::from_owned(endpoint_url.clone()),
-                auth: AuthData::from_single(api_key.clone()),
-                model,
-            })
-        });
-    }
-
-    builder.build()
-}
-
-pub(crate) fn namespaced_model(provider: &str, model: &str) -> String {
-    if model.contains("::") {
-        return model.to_string();
-    }
-
-    let provider = provider.trim().to_lowercase();
-
-    if provider == "openai_compatible"
-        || provider == "cerebras"
-        || provider == "openrouter"
-        || provider == "together"
-        || provider == "fireworks"
-        || provider == "perplexity"
-        || provider == "mistral_api"
-        || provider == "sambanova"
-        || provider == "nvidia_nim"
-        || provider == "azure_openai"
-    {
-        return format!("openai::{}", model);
-    }
-
-    match provider.as_str() {
-        "openai" | "anthropic" | "gemini" | "groq" | "ollama" | "xai" | "deepseek" | "cohere" | "zai" => {
-            format!("{}::{}", provider, model)
-        }
-        _ => {
-            format!("openai::{}", model)
-        }
     }
 }
 
@@ -533,8 +1064,7 @@ fn build_ranked_context(query: &str, sources: &[SourceResult], research_mode: bo
 
     // v5.0: Pre-allocate buffer + use write!() to eliminate intermediate String allocs
     let mut context = String::with_capacity(max_chars.min(16_384));
-    let mut used = 0;
-    for (idx, relevance) in scored {
+    for (used, (idx, relevance)) in scored.into_iter().enumerate() {
         if used >= max_chunks || relevance < min_relevance {
             break;
         }
@@ -553,7 +1083,6 @@ fn build_ranked_context(query: &str, sources: &[SourceResult], research_mode: bo
             "[{}] {} {} ({})\n{}\n\n",
             used + 1, cred, source.title, source.url, trimmed_text
         );
-        used += 1;
     }
 
     context
@@ -653,6 +1182,68 @@ fn current_datetime_str() -> String {
         now.format("%A, %B %d, %Y at %H:%M UTC"),
         now.format("%Y")
     )
+}
+
+// =============================================================================
+// Answer Post-Processing — strip preamble, question echoing, thinking blocks
+// =============================================================================
+
+fn post_process_answer(raw: &str, _query: &str) -> String {
+    let mut answer = raw.trim().to_string();
+
+    // 1. Strip <think>/<thought>/<thinking> blocks (various models emit internal reasoning)
+    let think_patterns = [
+        (r"<think>", r"</think>"),
+        (r"<thought>", r"</thought>"),
+        (r"<thinking>", r"</thinking>"),
+    ];
+    for (open, close) in &think_patterns {
+        while let Some(start) = answer.to_lowercase().find(&open.to_lowercase()) {
+            if let Some(end) = answer.to_lowercase().find(&close.to_lowercase()) {
+                let end_pos = end + close.len();
+                answer = format!("{}{}", &answer[..start], &answer[end_pos..]);
+            } else {
+                // Unclosed tag — remove from start to end
+                answer = answer[..start].to_string();
+                break;
+            }
+        }
+    }
+
+    // 2. Strip common LLM preamble lines (case-insensitive, first line only)
+    let preamble_patterns = [
+        "based on the search results",
+        "based on the provided sources",
+        "based on the sources provided",
+        "according to the search results",
+        "according to the sources",
+        "here is what i found",
+        "here's what i found",
+        "let me summarize",
+        "i found the following",
+        "from the search results",
+        "based on my research",
+        "here is a summary",
+        "here's a summary",
+    ];
+
+    // Check and strip preamble from the first line
+    let first_newline = answer.find('\n').unwrap_or(answer.len());
+    let first_line_lower = answer[..first_newline].to_lowercase();
+    for pattern in &preamble_patterns {
+        if first_line_lower.starts_with(pattern) || first_line_lower.contains(pattern) {
+            // If the first line is ONLY preamble (no substantive content), remove it
+            if first_newline < answer.len() {
+                let rest = answer[first_newline..].trim_start();
+                if !rest.is_empty() {
+                    answer = rest.to_string();
+                }
+            }
+            break;
+        }
+    }
+
+    answer.trim().to_string()
 }
 
 fn build_lite_prompts(query: &str, context: &str) -> (String, String) {
@@ -803,28 +1394,15 @@ pub async fn summarize_from_stream_sse(
         return;
     }
 
-    let client = build_client(&llm_config);
-    let model = namespaced_model(&llm_config.provider, &llm_config.model);
-
     let (system_prompt, user_prompt) = build_lite_prompts(&query, &context);
 
-    let chat_req = ChatRequest::new(vec![
+    let messages = vec![
         ChatMessage::system(system_prompt),
         ChatMessage::user(user_prompt),
-    ]);
+    ];
 
-    match client.exec_chat_stream(&model, chat_req, None).await {
-        Ok(mut res) => {
-            while let Some(Ok(event)) = res.stream.next().await {
-                if let genai::chat::ChatStreamEvent::Chunk(chunk) = event {
-                    let json = serde_json::json!({
-                        "type": "llm_chunk",
-                        "text": chunk.content
-                    })
-                    .to_string();
-                    let _ = tx_sse.send(Ok(Event::default().data(json))).await;
-                }
-            }
+    match call_llm_stream(&llm_config, &messages, &tx_sse).await {
+        Ok(()) => {
             let _ = tx_sse
                 .send(Ok(Event::default().data(
                     serde_json::json!({"type": "llm_done"}).to_string(),
@@ -840,34 +1418,58 @@ pub async fn summarize_from_stream_sse(
 
 // =============================================================================
 // Dynamic Model Fetcher — GET /api/models
+//
+// Called by the UI "Fetch Models" button. base_url comes from the frontend
+// presets (e.g. "https://api.groq.com/openai/v1") and already includes the
+// version path. We just append "/models".
 // =============================================================================
 
 pub async fn fetch_provider_models(
     api_key: &str,
     base_url: &str,
+    provider: &str,
 ) -> Result<Vec<String>, String> {
     if api_key.is_empty() || base_url.is_empty() {
         return Err("api_key and base_url are required".to_string());
     }
 
-    let models_url = format!("{}v1/models", ensure_trailing_slash(base_url.trim()));
+    // base_url already includes the version path (e.g. /v1 or /v1beta/openai)
+    // Just append /models
+    let models_url = format!("{}models", ensure_trailing_slash(base_url.trim()));
     tracing::info!("Fetching models from: {}", models_url);
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| format!("client_error: {e}"))?;
 
-    let resp = client
+    // Use provider-specific auth headers
+    let is_anthropic = provider.eq_ignore_ascii_case("anthropic");
+    let mut req = client
         .get(&models_url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Accept", "application/json")
+        .header("Accept", "application/json");
+
+    if is_anthropic {
+        req = req
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01");
+    } else {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("request_failed: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!("http_{}: models endpoint returned error", resp.status().as_u16()));
+        let status = resp.status().as_u16();
+        let err_text = resp.text().await.unwrap_or_default();
+        let detail = match serde_json::from_str::<serde_json::Value>(&err_text) {
+            Ok(json) => extract_error_message(&json, &ApiFormat::OpenAiCompatible),
+            Err(_) => err_text.chars().take(200).collect(),
+        };
+        return Err(format!("http_{}: {}", status, detail));
     }
 
     let json: serde_json::Value = resp
@@ -877,17 +1479,47 @@ pub async fn fetch_provider_models(
 
     let mut models: Vec<String> = Vec::new();
 
+    // Format 1: OpenAI-compatible — { "data": [ { "id": "model-name" }, ... ] }
     if let Some(data) = json.get("data").and_then(|v| v.as_array()) {
         for item in data {
             if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                let id = id.trim().to_string();
+                let id = id.trim();
                 if !id.is_empty() {
-                    models.push(id);
+                    // Strip "models/" prefix if present (Gemini OpenAI-compat returns this)
+                    let clean_id = id.strip_prefix("models/").unwrap_or(id);
+                    models.push(clean_id.to_string());
+                }
+            }
+        }
+    }
+
+    // Format 2: Gemini native — { "models": [ { "name": "models/gemini-2.0-flash", ... } ] }
+    if models.is_empty() {
+        if let Some(data) = json.get("models").and_then(|v| v.as_array()) {
+            for item in data {
+                // Only include models that support generateContent
+                let methods = item
+                    .get("supportedGenerationMethods")
+                    .and_then(|v| v.as_array());
+                let supports_chat = methods
+                    .map(|ms| ms.iter().any(|m| m.as_str() == Some("generateContent")))
+                    .unwrap_or(true);
+
+                if supports_chat {
+                    if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                        let name = name.trim();
+                        if !name.is_empty() {
+                            // Strip "models/" prefix
+                            let clean = name.strip_prefix("models/").unwrap_or(name);
+                            models.push(clean.to_string());
+                        }
+                    }
                 }
             }
         }
     }
 
     models.sort();
+    tracing::info!("Fetched {} models from {}", models.len(), base_url);
     Ok(models)
 }

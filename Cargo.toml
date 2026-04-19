@@ -15,12 +15,12 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 
 # HTTP client (rustls + socks proxy support, portable in minimal environments)
-reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "brotli", "deflate", "cookies", "rustls-tls", "socks"] }
+# 'stream' feature required for SSE streaming from LLM providers
+reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "brotli", "deflate", "cookies", "rustls-tls", "socks", "stream"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-genai = "0.5"
 
 # HTML parsing & text extraction
 scraper = "0.22"

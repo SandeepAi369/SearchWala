@@ -306,6 +306,7 @@ async fn models_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let api_key = body.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let base_url = body.get("base_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let provider = body.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
     if api_key.is_empty() || base_url.is_empty() {
         return Err((
@@ -314,7 +315,7 @@ async fn models_handler(
         ));
     }
 
-    match llm::fetch_provider_models(&api_key, &base_url).await {
+    match llm::fetch_provider_models(&api_key, &base_url, &provider).await {
         Ok(models) => Ok(Json(serde_json::json!({ "models": models }))),
         Err(err) => Err((
             StatusCode::BAD_GATEWAY,

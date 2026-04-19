@@ -70,7 +70,16 @@ pub fn backup_engines() -> Vec<String> {
         "yandex", "ask", "dogpile", "excite", "webcrawler",
         "presearch", "yep", "mwmbl", "marginalia", "stract",
         "bing_us", "bing_uk", "google_us", "google_uk",
+        // 2026: New engines for maximum coverage
+        "alexandria", "4get", "whoogle", "librex", "yacy", "mullvad_leta",
     ].into_iter().map(|s| s.to_string()).collect()
+}
+
+/// ALL engines dispatched simultaneously — maximum coverage, no waiting
+pub fn all_engines() -> Vec<String> {
+    let mut all = primary_engines();
+    all.extend(backup_engines());
+    all
 }
 
 /// Domain-specialized engine sets for Specialized Mode

@@ -106,71 +106,47 @@ pub async fn execute_search(
     );
 
     // ══════════════════════════════════════════════════════════════════════
-    // SMART ENGINE TIERING WITH FALLBACK
-    // Phase 1: Dispatch primary/specialized engines
-    // Phase 2: If results < FALLBACK_THRESHOLD, instantly dispatch backups
-    // This ensures we ALWAYS get data, even when top engines fail.
+    // 2026: SIMULTANEOUS ALL-ENGINE DISPATCH
+    // Fire ALL engines (primary + backup) at once — no waiting, no delay.
+    // The old 2-phase approach wasted 5+ seconds waiting for primary to fail
+    // before dispatching backups. Now everything runs in parallel.
     // ══════════════════════════════════════════════════════════════════════
 
-    let primary_engine_list = if is_specialized {
+    let engine_list = if is_specialized {
         let domain = specialized_domain.as_deref().unwrap_or("general");
         engines::specialized_engines(domain)
     } else if is_lite_mode {
-        engines::primary_engines()
+        // Lite mode: fire ALL engines simultaneously for maximum coverage
+        engines::all_engines()
     } else {
         config::enabled_engines()
     };
 
-    let engine_instances = engines::get_engines(&primary_engine_list);
+    let engine_instances = engines::get_engines(&engine_list);
     let base_search_client = build_search_client(None);
     let proxy_pool = ProxyPoolManager::from_env();
     if proxy_pool.has_proxies() {
         tracing::info!("Proxy pool loaded with {} entries", proxy_pool.len());
     }
-    let engine_concurrency = config::engine_concurrency().max(1).min(24);
+    let engine_concurrency = config::engine_concurrency().max(1).min(40);
     let engine_semaphore = Arc::new(Semaphore::new(engine_concurrency));
 
     let mut all_results: Vec<RawSearchResult> = Vec::new();
 
-    // ── Phase 1: Primary engines ──
-    let primary_results = dispatch_engines(
+    // ── Single-phase: ALL engines fire simultaneously ──
+    let results = dispatch_engines(
         &engine_instances, &query_variations, &base_search_client,
         &proxy_pool, &engine_semaphore, jitter_min, jitter_max,
         engine_concurrency,
     ).await;
-    all_results.extend(primary_results);
+    all_results.extend(results);
 
     tracing::info!(
-        "Phase 1 (primary): {} results from {} engines",
-        all_results.len(), primary_engine_list.len()
+        "All-engine dispatch: {} results from {} engines",
+        all_results.len(), engine_list.len()
     );
 
-    // ── Phase 2: Smart fallback — if too few results, add backup engines ──
-    if all_results.len() < engines::FALLBACK_THRESHOLD {
-        tracing::warn!(
-            "⚠️ FALLBACK TRIGGERED: only {} results from primary engines (threshold={}). Dispatching backups...",
-            all_results.len(), engines::FALLBACK_THRESHOLD
-        );
-
-        let backup_list = engines::backup_engines();
-        let backup_instances = engines::get_engines(&backup_list);
-        let backup_variations = vec![effective_query.clone()]; // single variation for speed
-
-        let backup_results = dispatch_engines(
-            &backup_instances, &backup_variations, &base_search_client,
-            &proxy_pool, &engine_semaphore, 20, 80, // tighter jitter for urgency
-            engine_concurrency,
-        ).await;
-
-        tracing::info!("Phase 2 (backup): {} additional results from {} backup engines",
-            backup_results.len(), backup_list.len()
-        );
-        all_results.extend(backup_results);
-    }
-
-    let enabled = primary_engine_list;
     let total_raw = all_results.len();
-    tracing::info!("Meta-search total raw results={} engines={}", total_raw, enabled.len());
 
     let raw_urls: Vec<String> = all_results.iter().map(|r| r.url.clone()).collect();
     let unique_urls = url_utils::deduplicate(raw_urls, max_urls, normalized_focus.as_deref());
@@ -370,7 +346,7 @@ pub async fn execute_search(
         llm_error: llm_result.llm_error,
         elapsed_seconds: elapsed,
         engine_stats: EngineStats {
-            engines_queried: enabled,
+            engines_queried: engine_list,
             total_raw_results: total_raw,
             deduplicated_urls: deduped_count,
         },
