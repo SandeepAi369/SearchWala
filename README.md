@@ -4,7 +4,7 @@
 
 ### The Smartest Open-Source Meta-Search Engine — Built in Pure Rust
 
-[![Version](https://img.shields.io/badge/version-5.2.0-blue?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
+[![Version](https://img.shields.io/badge/version-5.1.0-blue?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Engines](https://img.shields.io/badge/search%20engines-90+-brightgreen?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
@@ -46,13 +46,13 @@ Most meta-search tools (SearXNG, Searx, etc.) simply proxy queries and return UR
 | BM25 relevance ranking | ❌ | ❌ | ✅ **paragraph-level** |
 | 🔊 Neural Voice Readback | ❌ | ❌ | ✅ **10-word smart streaming** |
 | ⏰ Time-Aware Search | ❌ | partial | ✅ **auto date enrichment** |
-| Anti-bot / WAF stealth | ❌ | N/A | ✅ **18 browser profiles** |
+| Anti-bot / WAF stealth | ❌ | N/A | ✅ **20 browser profiles (Chrome 147)** |
 | Iterative deep research | ❌ | ✅ (paid) | ✅ **multi-batch free** |
 | Domain-specialized search | ❌ | ❌ | ✅ **5 domain modes** |
 | Self-hosted / no API keys | ✅ | ❌ | ✅ **zero dependencies** |
 | LLM provider (BYOK) | ❌ | ✅ (locked) | ✅ **15+ providers** |
 | SSE real-time streaming | ❌ | ✅ | ✅ **native SSE** |
-| Smart engine fallback | ❌ | N/A | ✅ **2-phase dispatch** |
+| Simultaneous engine dispatch | ❌ | N/A | ✅ **ALL 35 engines in parallel** |
 | Cross-platform binary | ❌ (Python) | ❌ (cloud) | ✅ **Win/Mac/Linux ~15MB** |
 | Proxy pool + Tor support | partial | ❌ | ✅ **round-robin + cooldown** |
 
@@ -98,12 +98,14 @@ Ask SearchWala "Who is the CEO of Google?" and you'll get today's answer — not
 - **Aggregators**: Dogpile, WebCrawler, Info, Excite, Lycos, AOL
 - **Vertical**: Google News, Bing News, Yahoo News, Brave News, DDG News/Images/Videos
 
-### 🛡️ Military-Grade Stealth — 18 Browser Fingerprints
+### 🛡️ Military-Grade Stealth — 20 Browser Fingerprints (2026 Current)
 
-Every request **SearchWala** makes rotates through **18 real browser profiles**:
-- Realistic `User-Agent` strings (Chrome 127–131, Firefox 128–133, Edge 131, Safari 18.2)
-- Full `Sec-CH-UA` client hint suite
-- Randomized `Accept` header variants
+Every request **SearchWala** makes rotates through **20 real browser profiles** updated for April 2026:
+- Realistic `User-Agent` strings (Chrome 145–147, Firefox 135–136, Edge 146–147, Safari 18.3–18.4, Opera 117, Brave 147)
+- Full `Sec-CH-UA` client hint suite with platform version hints (Windows 15.0.0, macOS 15.4.0)
+- `Sec-CH-UA-Arch`, `Sec-CH-UA-Bitness`, `Sec-CH-UA-Full-Version-List` headers
+- `Accept-Encoding: gzip, deflate, br, zstd` (2026 browser standard)
+- Randomized `Accept` header variants with 3 rotation patterns
 - Per-request cookie isolation
 - Configurable jitter timing (50–200ms)
 - Optional proxy pool with health tracking + Tor SOCKS5 integration
@@ -237,14 +239,14 @@ The Docker image is a multi-stage build resulting in a **~15MB** final image —
 ## 🏗️ Architecture
 
 ```
-  Client Request           SearchWala v5.2.0
+  Client Request           SearchWala v5.1.0
   ┌──────────┐        ┌────────────────────────────────────────────────┐
   │ POST     │        │                                                │
   │ /search  │───────►│  1. Time-Aware Query Enrichment (auto-date)   │
-  │          │        │  2. 90+ Engine Dispatch (semaphore-bounded)    │
-  │          │        │  3. Smart Fallback (primary → backup engines)  │
+  │          │        │  2. ALL 35 Engines Dispatch (simultaneous)     │
+  │          │        │  3. 20-wide Semaphore Concurrency Control      │
   │          │        │  4. URL Dedup (single-parse pipeline)          │
-  │          │        │  5. Concurrent Scrape (24 workers)             │
+  │          │        │  5. Concurrent Scrape (32 workers)             │
   │          │        │  6. 5-Tier Content Extraction                  │
   │          │        │  7. BM25 Paragraph Ranking                     │
   │          │        │  8. LLM Synthesis with Date Injection (BYOK)  │
@@ -254,15 +256,17 @@ The Docker image is a multi-stage build resulting in a **~15MB** final image —
   └──────────┘        └────────────────────────────────────────────────┘
 ```
 
-### Smart Engine Fallback (2-Phase Dispatch)
+### Simultaneous All-Engine Dispatch (v5.1.0)
 
 ```
-Phase 1: Primary engines (fast, reliable)
+ALL 35 engines fire simultaneously (zero delay)
     │
-    ├── Results >= 8? ──► Continue to scraping
+    ├── 20-wide semaphore controls concurrency
+    ├── Per-engine staggered jitter (50–200ms) for stealth
+    ├── Proxy pool rotation with health tracking
     │
-    └── Results < 8? ──► Phase 2: Backup engines (18 alternatives)
-                              └──► SearchWala guarantees data even when top engines fail
+    └── Results merged + deduplicated → scrape pipeline
+         └──► Guarantees maximum data from every available source
 ```
 
 ---
@@ -275,37 +279,37 @@ SearchWala/
 ├── Dockerfile               # Multi-stage Docker build (~15MB final image)
 ├── LICENSE                   # Apache 2.0
 ├── README.md
-├── ui.html                  # Perplexity-style search UI (embedded at compile time)
+├── ui.html                  # Perplexity-style search UI (979 LOC, embedded at compile time)
 ├── scripts/
 │   ├── ram_monitor.sh       # Memory usage monitoring utility
 │   └── test_fallback.py     # Engine fallback integration test
 └── src/
-    ├── main.rs              # Axum HTTP server — routes, TTS endpoint, middleware
-    ├── config.rs            # 18 browser profiles, WAF bypass, env config
-    ├── models.rs            # Request/Response types (serde JSON)
-    ├── search.rs            # Search orchestration + time-enrichment + 2-phase dispatch
-    ├── stream.rs            # SSE streaming pipeline (/search/stream)
-    ├── ranking.rs           # BM25 paragraph chunking & relevance ranking
-    ├── llm.rs               # BYOK LLM: 15+ providers, iterative research, date-aware
-    ├── extractor.rs         # 5-tier content extraction (LazyLock optimized)
-    ├── url_utils.rs         # URL normalization, single-parse dedup pipeline
-    ├── cache.rs             # TempDb (in-memory) + HistoryDb (~/.searchwala/)
-    ├── copilot.rs           # SearchWala Copilot — LLM-powered query rewriter
-    ├── proxy_pool.rs        # Round-robin proxy rotation with health tracking
+    ├── main.rs              # Axum HTTP server — routes, TTS endpoint, middleware (538 LOC)
+    ├── config.rs            # 20 browser profiles, WAF bypass, env config (457 LOC)
+    ├── models.rs            # Request/Response types (serde JSON) (105 LOC)
+    ├── search.rs            # Search orchestration + simultaneous dispatch (648 LOC)
+    ├── stream.rs            # SSE streaming pipeline (/search/stream) (482 LOC)
+    ├── ranking.rs           # BM25 paragraph chunking & relevance ranking (202 LOC)
+    ├── llm.rs               # BYOK LLM: 15+ providers, iterative research (1,525 LOC)
+    ├── extractor.rs         # 5-tier content extraction (LazyLock optimized) (710 LOC)
+    ├── url_utils.rs         # URL normalization, single-parse dedup pipeline (183 LOC)
+    ├── cache.rs             # TempDb (in-memory) + HistoryDb (~/.searchwala/) (328 LOC)
+    ├── copilot.rs           # SearchWala Copilot — LLM-powered query rewriter (36 LOC)
+    ├── proxy_pool.rs        # Round-robin proxy rotation with health tracking (121 LOC)
     └── engines/
-        ├── mod.rs           # SearchEngine trait + engine factory + domain modes
-        ├── generic.rs       # Template engine for 60+ regional variants
-        ├── duckduckgo.rs    # DuckDuckGo HTML scraper
-        ├── brave.rs         # Brave Search scraper
-        ├── yahoo.rs         # Yahoo Search scraper
-        ├── qwant.rs         # Qwant scraper
-        ├── mojeek.rs        # Mojeek scraper
-        ├── startpage.rs     # Startpage scraper
-        ├── wikipedia.rs     # Wikipedia JSON API engine
-        └── wiby.rs          # Wiby indie search engine
+        ├── mod.rs           # SearchEngine trait + engine factory + domain modes (167 LOC)
+        ├── generic.rs       # Template engine for 60+ regional variants (585 LOC)
+        ├── duckduckgo.rs    # DuckDuckGo HTML scraper (113 LOC)
+        ├── brave.rs         # Brave Search scraper (128 LOC)
+        ├── yahoo.rs         # Yahoo Search scraper (136 LOC)
+        ├── qwant.rs         # Qwant scraper (110 LOC)
+        ├── mojeek.rs        # Mojeek scraper (119 LOC)
+        ├── startpage.rs     # Startpage scraper (140 LOC)
+        ├── wikipedia.rs     # Wikipedia JSON API engine (61 LOC)
+        └── wiby.rs          # Wiby indie search engine (60 LOC)
 ```
 
-**Total**: ~6,500 lines of pure Rust · Zero Python · Zero Node · Zero Java
+**Total**: **7,933 lines** (6,954 Rust + 979 HTML/JS) · 22 source files · Zero Python · Zero Node · Zero Java
 
 ---
 
@@ -425,7 +429,7 @@ SSE streaming — real-time source delivery + LLM token streaming.
 ```json
 {
   "status": "ok",
-  "version": "5.2.0",
+  "version": "5.1.0",
   "engines": ["wikipedia", "duckduckgo", "brave", "...90 total..."],
   "uptime_seconds": 3600
 }
@@ -474,8 +478,8 @@ All environment variables are optional — **SearchWala** ships with sensible de
 |---|---|---|
 | `ENGINES` | 90 engines (curated) | Comma-separated engine names to enable |
 | `MAX_URLS` | `420` | Maximum URLs SearchWala will scrape per query |
-| `CONCURRENCY` | `24` | Concurrent scrape workers |
-| `ENGINE_CONCURRENCY` | `10` | Concurrent engine-query workers |
+| `CONCURRENCY` | `32` | Concurrent scrape workers |
+| `ENGINE_CONCURRENCY` | `20` | Concurrent engine-query workers |
 | `JITTER_MIN_MS` | `50` | Min random delay between engine requests (stealth) |
 | `JITTER_MAX_MS` | `200` | Max random delay between engine requests (stealth) |
 | `SCRAPE_TIMEOUT` | `0` | Per-URL scrape timeout in seconds |
@@ -519,8 +523,8 @@ All environment variables are optional — **SearchWala** ships with sensible de
 
 | Metric | Lite Mode | Deep Research Mode |
 |---|---|---|
-| Engines queried | 11 primary + fallback | 90+ all engines |
-| Sources scraped | 20–50 | 200–400+ |
+| Engines queried | ALL 35 simultaneously | 90+ all engines |
+| Sources scraped | 25–50 | 200–400+ |
 | Time to results | 3–8 seconds | 15–45 seconds |
 | LLM context quality | Top 25 BM25 chunks | Full iterative batches |
 | Voice readback | Instant 10-word streaming | Full report narration |
@@ -534,6 +538,11 @@ All environment variables are optional — **SearchWala** ships with sensible de
 - [x] Neural Voice Readback (TTS)
 - [x] Time-Aware Search Intelligence
 - [x] Cross-platform support (Windows/Mac/Linux)
+- [x] 2026 Browser Fingerprints (Chrome 147, Edge 147, Firefox 136, Safari 18.4)
+- [x] Simultaneous All-Engine Dispatch (zero-delay parallel)
+- [x] 6 New Search Engines (Alexandria, 4get, Whoogle, LibreX, YaCy, Mullvad Leta)
+- [ ] BoringSSL TLS Impersonation (rquest — JA3/JA4 fingerprint cloning)
+- [ ] IPv6 /64 Subnet Hopping (18 quintillion IPs)
 - [ ] Response compression (gzip/brotli)
 - [ ] Built-in caching layer with TTL
 - [ ] Citation graph visualization
@@ -556,5 +565,5 @@ Licensed under the [Apache License, Version 2.0](./LICENSE).
   <br>
   <sub>Built with 🦀 Rust by <a href="https://xel-studio.vercel.app/">Sandeep</a></sub>
   <br>
-  <sub>6,500 lines of pure Rust · Zero runtime dependencies · One binary for all platforms</sub>
+  <sub>7,933 lines of code (6,954 Rust + 979 UI) · 22 source files · Zero runtime dependencies · One binary for all platforms</sub>
 </p>
