@@ -53,6 +53,7 @@ impl super::SearchEngine for Wikipedia {
                 title,
                 snippet,
                 engine: "wikipedia".to_string(),
+                rank_position: out.len() + 1,
             });
         }
 

@@ -105,6 +105,7 @@ fn parse_yahoo_html(html: &str) -> Vec<RawSearchResult> {
             title,
             snippet,
             engine: "yahoo".to_string(),
+            rank_position: results.len() + 1,
         });
     }
 

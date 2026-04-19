@@ -101,6 +101,7 @@ fn parse_brave_html(html: &str) -> Vec<RawSearchResult> {
             title,
             snippet,
             engine: "brave".to_string(),
+            rank_position: results.len() + 1,
         });
     }
 
@@ -117,6 +118,7 @@ fn parse_brave_html(html: &str) -> Vec<RawSearchResult> {
                             title,
                             snippet: String::new(),
                             engine: "brave".to_string(),
+                            rank_position: results.len() + 1,
                         });
                     }
                 }

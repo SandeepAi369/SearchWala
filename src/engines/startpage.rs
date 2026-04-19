@@ -106,6 +106,7 @@ fn parse_startpage_html(html: &str) -> Vec<RawSearchResult> {
                 title,
                 snippet,
                 engine: "startpage".to_string(),
+                rank_position: results.len() + 1,
             });
         }
     }
@@ -129,6 +130,7 @@ fn parse_startpage_html(html: &str) -> Vec<RawSearchResult> {
                             title,
                             snippet: String::new(),
                             engine: "startpage".to_string(),
+                            rank_position: results.len() + 1,
                         });
                     }
                 }

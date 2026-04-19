@@ -76,6 +76,8 @@ pub struct RawSearchResult {
     pub title: String,
     pub snippet: String,
     pub engine: String,
+    /// Position in this engine's result list (1-based). Used by RRF ranking.
+    pub rank_position: usize,
 }
 
 // --- Health -----------------------------------------------------------------

@@ -1,5 +1,5 @@
 // ============================================================================
-// SearchWala v5.1.0 - LLM Synthesis Engine (Zero-SDK Architecture)
+// SearchWala v5.2.0 - LLM Synthesis Engine (Zero-SDK Architecture)
 //
 // All LLM calls use raw reqwest HTTP — no provider SDKs.
 // Supports: OpenAI, Gemini, Anthropic, Groq, Together, OpenRouter,
@@ -28,10 +28,11 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use tokio::sync::mpsc;
 
 use crate::models::{LlmConfig, SourceResult};
+use crate::query_intel::{QueryIntelligence, QueryIntent};
 
-const MAX_CONTEXT_CHUNKS_LITE: usize = 25;
+const MAX_CONTEXT_CHUNKS_LITE: usize = 30;    // v5.2.0: increased from 25 for richer context
 const BATCH_SIZE_RESEARCH: usize = 50;
-const MAX_CONTEXT_CHARS_LITE: usize = 10_000;
+const MAX_CONTEXT_CHARS_LITE: usize = 16_000;  // v5.2.0: increased from 10,000 — modern LLMs handle more
 const MAX_CONTEXT_CHARS_RESEARCH_BATCH: usize = 12_000;
 const DEFAULT_LLM_TIMEOUT_MS: u64 = 45_000;
 const RESEARCH_BATCH_TIMEOUT_MS: u64 = 60_000;
@@ -728,6 +729,92 @@ pub async fn summarize_direct(
 }
 
 // =============================================================================
+// v5.2.0: INTENT-AWARE SYNTHESIS — Selects optimal prompt per query intent
+// =============================================================================
+
+pub async fn summarize_direct_with_intent(
+    query: &str,
+    llm_config: LlmConfig,
+    sources: &[SourceResult],
+    intel: &QueryIntelligence,
+) -> LlmExecutionResult {
+    if sources.is_empty() {
+        return LlmExecutionResult {
+            llm_answer: None,
+            llm_error: Some("llm_skipped: no scraped content available".to_string()),
+            batches_processed: 0,
+        };
+    }
+
+    let context = build_ranked_context(query, sources, false);
+    if context.is_empty() {
+        return LlmExecutionResult {
+            llm_answer: None,
+            llm_error: Some("llm_skipped: relevance filter produced empty context".to_string()),
+            batches_processed: 0,
+        };
+    }
+
+    tracing::info!(
+        "LLM intent-aware synthesis: intent={} sources={} context_len={}",
+        intel.intent, sources.len(), context.len(),
+    );
+
+    let timeout_ms = llm_config.timeout_ms.unwrap_or(DEFAULT_LLM_TIMEOUT_MS);
+    let (system_prompt, user_prompt) = build_intent_prompts(query, &context, intel);
+
+    let messages = vec![
+        ChatMessage::system(system_prompt),
+        ChatMessage::user(user_prompt),
+    ];
+
+    tracing::info!("LLM calling model={} provider={} intent={}", llm_config.model, llm_config.provider, intel.intent);
+
+    let call_result = if timeout_ms == 0 {
+        call_llm(&llm_config, &messages).await
+    } else {
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm(&llm_config, &messages)).await {
+            Ok(result) => result,
+            Err(_) => {
+                return LlmExecutionResult {
+                    llm_answer: None,
+                    llm_error: Some(format!("llm_timeout: exceeded {}ms", timeout_ms)),
+                    batches_processed: 0,
+                };
+            }
+        }
+    };
+
+    match call_result {
+        Ok(answer) => {
+            let answer = post_process_answer(&answer, query);
+            if answer.is_empty() {
+                LlmExecutionResult {
+                    llm_answer: None,
+                    llm_error: Some("llm_empty_response".to_string()),
+                    batches_processed: 1,
+                }
+            } else {
+                tracing::info!("LLM intent-aware synthesis complete: {} chars (intent={})", answer.len(), intel.intent);
+                LlmExecutionResult {
+                    llm_answer: Some(answer),
+                    llm_error: None,
+                    batches_processed: 1,
+                }
+            }
+        }
+        Err(err) => {
+            tracing::error!("LLM call failed: {}", err);
+            LlmExecutionResult {
+                llm_answer: None,
+                llm_error: Some(format!("llm_error: {err}")),
+                batches_processed: 0,
+            }
+        }
+    }
+}
+
+// =============================================================================
 // ITERATIVE DEEP RESEARCH — Multi-batch synthesis for long-form reports
 //
 // Flow:
@@ -1160,6 +1247,53 @@ fn credibility_tag(url: &str) -> String {
         }
     }
 
+    // v5.2.0: Major news outlets
+    let news = [
+        ("bbc.com", "BBC"), ("bbc.co.uk", "BBC"),
+        ("reuters.com", "Reuters"), ("apnews.com", "AP News"),
+        ("nytimes.com", "NYT"), ("theguardian.com", "Guardian"),
+        ("cnn.com", "CNN"), ("bloomberg.com", "Bloomberg"),
+        ("washingtonpost.com", "WashPost"), ("wsj.com", "WSJ"),
+        ("aljazeera.com", "Al Jazeera"), ("economist.com", "Economist"),
+    ];
+
+    for (needle, label) in news {
+        if host.contains(needle) {
+            return format!("[High Trust - News - {}]", label);
+        }
+    }
+
+    // v5.2.0: Tech documentation
+    let tech_docs = [
+        ("docs.python.org", "Python Docs"),
+        ("developer.mozilla.org", "MDN"),
+        ("docs.rust-lang.org", "Rust Docs"),
+        ("docs.microsoft.com", "MS Docs"),
+        ("learn.microsoft.com", "MS Learn"),
+        ("docs.github.com", "GitHub Docs"),
+        ("docs.aws.amazon.com", "AWS Docs"),
+        ("cloud.google.com", "Google Cloud"),
+    ];
+
+    for (needle, label) in tech_docs {
+        if host.contains(needle) {
+            return format!("[High Trust - Docs - {}]", label);
+        }
+    }
+
+    // v5.2.0: Tech news/blogs
+    let tech_news = [
+        ("techcrunch.com", "TechCrunch"), ("arstechnica.com", "ArsTechnica"),
+        ("theverge.com", "The Verge"), ("wired.com", "Wired"),
+        ("zdnet.com", "ZDNet"), ("engadget.com", "Engadget"),
+    ];
+
+    for (needle, label) in tech_news {
+        if host.contains(needle) {
+            return format!("[Tech News - {}]", label);
+        }
+    }
+
     format!("[General Web - {}]", host.trim_start_matches("www."))
 }
 
@@ -1351,6 +1485,113 @@ fn build_research_continuation_prompts(
          NEW SOURCES (Batch {}/{}):\n{}\n\n\
          Expand the report with these new sources. Add new details, cite sources, keep existing content.",
         query, prev_truncated, batch_num, total_batches, new_context
+    );
+
+    (system, user)
+}
+
+// =============================================================================
+// v5.2.0: INTENT-AWARE PROMPT BUILDER
+// Selects optimal system/user prompt template based on QueryIntelligence
+// =============================================================================
+
+fn build_intent_prompts(query: &str, context: &str, intel: &QueryIntelligence) -> (String, String) {
+    let now = current_datetime_str();
+    let year = chrono::Utc::now().format("%Y").to_string();
+
+    let (intent_instruction, format_instruction) = match &intel.intent {
+        QueryIntent::Factual => (
+            "Give a DIRECT, CONCISE answer to the specific question. \
+            Lead with the KEY FACT the user is looking for. \
+            Then expand with supporting context and details.".to_string(),
+            "Answer with 3-5 focused bullet points. Each bullet: 1-2 sentences with [n] citations. \
+             Start with the direct answer, then add context.".to_string(),
+        ),
+
+        QueryIntent::Temporal => (
+            format!(
+                "TODAY IS {}. The user wants CURRENT, UP-TO-DATE information. \
+                CRITICAL: Prioritize the NEWEST sources. \
+                If a source is from {} or later, it takes priority. \
+                Flag ANY information that appears outdated. \
+                If sources conflict on dates/facts, go with the most recent one.",
+                now, year
+            ),
+            "Answer with 5-8 bullet points focused on the MOST CURRENT information. \
+             Each bullet: 2-3 sentences with [n] citations. \
+             If the user asks about 'latest', 'current', or 'now', ensure your answer \
+             reflects the absolute most recent data. Explicitly mention dates when available.".to_string(),
+        ),
+
+        QueryIntent::Person => (
+            format!(
+                "The user is asking about a SPECIFIC PERSON. \
+                Provide a comprehensive but focused profile. Date: {}.", now
+            ),
+            "Structure your answer as:\n\
+             - **Current Role/Position**: What they do NOW\n\
+             - **Key Background**: Brief career/life highlights\n\
+             - **Notable Achievements**: What they're known for\n\
+             - **Recent Activity**: What they've done recently\n\
+             Each point with [n] citations.".to_string(),
+        ),
+
+        QueryIntent::Comparison => (
+            "The user wants a COMPARISON. Provide a balanced, structured analysis \
+             comparing the subjects. Be fair to both sides.".to_string(),
+            "Structure your answer as a comparison:\n\
+             - **Overview**: Brief intro to both subjects\n\
+             - **Key Differences**: The most important distinctions\n\
+             - **Strengths**: What each excels at\n\
+             - **Weaknesses**: Where each falls short\n\
+             - **Bottom Line**: Summary recommendation if applicable\n\
+             Each point with [n] citations.".to_string(),
+        ),
+
+        QueryIntent::HowTo => (
+            "The user wants PRACTICAL INSTRUCTIONS. Provide clear, actionable \
+             step-by-step guidance. Be specific and concrete.".to_string(),
+            "Provide step-by-step instructions:\n\
+             1. Number each step clearly\n\
+             2. Each step: 1-2 sentences, practical and actionable\n\
+             3. Include prerequisites or requirements first\n\
+             4. Add tips or warnings where relevant\n\
+             5. Cite sources with [n] for verification".to_string(),
+        ),
+
+        QueryIntent::Research | QueryIntent::Navigational => (
+            format!(
+                "Provide a comprehensive, well-organized analysis. Date: {}.", now
+            ),
+            "Answer in 6-10 detailed bullet points covering all aspects. \
+             Each bullet: 2-3 sentences with [n] citations. \
+             Cover multiple perspectives where relevant.".to_string(),
+        ),
+    };
+
+    let system = format!(
+        "You are a precise search synthesis engine. \
+         TODAY'S DATE: {}. \
+         INTENT: {}. \
+         {} \
+         CRITICAL RULES: \
+         1. STRICTLY answer the SPECIFIC question asked. Do NOT discuss unrelated topics. \
+         2. If the user asks about 'X', answer ONLY about X. \
+         3. Use ONLY information from the provided sources — NEVER hallucinate. \
+         4. Every factual statement MUST cite the source like [1], [2]. \
+         5. Prioritize [High Trust] sources over [General Web]. \
+         6. If no source directly answers the query, say so HONESTLY. \
+         7. NEVER present outdated data as current unless explicitly noting it is historical.",
+        now, intel.intent, intent_instruction
+    );
+
+    let user = format!(
+        "USER'S EXACT QUESTION: {}\n\n\
+         SOURCES (use ONLY relevant ones):\n{}\n\n\
+         {} \
+         IGNORE sources that are not directly relevant to the question. \
+         End with: Sources Used: [n] <url>",
+        query, context, format_instruction
     );
 
     (system, user)

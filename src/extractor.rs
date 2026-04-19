@@ -1,10 +1,12 @@
 // ============================================================================
-// SearchWala v5.0.1 - Trafilatura-Level Content Extractor
-// Advanced multi-strategy extraction with:
+// SearchWala v5.2.0 - Trafilatura-Level Content Extractor
+// Advanced 7-strategy extraction with:
+// - Strategy 0: JSON-LD structured data extraction (highest confidence)
 // - Paragraph-level deduplication (anti-boilerplate like trafilatura)
 // - Link density penalty
 // - Tag-level scoring with class/ID pattern matching
 // - Structured content selectors for 90% of CMS platforms
+// - Meta description fallback for stubborn pages
 // - Multi-pass cleaning pipeline
 // ============================================================================
 
@@ -33,7 +35,7 @@ static POSITIVE_PATTERNS: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static BOILERPLATE_LINES: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(share (this|on|via)|read more|subscribe|sign up|follow us|cookie|accept all|privacy policy|terms of (service|use)|advertisement|sponsored|related articles|trending|popular posts|most read|you may also (like|enjoy)|© \d{4}|all rights reserved|powered by|loading\.\.\.|please wait|click here|read the full|continue reading|view more|show more|see also|tags?:|categories?:|filed under|posted in|last (updated|modified)|published|modified|edited|log ?in|register|sign ?in|free trial|download now|buy now|add to cart|leave a (comment|reply)|your email|required fields|notify me|rss|print this|email this|bookmark|save to|report (this|abuse)|flag|spam|inappropriate|next article|previous article|newer posts?|older posts?|page \d+ of \d+|showing \d+|results? for|sort by|filter by|refine|close|dismiss|got it|accept|decline|no thanks|maybe later|not now)").unwrap()
+    Regex::new(r"(?i)^(share (this|on|via)|read more|subscribe|sign up|follow us|cookie|accept all|privacy policy|terms of (service|use)|advertisement|sponsored|related articles|trending|popular posts|most read|you may also (like|enjoy)|© \d{4}|all rights reserved|powered by|loading\.\.\.|please wait|click here|read the full|continue reading|view more|show more|see also|tags?:|categories?:|filed under|posted in|last (updated|modified)|published|modified|edited|log ?in|register|sign ?in|free trial|download now|buy now|add to cart|leave a (comment|reply)|your email|required fields|notify me|rss|print this|email this|bookmark|save to|report (this|abuse)|flag|spam|inappropriate|next article|previous article|newer posts?|older posts?|page \d+ of \d+|showing \d+|results? for|sort by|filter by|refine|close|dismiss|got it|accept|decline|no thanks|maybe later|not now|we use cookies|manage (preferences|consent)|cookie (settings|preferences|consent)|accept (all )?cookies|reject (all )?cookies|gdpr|data protection|we value your privacy|consent|personalize|customize your|opt[ -]?(in|out)|unsubscribe|paywall|premium content|members only|subscriber exclusive|sign in to (read|continue)|create (a )?free account|start your free|already a (member|subscriber)|this content is|upgrade to)").unwrap()
 });
 
 static SENTENCE_LIKE: LazyLock<Regex> =
@@ -112,6 +114,16 @@ static SEL_OL: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("ol
 // ── YouTube meta selector (was compiled per YouTube URL!) ──
 static SEL_META_DESC: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("meta[name='description']").ok());
 
+// ── JSON-LD structured data selector (Strategy 0 — v5.2.0) ──
+static SEL_JSON_LD: LazyLock<Option<Selector>> = LazyLock::new(|| {
+    Selector::parse("script[type='application/ld+json']").ok()
+});
+
+// ── og:description meta fallback selector (v5.2.0) ──
+static SEL_OG_DESC: LazyLock<Option<Selector>> = LazyLock::new(|| {
+    Selector::parse(r#"meta[property="og:description"]"#).ok()
+});
+
 
 // =============================================================================
 // Public API
@@ -126,7 +138,15 @@ static SEL_META_DESC: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::pa
 pub fn extract_article_text(html: &str) -> String {
     let document = Html::parse_document(html);
 
-    // Strategy 1: Structured class/ID selectors (highest confidence)
+    // Strategy 0: JSON-LD structured data (highest confidence — v5.2.0)
+    if let Some(text) = try_json_ld_extraction(&document) {
+        let cleaned = clean_and_deduplicate(&text);
+        if cleaned.len() >= 100 {
+            return cleaned;
+        }
+    }
+
+    // Strategy 1: Structured class/ID selectors
     if let Some(text) = try_structured_extraction(&document) {
         let cleaned = clean_and_deduplicate(&text);
         if cleaned.len() >= 100 {
@@ -156,7 +176,14 @@ pub fn extract_article_text(html: &str) -> String {
         return clean_and_deduplicate(&text);
     }
 
-    // Strategy 5: Full body text (last resort)
+    // Strategy 5: Meta description fallback (v5.2.0)
+    if let Some(text) = try_meta_description_fallback(&document) {
+        if text.len() >= 30 {
+            return text;
+        }
+    }
+
+    // Strategy 6: Full body text (last resort)
     if let Some(sel) = SEL_BODY.as_ref() {
         if let Some(body) = document.select(sel).next() {
             let text = extract_visible_text(&body);
@@ -597,6 +624,14 @@ pub fn extract_title_and_text(html: &str) -> (String, String) {
     let title = extract_title_from_doc(&document);
 
     // --- Article text extraction (inlined from extract_article_text) ---
+    // Strategy 0: JSON-LD structured data (v5.2.0)
+    if let Some(text) = try_json_ld_extraction(&document) {
+        let cleaned = clean_and_deduplicate(&text);
+        if cleaned.len() >= 100 {
+            return (title, cleaned);
+        }
+    }
+
     // Strategy 1: Structured class/ID selectors
     if let Some(text) = try_structured_extraction(&document) {
         let cleaned = clean_and_deduplicate(&text);
@@ -630,7 +665,14 @@ pub fn extract_title_and_text(html: &str) -> (String, String) {
         }
     }
 
-    // Strategy 5: Full body text
+    // Strategy 5: Meta description fallback (v5.2.0)
+    if let Some(meta_text) = try_meta_description_fallback(&document) {
+        if meta_text.len() >= 30 {
+            return (title, meta_text);
+        }
+    }
+
+    // Strategy 6: Full body text
     if let Some(body_sel) = SEL_BODY.as_ref() {
         if let Some(body) = document.select(body_sel).next() {
             let body_text = extract_visible_text(&body);
@@ -707,4 +749,125 @@ pub fn extract_youtube_meta(document: &scraper::Html) -> Option<String> {
 /// Public wrapper for title extraction from pre-parsed document.
 pub fn extract_title_from_doc_pub(document: &scraper::Html) -> String {
     extract_title_from_doc(document)
+}
+
+// =============================================================================
+// Strategy 0: JSON-LD Structured Data Extraction (v5.2.0)
+// Many modern news sites and CMS platforms embed article content in
+// <script type="application/ld+json"> tags. This is the HIGHEST confidence
+// extraction method because the content is explicitly structured by the publisher.
+// =============================================================================
+
+/// Extract article text from JSON-LD structured data.
+/// Looks for Schema.org Article/NewsArticle/BlogPosting types with articleBody.
+fn try_json_ld_extraction(doc: &Html) -> Option<String> {
+    let sel = SEL_JSON_LD.as_ref()?;
+
+    for script in doc.select(sel) {
+        let json_text = script.text().collect::<String>();
+        let json_text = json_text.trim();
+        if json_text.is_empty() {
+            continue;
+        }
+
+        // Parse JSON — may be a single object or an array
+        let parsed: serde_json::Value = match serde_json::from_str(json_text) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Handle both single object and array of objects
+        let objects: Vec<&serde_json::Value> = if parsed.is_array() {
+            parsed.as_array().unwrap().iter().collect()
+        } else {
+            vec![&parsed]
+        };
+
+        for obj in objects {
+            // Check @type for article-like types
+            let obj_type = obj.get("@type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("");
+
+            let is_article = matches!(
+                obj_type,
+                "Article" | "NewsArticle" | "BlogPosting" | "TechArticle"
+                | "ScholarlyArticle" | "Report" | "WebPage" | "CreativeWork"
+            );
+
+            if !is_article {
+                continue;
+            }
+
+            // Try articleBody first (full article text)
+            if let Some(body) = obj.get("articleBody").and_then(|v| v.as_str()) {
+                let trimmed = body.trim();
+                if trimmed.len() >= 100 {
+                    return Some(trimmed.to_string());
+                }
+            }
+
+            // Try description as fallback
+            if let Some(desc) = obj.get("description").and_then(|v| v.as_str()) {
+                let trimmed = desc.trim();
+                if trimmed.len() >= 50 {
+                    return Some(trimmed.to_string());
+                }
+            }
+
+            // Try text field
+            if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+                let trimmed = text.trim();
+                if trimmed.len() >= 50 {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+// =============================================================================
+// Strategy 5: Meta Description Fallback (v5.2.0)
+// When all DOM-based extraction strategies fail (e.g., heavy JS-rendered pages),
+// fall back to og:description and meta description tags.
+// =============================================================================
+
+/// Extract content from og:description and meta description as a last resort.
+fn try_meta_description_fallback(doc: &Html) -> Option<String> {
+    let mut combined = String::new();
+
+    // Try og:description (usually more detailed)
+    if let Some(sel) = SEL_OG_DESC.as_ref() {
+        if let Some(meta) = doc.select(sel).next() {
+            if let Some(content) = meta.value().attr("content") {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    combined.push_str(trimmed);
+                }
+            }
+        }
+    }
+
+    // Try meta[name="description"]
+    if let Some(sel) = SEL_META_DESC.as_ref() {
+        if let Some(meta) = doc.select(sel).next() {
+            if let Some(content) = meta.value().attr("content") {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() && !combined.contains(trimmed) {
+                    if !combined.is_empty() {
+                        combined.push_str("\n\n");
+                    }
+                    combined.push_str(trimmed);
+                }
+            }
+        }
+    }
+
+    if combined.is_empty() {
+        None
+    } else {
+        Some(combined)
+    }
 }

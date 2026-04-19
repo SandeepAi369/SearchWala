@@ -112,6 +112,7 @@ fn parse_mojeek_html(html: &str) -> Vec<RawSearchResult> {
             title,
             snippet,
             engine: "mojeek".to_string(),
+            rank_position: results.len() + 1,
         });
     }
 
