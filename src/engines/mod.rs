@@ -165,3 +165,31 @@ pub fn generate_specialized_variations(query: &str, domain: &str) -> Vec<String>
 /// Minimum result threshold — if primary engines return fewer than this,
 /// we trigger backup engines immediately.
 pub const FALLBACK_THRESHOLD: usize = 8;
+
+// =============================================================================
+// Engine Reliability Weights — Quality multipliers for RRF scoring
+// Tier 1: Best engines (1.5x) — consistently accurate, comprehensive results
+// Tier 2: Good engines (1.2x) — reliable but narrower coverage
+// Tier 3: Standard (1.0x) — news-specific or regional
+// Tier 4: Aggregators/indie (0.8x) — lower quality, often stale
+// =============================================================================
+
+/// Get the reliability weight for an engine (multiplies RRF score)
+pub fn engine_weight(name: &str) -> f32 {
+    match name {
+        // Tier 1 — Highest quality, best relevance
+        "google" | "bing" | "duckduckgo" | "brave" | "wikipedia" => 1.5,
+        // Tier 2 — Good quality, reliable
+        "startpage" | "qwant" | "mojeek" | "yahoo" | "yandex" | "ecosia" => 1.2,
+        // Tier 3 — Standard (news, regional variants)
+        "google_news" | "bing_news" | "brave_news" | "yahoo_news"
+        | "duckduckgo_news" | "google_us" | "google_uk"
+        | "bing_us" | "bing_uk" | "presearch" | "yep" => 1.0,
+        // Tier 4 — Aggregators, indie, experimental
+        "dogpile" | "webcrawler" | "excite" | "wiby" | "marginalia"
+        | "mwmbl" | "stract" | "4get" | "whoogle" | "librex"
+        | "yacy" | "mullvad_leta" | "alexandria" => 0.8,
+        // Unknown engines get standard weight
+        _ => 1.0,
+    }
+}

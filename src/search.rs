@@ -1,7 +1,11 @@
 // ============================================================================
-// SearchWala v5.0.1 - Search Orchestrator
-// Iterative deep research: multi-batch LLM synthesis
-// TempDb session tracking + HistoryDb persistence
+// SearchWala v5.2.0 - Search Orchestrator (Intelligence-Driven)
+// Features:
+//   - QueryIntelligence: intent detection, temporal classification, entity extraction
+//   - Reciprocal Rank Fusion (RRF): cross-engine consensus ranking
+//   - Intent-aware LLM prompts and source count optimization
+//   - Iterative deep research: multi-batch LLM synthesis
+//   - TempDb session tracking + HistoryDb persistence
 // ============================================================================
 
 use std::collections::{HashMap, HashSet};
@@ -18,6 +22,7 @@ use crate::extractor;
 use crate::llm;
 use crate::models::*;
 use crate::proxy_pool::ProxyPoolManager;
+use crate::query_intel;
 use crate::ranking;
 use crate::url_utils;
 
@@ -70,22 +75,28 @@ pub async fn execute_search(
         }
     }
 
-    // ─── Time-enrichment: auto-inject current year for recency ───
-    // If the user's query implies they want current/latest info, or doesn't
-    // contain a specific year, append the current year to nudge search engines
-    // toward fresh results. This is critical for "Who is the CEO of X?" type queries.
+    // ═══════════════════════════════════════════════════════════════════════
+    // v5.2.0: QUERY INTELLIGENCE — Analyze intent before anything else
+    // This drives time injection, engine boost, source count, and LLM prompts
+    // ═══════════════════════════════════════════════════════════════════════
+    let intel = query_intel::analyze_query(&effective_query);
+    tracing::info!(
+        "QueryIntel: intent={} time_sensitive={} complexity={} entities={:?} optimal_sources={}",
+        intel.intent, intel.is_time_sensitive, intel.complexity,
+        intel.key_entities, intel.optimal_source_count
+    );
+
+    // ─── Time-enrichment: now driven by QueryIntelligence ───
+    // If query is time-sensitive, inject current date for search engine recency
     {
         let q_lower = effective_query.to_lowercase();
-        let recency_keywords = ["latest", "current", "recent", "today", "new", "now",
-            "this year", "right now", "as of", "updated", "newest"];
-        let has_recency_hint = recency_keywords.iter().any(|kw| q_lower.contains(kw));
         // Check if query already contains a year (2020-2030)
         let has_year = (2020..=2030).any(|y| q_lower.contains(&y.to_string()));
 
-        if has_recency_hint && !has_year {
+        if intel.is_time_sensitive && !has_year {
             let year = chrono::Utc::now().format("%Y").to_string();
             effective_query = format!("{} {}", effective_query, year);
-            tracing::info!("Time-enrichment: appended year → [{}]", effective_query);
+            tracing::info!("Time-enrichment (intent={}): appended year → [{}]", intel.intent, effective_query);
         }
     }
 
@@ -146,6 +157,13 @@ pub async fn execute_search(
         all_results.len(), engine_list.len()
     );
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // v5.2.0: RRF PRE-RANKING — Compute cross-engine consensus scores
+    // URLs appearing in top positions across MULTIPLE engines get highest scores
+    // ═══════════════════════════════════════════════════════════════════════
+    let rrf_scores = ranking::compute_rrf_scores(&all_results);
+    tracing::info!("RRF computed for {} unique URLs", rrf_scores.len());
+
     let total_raw = all_results.len();
 
     let raw_urls: Vec<String> = all_results.iter().map(|r| r.url.clone()).collect();
@@ -178,7 +196,14 @@ pub async fn execute_search(
     let scrape_client = build_scrape_client();
 
     // ── Research mode sends ALL sources to iterative LLM ──
-    let llm_top_k: usize = if is_research_mode { 200 } else if is_specialized { 50 } else { 25 };
+    // v5.2.0: Use intent-aware optimal source count from QueryIntelligence
+    let llm_top_k: usize = if is_research_mode {
+        200
+    } else if is_specialized {
+        50
+    } else {
+        intel.optimal_source_count.max(25) // At least 25, but QueryIntel may suggest more
+    };
 
     // ══════════════════════════════════════════════════════════════════════
     // FIX: Create LLM channel AFTER scraping so we can feed data INLINE
@@ -249,9 +274,10 @@ pub async fn execute_search(
     );
 
     // ── Rank and prepare LLM input ──
+    // v5.2.0: Pass RRF scores into ranking for hybrid BM25+RRF scoring
     let scraped_count = raw_scraped_results.len();
     let mut results = if use_ranked_chunk_path {
-        ranking::rank_top_chunks(&effective_query, &raw_scraped_results, llm_top_k)
+        ranking::rank_top_chunks_with_rrf(&effective_query, &raw_scraped_results, llm_top_k, Some(&rrf_scores))
     } else {
         raw_scraped_results
     };
@@ -294,9 +320,9 @@ pub async fn execute_search(
                 session_id.as_deref(),
             ).await
         } else {
-            // ── LITE MODE: single fast call ──
-            tracing::info!("Feeding {} chunks to LLM (lite mode)", llm_inputs.len());
-            llm::summarize_direct(query, cfg, &llm_inputs, false).await
+            // ── LITE MODE: single fast call with intent-aware prompts ──
+            tracing::info!("Feeding {} chunks to LLM (lite mode, intent={})", llm_inputs.len(), intel.intent);
+            llm::summarize_direct_with_intent(query, cfg, &llm_inputs, &intel).await
         }
     } else {
         llm::LlmExecutionResult::default()

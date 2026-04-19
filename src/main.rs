@@ -1,15 +1,18 @@
 // ============================================================================
-// SearchWala v5.0.1
+// SearchWala v5.2.0
 // ============================================================================
 //
 // Native Rust meta-search + extraction + optional BYOK LLM synthesis.
+// v5.2.0: Query Intelligence (RRF + Intent Detection + Temporal Analysis)
 // Iterative Deep Research | Dual Database | Time-Aware LLM
 //
 // Pipeline:
-// 1) Query 90+ search engines concurrently
-// 2) Deduplicate URLs
-// 3) Concurrently scrape + extract readable text
-// 4) Optionally run iterative LLM synthesis (multi-batch for research)
+// 1) Analyze query intent (factual/temporal/person/comparison/howto)
+// 2) Query 90+ search engines concurrently
+// 3) Reciprocal Rank Fusion (cross-engine consensus ranking)
+// 4) Concurrently scrape + extract readable text (7-tier extractor)
+// 5) Hybrid BM25+RRF chunk ranking
+// 6) Intent-aware LLM synthesis (multi-batch for research)
 //
 // ============================================================================
 
@@ -19,6 +22,7 @@ pub mod engines;
 pub mod extractor;
 pub mod llm;
 pub mod models;
+pub mod query_intel;
 pub mod ranking;
 pub mod search;
 pub mod url_utils;

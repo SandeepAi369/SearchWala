@@ -101,6 +101,7 @@ fn parse_duckduckgo_lite_html(html: &str) -> Vec<RawSearchResult> {
                         title: current_title.clone(),
                         url: current_url.clone(),
                         snippet,
+                        rank_position: results.len() + 1,
                     });
                 }
                 current_title = String::new();

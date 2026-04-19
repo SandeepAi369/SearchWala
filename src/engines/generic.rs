@@ -142,6 +142,7 @@ fn parse_generic_html(html: &str, engine_name: &str, engine_url: &str) -> Vec<Ra
             title,
             snippet,
             engine: engine_name.to_string(),
+            rank_position: out.len() + 1,
         });
 
         if out.len() >= 40 {
