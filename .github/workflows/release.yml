@@ -1,0 +1,39 @@
+name: Release SearchWala Binary
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Build release binary
+        run: cargo build --release
+        
+      - name: Rename binary
+        run: mv target/release/searchwala searchwala-linux-amd64
+        
+      - name: Generate Release Tag
+        id: tag
+        run: echo "TAG=v$(date +'%Y.%m.%d-%H%M%S')" >> $GITHUB_ENV
+        
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Release ${{ env.TAG }}
+          files: searchwala-linux-amd64
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
