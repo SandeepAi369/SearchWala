@@ -248,12 +248,13 @@
         </div>
         <div class="mode-dropdown">
           <button class="mode-dropdown-btn" onclick="toggleModeMenu()">
-            <span id="modeIcon">⚡</span>
-            <span id="modeLabelBtn" class="mode-label">Lite</span>
+            <span id="modeIcon">🤖</span>
+            <span id="modeLabelBtn" class="mode-label">Auto</span>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
           </button>
           <div id="modeMenu" class="mode-menu hidden">
-            <button class="mode-menu-item active" data-mode="lite" onclick="selectMode(this)"><span class="mode-icon">⚡</span>Lite</button>
+            <button class="mode-menu-item active" data-mode="auto" onclick="selectMode(this)"><span class="mode-icon">🤖</span>Auto</button>
+            <button class="mode-menu-item" data-mode="fast" onclick="selectMode(this)"><span class="mode-icon">⚡</span>Fast</button>
             <button class="mode-menu-item" data-mode="research" onclick="selectMode(this)"><span class="mode-icon">🔬</span>Deep Research</button>
             <button class="mode-menu-item" data-mode="academic" onclick="selectMode(this)"><span class="mode-icon">🎓</span>Academic</button>
             <div class="mode-menu-divider"></div>
@@ -294,7 +295,7 @@
           <span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span>
           <span id="statusText">Searching...</span>
           <span class="status-item"><span id="statusTime" class="status-val">0s</span></span>
-          <span class="status-item"><span id="statusMode" class="status-val">lite</span></span>
+          <span class="status-item"><span id="statusMode" class="status-val">auto</span></span>
         </div>
         <div id="progressTrack" class="progress-track hidden"><div id="progressFill" class="progress-fill"></div></div>
       </div>
@@ -363,7 +364,7 @@
     </div>
     <label class="check-row"><input id="enableLlm" type="checkbox" checked /> Enable AI Synthesis</label>
     <div class="field" style="margin-top:12px">
-      <label>Max Results (Lite mode)</label>
+      <label>Max Results</label>
       <input id="maxResults" type="number" value="50" min="5" max="900" />
     </div>
     <button class="modal-btn modal-btn-primary" style="width:100%;margin-top:12px" onclick="saveSettings();closeSettings()">Save & Close</button>
@@ -388,7 +389,7 @@
       dbModal:$('dbModal'),
     };
 
-    let focusMode = 'lite';
+    let focusMode = 'auto';
     let historyEnabled = false;
     let searchTimer = null;
     let searchStartTime = 0;
@@ -509,8 +510,8 @@
 
     // ═══ Mode dropdown (topbar) ═══
     // ═══ Mode dropdown (search modes) ═══
-    const modeLabels={lite:'Lite',research:'Deep Research',academic:'Academic',reddit:'Reddit',youtube:'YouTube'};
-    const modeIcons={lite:'⚡',research:'🔬',academic:'🎓',reddit:'💬',youtube:'▶'};
+    const modeLabels={auto:'Auto',fast:'Fast',research:'Deep Research',academic:'Academic',reddit:'Reddit',youtube:'YouTube'};
+    const modeIcons={auto:'🤖',fast:'⚡',research:'🔬',academic:'🎓',reddit:'💬',youtube:'▶'};
     function toggleModeMenu(){$('modeMenu').classList.toggle('hidden');$('categoryMenu').classList.add('hidden')}
     function selectMode(el){
       focusMode=el.dataset.mode;
@@ -521,8 +522,8 @@
       dom.statusMode.textContent=getEffectiveFocus();
     }
     function syncModeUI(){
-      $('modeLabelBtn').textContent=modeLabels[focusMode]||'Lite';
-      $('modeIcon').textContent=modeIcons[focusMode]||'⚡';
+      $('modeLabelBtn').textContent=modeLabels[focusMode]||'Auto';
+      $('modeIcon').textContent=modeIcons[focusMode]||'🤖';
     }
 
     // ═══ Category dropdown (domain specialization) ═══
@@ -900,7 +901,7 @@
       saveSettings();
       startStatus();
       dom.statusMode.textContent=effectiveFocus;
-      updateStatus(effectiveFocus==='research'?'Deep Research: querying 90+ engines...':effectiveFocus.startsWith('specialized')?`Specialized ${(catLabels[selectedCategory]||'').toUpperCase()}: querying curated engines...`:'Searching engines...');
+      updateStatus(effectiveFocus==='research'?'Deep Research: querying 90+ engines...':effectiveFocus.startsWith('specialized')?`Specialized ${(catLabels[selectedCategory]||'').toUpperCase()}: querying curated engines...`:effectiveFocus==='fast'?'Fast search: primary engines...':'Auto-analyzing query...');
 
       const prov=dom.provider.value;
       const key=dom.apiKey.value.trim();
@@ -910,7 +911,7 @@
 
       // DEEP RESEARCH = 200 sources minimum, NOT 30
       const userMax=parseInt(dom.maxResults.value)||50;
-      const maxR=(effectiveFocus==='research')?Math.max(userMax,200):effectiveFocus.startsWith('specialized')?Math.max(userMax,80):userMax;
+      const maxR=(effectiveFocus==='research')?Math.max(userMax,200):effectiveFocus==='fast'?Math.min(userMax,30):effectiveFocus.startsWith('specialized')?Math.max(userMax,80):userMax;
 
       const payload={query,focus_mode:effectiveFocus,max_results:maxR};
 
@@ -920,7 +921,7 @@
 
       let endpoint='/search';
       if(useLlm&&key&&model){
-        endpoint=effectiveFocus==='research'?'/search/research-llm':'/search/lite-llm';
+        endpoint=effectiveFocus==='research'?'/search/research-llm':'/search/auto-llm';
       }
       // Specialized mode timeout: mid-tier between lite (45s) and research (90s)
       if(useLlm&&key&&model&&effectiveFocus.startsWith('specialized')){

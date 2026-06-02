@@ -47,7 +47,9 @@ pub async fn execute_search(
         .map(|m| m.trim().to_lowercase())
         .filter(|m| !m.is_empty());
 
-    let is_lite_mode = matches!(normalized_focus.as_deref(), Some("lite"));
+    // v6.1.0: Mode detection — auto (default), fast, research, specialized
+    let is_auto_mode = matches!(normalized_focus.as_deref(), Some("auto") | Some("lite") | None);
+    let is_fast_mode = matches!(normalized_focus.as_deref(), Some("fast"));
     let is_research_mode = matches!(normalized_focus.as_deref(), Some("research"));
 
     // Specialized mode detection: "specialized_tech", "specialized_science", etc.
@@ -58,10 +60,13 @@ pub async fn execute_search(
         None
     };
 
-    let use_ranked_chunk_path = is_lite_mode || is_specialized;
+    let use_ranked_chunk_path = is_auto_mode || is_fast_mode || is_specialized;
 
-    let max_urls = if is_lite_mode {
-        max_results.unwrap_or_else(config::max_urls).min(50)
+    let mut max_urls = if is_fast_mode {
+        max_results.unwrap_or(30).min(30)
+    } else if is_auto_mode {
+        // Auto mode: initial cap, QueryIntelligence will refine after analysis
+        max_results.unwrap_or_else(config::max_urls).min(100)
     } else if is_specialized {
         max_results.unwrap_or(100).min(150)
     } else {
@@ -81,8 +86,9 @@ pub async fn execute_search(
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // v5.2.0: QUERY INTELLIGENCE — Analyze intent before anything else
+    // v6.1.0: QUERY INTELLIGENCE — Analyze intent before anything else
     // This drives time injection, engine boost, source count, and LLM prompts
+    // In Auto mode, it also adaptively tunes max_urls and engine selection
     // ═══════════════════════════════════════════════════════════════════════
     let intel = query_intel::analyze_query(&effective_query);
     tracing::info!(
@@ -90,6 +96,20 @@ pub async fn execute_search(
         intel.intent, intel.is_time_sensitive, intel.complexity,
         intel.key_entities, intel.optimal_source_count
     );
+
+    // v6.1.0: Auto-mode adaptive tuning — QueryIntelligence refines max_urls
+    if is_auto_mode {
+        max_urls = match intel.complexity {
+            query_intel::QueryComplexity::Simple => max_urls.min(50),
+            query_intel::QueryComplexity::Complex => max_urls.max(100).min(150),
+            query_intel::QueryComplexity::Medium => max_urls, // moderate — keep default
+        };
+        // Navigational queries just need a URL, go fast
+        if intel.intent == query_intel::QueryIntent::Navigational {
+            max_urls = max_urls.min(30);
+        }
+        tracing::info!("Auto-mode tuned: complexity={:?} → max_urls={}", intel.complexity, max_urls);
+    }
 
     // ─── Time-enrichment: now driven by QueryIntelligence ───
     // If query is time-sensitive, inject current date for search engine recency
@@ -112,10 +132,11 @@ pub async fn execute_search(
     let jitter_max = config::jitter_max_ms();
 
     tracing::info!(
-        "NEW SEARCH query={} focus_mode={:?} lite_mode={} research_mode={} max_urls={} snowball_variations={}",
+        "NEW SEARCH query={} focus_mode={:?} auto={} fast={} research={} max_urls={} variations={}",
         &effective_query[..effective_query.len().min(120)],
         normalized_focus,
-        is_lite_mode,
+        is_auto_mode,
+        is_fast_mode,
         is_research_mode,
         max_urls,
         query_variations.len()
@@ -131,8 +152,11 @@ pub async fn execute_search(
     let engine_list = if is_specialized {
         let domain = specialized_domain.as_deref().unwrap_or("general");
         engines::specialized_engines(domain)
-    } else if is_lite_mode {
-        // Lite mode: fire ALL engines simultaneously for maximum coverage
+    } else if is_fast_mode {
+        // Fast mode: primary engines only — speed over coverage
+        engines::primary_engines()
+    } else if is_auto_mode {
+        // Auto mode: all engines for maximum coverage
         engines::all_engines()
     } else {
         config::enabled_engines()
@@ -249,7 +273,7 @@ pub async fn execute_search(
                 &url,
                 scrape_timeout_secs,
                 scrape_max_bytes,
-                is_lite_mode,
+                is_fast_mode,
                 focus.as_deref(),
             )
             .await
@@ -427,8 +451,9 @@ fn apply_focus_mode(query: &str, focus_mode: Option<&str>) -> String {
         Some("reddit") => format!("{} site:reddit.com", base),
         Some("youtube") => format!("{} site:youtube.com", base),
         Some("academic") => format!("{} site:edu OR site:gov OR site:nature.com", base),
-        Some(m) if m.starts_with("specialized") => base.to_string(), // domain handled by engine selection
-        Some("research") | Some("lite") | _ => base.to_string(),
+        Some(m) if m.starts_with("specialized") => base.to_string(),
+        // auto, fast, research, lite (backward compat), or unrecognized → pass through
+        Some("auto") | Some("fast") | Some("research") | Some("lite") | _ => base.to_string(),
     }
 }
 
