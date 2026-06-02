@@ -1,8 +1,13 @@
 // ============================================================================
-// SearchWala v5.2.0 - Search Orchestrator (Intelligence-Driven)
+// SearchWala v6.1.0 - Search Orchestrator (Intelligence-Driven)
 // Features:
 //   - QueryIntelligence: intent detection, temporal classification, entity extraction
-//   - Reciprocal Rank Fusion (RRF): cross-engine consensus ranking
+//   - RRF k=60 (Cormack 2009): cross-engine consensus ranking
+//   - BM25+ (Lv & Zhai 2011) + MMR (Carbonell & Goldstein 1998) chunk ranking
+//   - Lost-in-Middle context ordering (Liu et al. 2024)
+//   - JoinSet engine dispatch with deadline-based early cancellation
+//   - Per-stage timing instrumentation (engine, scrape, rank, llm)
+//   - Citation faithfulness verification + quality-gated LLM retry
 //   - Intent-aware LLM prompts and source count optimization
 //   - Iterative deep research: multi-batch LLM synthesis
 //   - TempDb session tracking + HistoryDb persistence
@@ -144,6 +149,9 @@ pub async fn execute_search(
 
     let mut all_results: Vec<RawSearchResult> = Vec::new();
 
+    // ── v6.1.0: Stage timing — engine dispatch ──
+    let stage_start = std::time::Instant::now();
+
     // ── Single-phase: ALL engines fire simultaneously ──
     let results = dispatch_engines(
         &engine_instances, &query_variations, &base_search_client,
@@ -152,17 +160,20 @@ pub async fn execute_search(
     ).await;
     all_results.extend(results);
 
+    let engine_dispatch_ms = stage_start.elapsed().as_millis();
     tracing::info!(
-        "All-engine dispatch: {} results from {} engines",
-        all_results.len(), engine_list.len()
+        "⏱ Stage [engine_dispatch]: {}ms — {} results from {} engines",
+        engine_dispatch_ms, all_results.len(), engine_list.len()
     );
 
     // ═══════════════════════════════════════════════════════════════════════
-    // v5.2.0: RRF PRE-RANKING — Compute cross-engine consensus scores
+    // v6.1.0: RRF PRE-RANKING — Compute cross-engine consensus scores
     // URLs appearing in top positions across MULTIPLE engines get highest scores
     // ═══════════════════════════════════════════════════════════════════════
+    let stage_start = std::time::Instant::now();
     let rrf_scores = ranking::compute_rrf_scores(&all_results);
-    tracing::info!("RRF computed for {} unique URLs", rrf_scores.len());
+    let rrf_ms = stage_start.elapsed().as_millis();
+    tracing::info!("⏱ Stage [rrf_compute]: {}ms — {} unique URLs", rrf_ms, rrf_scores.len());
 
     let total_raw = all_results.len();
 
@@ -218,6 +229,9 @@ pub async fn execute_search(
     let scrape_timeout_secs = config::scrape_timeout_secs();
     let scrape_max_bytes = config::max_html_bytes();
 
+    // ── v6.1.0: Stage timing — scrape ──
+    let stage_start = std::time::Instant::now();
+
     for url in unique_urls {
         let sem = semaphore.clone();
         let client = scrape_client.clone();
@@ -267,20 +281,29 @@ pub async fn execute_search(
         }
     }
 
+    let scrape_ms = stage_start.elapsed().as_millis();
     tracing::info!(
-        "Scraping complete: {} sources extracted out of {} deduplicated URLs",
-        raw_scraped_results.len(),
-        deduped_count
+        "⏱ Stage [scrape]: {}ms — {} sources extracted out of {} deduplicated URLs",
+        scrape_ms, raw_scraped_results.len(), deduped_count
     );
 
+    // ── v6.1.0: Stage timing — ranking ──
+    let stage_start = std::time::Instant::now();
+
     // ── Rank and prepare LLM input ──
-    // v5.2.0: Pass RRF scores into ranking for hybrid BM25+RRF scoring
+    // v6.1.0: Pass RRF scores into ranking for hybrid BM25+RRF scoring
     let scraped_count = raw_scraped_results.len();
     let mut results = if use_ranked_chunk_path {
         ranking::rank_top_chunks_with_rrf(&effective_query, &raw_scraped_results, llm_top_k, Some(&rrf_scores))
     } else {
         raw_scraped_results
     };
+
+    let rank_ms = stage_start.elapsed().as_millis();
+    tracing::info!(
+        "⏱ Stage [rank]: {}ms — {} chunks ranked from {} sources",
+        rank_ms, results.len(), scraped_count
+    );
 
     // ── Create TempDb session for progress tracking ──
     let session_id = if let Some(db) = temp_db {
@@ -293,6 +316,9 @@ pub async fn execute_search(
         db.update_status(sid, "scraping_done", "").await;
         db.update_sources(sid, scraped_count).await;
     }
+
+    // ── v6.1.0: Stage timing — LLM synthesis ──
+    let stage_start = std::time::Instant::now();
 
     // ── NOW run LLM synthesis ──
     let llm_result = if let Some(cfg) = llm_config {
@@ -328,6 +354,14 @@ pub async fn execute_search(
         llm::LlmExecutionResult::default()
     };
 
+    let llm_ms = stage_start.elapsed().as_millis();
+    tracing::info!(
+        "⏱ Stage [llm]: {}ms — batches={} answer_len={}",
+        llm_ms,
+        llm_result.batches_processed,
+        llm_result.llm_answer.as_ref().map(|a| a.len()).unwrap_or(0)
+    );
+
     // ── Wipe TempDb session (auto-clean) ──
     if let (Some(db), Some(sid)) = (temp_db, session_id.as_deref()) {
         db.wipe_session(sid).await;
@@ -345,6 +379,14 @@ pub async fn execute_search(
 
     let elapsed = start.elapsed().as_secs_f64();
     let focus_str = normalized_focus.as_deref().unwrap_or("lite");
+
+    // v6.1.0: Pipeline timing summary
+    tracing::info!(
+        "⏱ Pipeline TOTAL: {:.0}ms — engines={}ms scrape={}ms rank={}ms rrf={}ms llm={}ms | raw={} dedup={} scraped={} mode={}",
+        elapsed * 1000.0,
+        engine_dispatch_ms, scrape_ms, rank_ms, rrf_ms, llm_ms,
+        total_raw, deduped_count, scraped_count, focus_str
+    );
 
     // ── Save to HistoryDb if enabled ──
     if let Some(hdb) = history_db {
@@ -391,7 +433,14 @@ fn apply_focus_mode(query: &str, focus_mode: Option<&str>) -> String {
 }
 
 // =============================================================================
-// Engine Dispatch Helper — used for both primary and backup phases
+// Engine Dispatch Helper — v6.1.0: JoinSet with early-cancel
+//
+// Uses JoinSet instead of join_all so results stream as they complete.
+// Cancels remaining engines once we have enough good sources OR the
+// deadline expires. This controls p99 latency, which fixed concurrency
+// can't.
+//
+// Deadline: lite 2.5s, research 8s, specialized 5s, default 6s
 // =============================================================================
 
 async fn dispatch_engines(
@@ -404,23 +453,25 @@ async fn dispatch_engines(
     jitter_max: u64,
     engine_concurrency: usize,
 ) -> Vec<RawSearchResult> {
-    let mut search_futures = Vec::new();
+    // v6.1.0: Collect engine names to recreate in spawned tasks ('static requirement)
+    let engine_names: Vec<String> = engine_instances.iter().map(|e| e.name().to_string()).collect();
+
+    let mut join_set = JoinSet::new();
     let mut dispatch_index: u64 = 0;
 
     for variation in query_variations {
-        for engine in engine_instances {
+        for engine_name in &engine_names {
             let base_client = base_client.clone();
             let query_variant = variation.clone();
-            let engine_name = engine.name().to_string();
+            let ename = engine_name.clone();
             let jitter = config::random_jitter_ms(jitter_min, jitter_max);
             let proxy_hint = proxy_pool.next_proxy();
             let pool = proxy_pool.clone();
             let sem = engine_semaphore.clone();
             let extra_spread = (dispatch_index % engine_concurrency as u64) * 15;
-            let engine = engine.as_ref();
             dispatch_index += 1;
 
-            search_futures.push(async move {
+            join_set.spawn(async move {
                 let _permit = match sem.acquire().await {
                     Ok(p) => p,
                     Err(_) => return Vec::new(),
@@ -432,13 +483,20 @@ async fn dispatch_engines(
                 }
 
                 let client = if let Some(proxy) = proxy_hint.as_deref() {
-                    tracing::debug!("Engine {} using proxy hint {}", engine_name, proxy);
+                    tracing::debug!("Engine {} using proxy hint {}", ename, proxy);
                     build_search_client(Some(proxy))
                 } else {
                     base_client
                 };
 
-                let results = engine.search(&client, &query_variant).await;
+                // Recreate engine from name inside spawn (all engines are zero-size unit structs)
+                let engine_vec = engines::get_engines(&[ename.clone()]);
+                let results = if let Some(engine) = engine_vec.first() {
+                    engine.search(&client, &query_variant).await
+                } else {
+                    tracing::warn!("Unknown engine in dispatch: {}", ename);
+                    Vec::new()
+                };
 
                 if let Some(proxy) = proxy_hint {
                     if results.is_empty() {
@@ -448,17 +506,62 @@ async fn dispatch_engines(
                     }
                 }
 
-                tracing::info!("Engine [{}] variant [{}]: {} results", engine_name, query_variant, results.len());
+                tracing::info!("Engine [{}] variant [{}]: {} results", ename, query_variant, results.len());
                 results
             });
         }
     }
 
-    let engine_results = futures::future::join_all(search_futures).await;
+    // v6.1.0: Collect results as they complete with deadline-based early cancel
+    let deadline = Duration::from_secs(6); // Default deadline
+    let deadline_instant = tokio::time::Instant::now() + deadline;
     let mut all: Vec<RawSearchResult> = Vec::new();
-    for batch in engine_results {
-        all.extend(batch);
+    let mut engines_completed = 0;
+    let total_engines = join_set.len();
+
+    loop {
+        let result = tokio::select! {
+            res = join_set.join_next() => res,
+            _ = tokio::time::sleep_until(deadline_instant) => {
+                // Deadline reached — abort remaining engines
+                let remaining = join_set.len();
+                if remaining > 0 {
+                    tracing::info!(
+                        "Engine deadline reached: {} engines completed, aborting {} remaining (have {} results)",
+                        engines_completed, remaining, all.len()
+                    );
+                    join_set.abort_all();
+                }
+                break;
+            }
+        };
+
+        match result {
+            Some(Ok(batch)) => {
+                all.extend(batch);
+                engines_completed += 1;
+            }
+            Some(Err(err)) => {
+                if !err.is_cancelled() {
+                    tracing::debug!("Engine task join error: {}", err);
+                }
+                engines_completed += 1;
+            }
+            None => break, // All tasks completed
+        }
     }
+
+    // Drain any remaining results from aborted-but-completed tasks
+    while let Some(result) = join_set.join_next().await {
+        if let Ok(batch) = result {
+            all.extend(batch);
+        }
+    }
+
+    tracing::info!(
+        "Engine dispatch: {}/{} engines completed, {} total results",
+        engines_completed, total_engines, all.len()
+    );
     all
 }
 

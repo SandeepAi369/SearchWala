@@ -1,0 +1,904 @@
+{
+  "version": "6.1.0-baseline",
+  "queries": [
+    {
+      "query": "capital of France",
+      "expected_intent": "factual",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Paris": "Perfect",
+        "https://en.wikipedia.org/wiki/France": "Relevant",
+        "https://www.britannica.com/place/Paris": "Relevant"
+      },
+      "expected_keywords": [
+        "Paris",
+        "France",
+        "capital"
+      ]
+    },
+    {
+      "query": "boiling point of water",
+      "expected_intent": "factual",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Properties_of_water": "Perfect",
+        "https://www.usgs.gov/special-topics/water-science-school/science/water-properties-information-topic": "Relevant",
+        "https://www.britannica.com/science/boiling-point": "Relevant"
+      },
+      "expected_keywords": [
+        "100",
+        "degrees",
+        "Celsius",
+        "212",
+        "Fahrenheit",
+        "boiling"
+      ]
+    },
+    {
+      "query": "what is the speed of light",
+      "expected_intent": "factual",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Speed_of_light": "Perfect",
+        "https://www.britannica.com/science/speed-of-light": "Relevant",
+        "https://science.nasa.gov/": "Marginal"
+      },
+      "expected_keywords": [
+        "299792458",
+        "meters",
+        "second",
+        "light",
+        "speed",
+        "vacuum"
+      ]
+    },
+    {
+      "query": "definition of photosynthesis",
+      "expected_intent": "factual",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Photosynthesis": "Perfect",
+        "https://www.britannica.com/science/photosynthesis": "Perfect",
+        "https://www.nationalgeographic.org/encyclopedia/photosynthesis/": "Relevant"
+      },
+      "expected_keywords": [
+        "photosynthesis",
+        "sunlight",
+        "carbon dioxide",
+        "glucose",
+        "oxygen",
+        "chlorophyll"
+      ]
+    },
+    {
+      "query": "who invented the telephone",
+      "expected_intent": "factual",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Telephone": "Perfect",
+        "https://en.wikipedia.org/wiki/Alexander_Graham_Bell": "Perfect",
+        "https://www.britannica.com/biography/Alexander-Graham-Bell": "Relevant"
+      },
+      "expected_keywords": [
+        "Alexander Graham Bell",
+        "telephone",
+        "1876",
+        "invention"
+      ]
+    },
+    {
+      "query": "population of Japan",
+      "expected_intent": "factual",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Japan": "Perfect",
+        "https://www.worldometers.info/world-population/japan-population/": "Perfect",
+        "https://data.worldbank.org/country/japan": "Relevant"
+      },
+      "expected_keywords": [
+        "Japan",
+        "population",
+        "million",
+        "demographics"
+      ]
+    },
+    {
+      "query": "chemical formula of sulfuric acid",
+      "expected_intent": "factual",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Sulfuric_acid": "Perfect",
+        "https://pubchem.ncbi.nlm.nih.gov/compound/Sulfuric-Acid": "Perfect",
+        "https://www.britannica.com/science/sulfuric-acid": "Relevant"
+      },
+      "expected_keywords": [
+        "H2SO4",
+        "sulfuric acid",
+        "formula",
+        "chemical"
+      ]
+    },
+    {
+      "query": "largest ocean on Earth",
+      "expected_intent": "factual",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Pacific_Ocean": "Perfect",
+        "https://www.britannica.com/place/Pacific-Ocean": "Perfect",
+        "https://oceanservice.noaa.gov/facts/largest-ocean.html": "Relevant"
+      },
+      "expected_keywords": [
+        "Pacific Ocean",
+        "largest",
+        "ocean",
+        "Earth",
+        "area"
+      ]
+    },
+    {
+      "query": "latest CEO of OpenAI 2026",
+      "expected_intent": "temporal",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/OpenAI": "Relevant",
+        "https://openai.com/about/": "Perfect",
+        "https://www.bloomberg.com/": "Marginal"
+      },
+      "expected_keywords": [
+        "OpenAI",
+        "CEO",
+        "Sam Altman",
+        "chief executive"
+      ]
+    },
+    {
+      "query": "bitcoin price today",
+      "expected_intent": "temporal",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://www.coindesk.com/price/bitcoin/": "Perfect",
+        "https://www.coingecko.com/en/coins/bitcoin": "Perfect",
+        "https://coinmarketcap.com/currencies/bitcoin/": "Perfect",
+        "https://en.wikipedia.org/wiki/Bitcoin": "Marginal"
+      },
+      "expected_keywords": [
+        "bitcoin",
+        "BTC",
+        "price",
+        "USD",
+        "market"
+      ]
+    },
+    {
+      "query": "2026 FIFA World Cup schedule",
+      "expected_intent": "temporal",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://www.fifa.com/fifaplus/en/tournaments/mens/worldcup/canadamexicousa2026": "Perfect",
+        "https://en.wikipedia.org/wiki/2026_FIFA_World_Cup": "Perfect",
+        "https://www.espn.com/soccer/": "Relevant"
+      },
+      "expected_keywords": [
+        "2026",
+        "FIFA",
+        "World Cup",
+        "schedule",
+        "matches",
+        "USA",
+        "Canada",
+        "Mexico"
+      ]
+    },
+    {
+      "query": "latest stable version of Node.js",
+      "expected_intent": "temporal",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://nodejs.org/en": "Perfect",
+        "https://en.wikipedia.org/wiki/Node.js": "Relevant",
+        "https://github.com/nodejs/node/releases": "Perfect"
+      },
+      "expected_keywords": [
+        "Node.js",
+        "LTS",
+        "version",
+        "release",
+        "stable"
+      ]
+    },
+    {
+      "query": "upcoming solar eclipse 2026",
+      "expected_intent": "temporal",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Solar_eclipse_of_August_12,_2026": "Perfect",
+        "https://eclipse.gsfc.nasa.gov/": "Perfect",
+        "https://www.timeanddate.com/eclipse/": "Relevant"
+      },
+      "expected_keywords": [
+        "solar eclipse",
+        "2026",
+        "August",
+        "total",
+        "path"
+      ]
+    },
+    {
+      "query": "current US inflation rate",
+      "expected_intent": "temporal",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://www.bls.gov/cpi/": "Perfect",
+        "https://tradingeconomics.com/united-states/inflation-cpi": "Perfect",
+        "https://www.usinflationcalculator.com/inflation/current-inflation-rates/": "Relevant",
+        "https://en.wikipedia.org/wiki/Inflation": "NotRelevant"
+      },
+      "expected_keywords": [
+        "inflation",
+        "rate",
+        "CPI",
+        "percent",
+        "consumer price"
+      ]
+    },
+    {
+      "query": "who won the 2025 NBA Finals",
+      "expected_intent": "temporal",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/2025_NBA_Finals": "Perfect",
+        "https://www.nba.com/finals": "Perfect",
+        "https://www.espn.com/nba/": "Relevant"
+      },
+      "expected_keywords": [
+        "NBA",
+        "Finals",
+        "2025",
+        "champion",
+        "winner"
+      ]
+    },
+    {
+      "query": "who is Jensen Huang",
+      "expected_intent": "person",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Jensen_Huang": "Perfect",
+        "https://www.nvidia.com/en-us/about-nvidia/jensen-huang/": "Perfect",
+        "https://www.forbes.com/profile/jensen-huang/": "Relevant"
+      },
+      "expected_keywords": [
+        "Jensen Huang",
+        "NVIDIA",
+        "CEO",
+        "founder",
+        "GPU"
+      ]
+    },
+    {
+      "query": "biography of Marie Curie",
+      "expected_intent": "person",
+      "expected_mode": "research",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Marie_Curie": "Perfect",
+        "https://www.britannica.com/biography/Marie-Curie": "Perfect",
+        "https://www.nobelprize.org/prizes/physics/1903/marie-curie/biographical/": "Perfect",
+        "https://www.biography.com/scientist/marie-curie": "Relevant"
+      },
+      "expected_keywords": [
+        "Marie Curie",
+        "radioactivity",
+        "Nobel Prize",
+        "polonium",
+        "radium",
+        "physicist"
+      ]
+    },
+    {
+      "query": "who is the prime minister of India",
+      "expected_intent": "person",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Prime_Minister_of_India": "Perfect",
+        "https://en.wikipedia.org/wiki/Narendra_Modi": "Perfect",
+        "https://www.pmindia.gov.in/en/": "Perfect"
+      },
+      "expected_keywords": [
+        "Prime Minister",
+        "India",
+        "Narendra Modi"
+      ]
+    },
+    {
+      "query": "Linus Torvalds contributions to open source",
+      "expected_intent": "person",
+      "expected_mode": "research",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Linus_Torvalds": "Perfect",
+        "https://github.com/torvalds": "Relevant",
+        "https://en.wikipedia.org/wiki/Linux_kernel": "Relevant",
+        "https://en.wikipedia.org/wiki/Git": "Relevant"
+      },
+      "expected_keywords": [
+        "Linus Torvalds",
+        "Linux",
+        "kernel",
+        "Git",
+        "open source",
+        "Finland"
+      ]
+    },
+    {
+      "query": "who is Ada Lovelace",
+      "expected_intent": "person",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Ada_Lovelace": "Perfect",
+        "https://www.britannica.com/biography/Ada-Lovelace": "Perfect",
+        "https://www.computerhistory.org/babbage/adalovelace/": "Relevant"
+      },
+      "expected_keywords": [
+        "Ada Lovelace",
+        "programmer",
+        "Babbage",
+        "Analytical Engine",
+        "computing"
+      ]
+    },
+    {
+      "query": "Elon Musk net worth and companies",
+      "expected_intent": "person",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Elon_Musk": "Perfect",
+        "https://www.forbes.com/profile/elon-musk/": "Perfect",
+        "https://www.bloomberg.com/billionaires/": "Relevant"
+      },
+      "expected_keywords": [
+        "Elon Musk",
+        "Tesla",
+        "SpaceX",
+        "net worth",
+        "billion"
+      ]
+    },
+    {
+      "query": "Alan Turing achievements",
+      "expected_intent": "person",
+      "expected_mode": "research",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Alan_Turing": "Perfect",
+        "https://www.britannica.com/biography/Alan-Turing": "Perfect",
+        "https://en.wikipedia.org/wiki/Turing_machine": "Relevant",
+        "https://www.iwm.org.uk/history/how-alan-turing-cracked-the-enigma-code": "Relevant"
+      },
+      "expected_keywords": [
+        "Alan Turing",
+        "Enigma",
+        "computer science",
+        "Turing machine",
+        "codebreaking"
+      ]
+    },
+    {
+      "query": "Python vs Rust performance comparison",
+      "expected_intent": "comparison",
+      "expected_mode": "specialized",
+      "relevance_judgments": {
+        "https://benchmarksgame-team.pages.debian.net/benchmarksgame/": "Perfect",
+        "https://www.reddit.com/r/rust/": "Marginal",
+        "https://en.wikipedia.org/wiki/Rust_(programming_language)": "Relevant"
+      },
+      "expected_keywords": [
+        "performance",
+        "speed",
+        "memory",
+        "benchmark",
+        "compilation",
+        "Python",
+        "Rust"
+      ]
+    },
+    {
+      "query": "React vs Vue.js differences",
+      "expected_intent": "comparison",
+      "expected_mode": "specialized",
+      "relevance_judgments": {
+        "https://vuejs.org/guide/extras/composition-api-faq.html": "Relevant",
+        "https://react.dev/": "Relevant",
+        "https://en.wikipedia.org/wiki/React_(JavaScript_library)": "Marginal",
+        "https://en.wikipedia.org/wiki/Vue.js": "Marginal"
+      },
+      "expected_keywords": [
+        "React",
+        "Vue",
+        "virtual DOM",
+        "component",
+        "state management",
+        "framework"
+      ]
+    },
+    {
+      "query": "PostgreSQL vs MySQL for web applications",
+      "expected_intent": "comparison",
+      "expected_mode": "specialized",
+      "relevance_judgments": {
+        "https://www.postgresql.org/about/": "Relevant",
+        "https://dev.mysql.com/doc/": "Relevant",
+        "https://en.wikipedia.org/wiki/PostgreSQL": "Marginal",
+        "https://www.digitalocean.com/community/tutorials/sqlite-vs-mysql-vs-postgresql-a-comparison-of-relational-database-management-systems": "Perfect"
+      },
+      "expected_keywords": [
+        "PostgreSQL",
+        "MySQL",
+        "database",
+        "ACID",
+        "performance",
+        "replication",
+        "SQL"
+      ]
+    },
+    {
+      "query": "ARM vs x86 architecture comparison",
+      "expected_intent": "comparison",
+      "expected_mode": "specialized",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/ARM_architecture_family": "Relevant",
+        "https://en.wikipedia.org/wiki/X86": "Relevant",
+        "https://www.anandtech.com/": "Marginal"
+      },
+      "expected_keywords": [
+        "ARM",
+        "x86",
+        "RISC",
+        "CISC",
+        "power consumption",
+        "instruction set",
+        "architecture"
+      ]
+    },
+    {
+      "query": "Docker vs Kubernetes differences",
+      "expected_intent": "comparison",
+      "expected_mode": "specialized",
+      "relevance_judgments": {
+        "https://kubernetes.io/docs/concepts/overview/": "Relevant",
+        "https://docs.docker.com/get-started/overview/": "Relevant",
+        "https://en.wikipedia.org/wiki/Kubernetes": "Marginal",
+        "https://www.ibm.com/think/topics/docker-vs-kubernetes": "Perfect"
+      },
+      "expected_keywords": [
+        "Docker",
+        "Kubernetes",
+        "container",
+        "orchestration",
+        "deployment",
+        "scaling"
+      ]
+    },
+    {
+      "query": "SSD vs HDD reliability and speed",
+      "expected_intent": "comparison",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Solid-state_drive": "Relevant",
+        "https://en.wikipedia.org/wiki/Hard_disk_drive": "Relevant",
+        "https://www.backblaze.com/blog/": "Marginal",
+        "https://www.crucial.com/articles/about-ssd/ssd-vs-hdd": "Perfect"
+      },
+      "expected_keywords": [
+        "SSD",
+        "HDD",
+        "speed",
+        "reliability",
+        "NAND",
+        "latency",
+        "throughput"
+      ]
+    },
+    {
+      "query": "TCP vs UDP protocol differences",
+      "expected_intent": "comparison",
+      "expected_mode": "specialized",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Transmission_Control_Protocol": "Relevant",
+        "https://en.wikipedia.org/wiki/User_Datagram_Protocol": "Relevant",
+        "https://www.cloudflare.com/learning/ddos/glossary/tcp-ip/": "Relevant"
+      },
+      "expected_keywords": [
+        "TCP",
+        "UDP",
+        "reliable",
+        "connectionless",
+        "handshake",
+        "latency",
+        "protocol"
+      ]
+    },
+    {
+      "query": "how to set up SSH keys on Linux",
+      "expected_intent": "howto",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent": "Perfect",
+        "https://www.digitalocean.com/community/tutorials/how-to-set-up-ssh-keys-on-ubuntu-20-04": "Perfect",
+        "https://en.wikipedia.org/wiki/Secure_Shell": "NotRelevant"
+      },
+      "expected_keywords": [
+        "ssh-keygen",
+        "SSH",
+        "key",
+        "public",
+        "private",
+        "authorized_keys"
+      ]
+    },
+    {
+      "query": "how to create a REST API in Node.js",
+      "expected_intent": "howto",
+      "expected_mode": "specialized",
+      "relevance_judgments": {
+        "https://expressjs.com/en/starter/hello-world.html": "Perfect",
+        "https://developer.mozilla.org/en-US/docs/Learn/Server-side/Express_Nodejs": "Perfect",
+        "https://nodejs.org/en/docs/guides/": "Relevant",
+        "https://stackoverflow.com/questions/tagged/express": "Marginal"
+      },
+      "expected_keywords": [
+        "REST",
+        "API",
+        "Express",
+        "Node.js",
+        "endpoint",
+        "middleware",
+        "HTTP"
+      ]
+    },
+    {
+      "query": "how to center a div in CSS",
+      "expected_intent": "howto",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_flexible_box_layout": "Perfect",
+        "https://css-tricks.com/centering-css-complete-guide/": "Perfect",
+        "https://stackoverflow.com/questions/356809/best-way-to-center-a-div-on-a-page-vertically-and-horizontally": "Perfect",
+        "https://www.w3schools.com/css/css_align.asp": "Relevant"
+      },
+      "expected_keywords": [
+        "flexbox",
+        "grid",
+        "margin",
+        "auto",
+        "center",
+        "CSS",
+        "display"
+      ]
+    },
+    {
+      "query": "how to deploy a Docker container to AWS",
+      "expected_intent": "howto",
+      "expected_mode": "specialized",
+      "relevance_judgments": {
+        "https://docs.aws.amazon.com/AmazonECS/latest/developerguide/getting-started.html": "Perfect",
+        "https://docs.docker.com/cloud/ecs-integration/": "Perfect",
+        "https://aws.amazon.com/getting-started/hands-on/deploy-docker-containers/": "Perfect",
+        "https://en.wikipedia.org/wiki/Docker_(software)": "NotRelevant"
+      },
+      "expected_keywords": [
+        "Docker",
+        "AWS",
+        "ECS",
+        "ECR",
+        "container",
+        "deploy",
+        "task definition"
+      ]
+    },
+    {
+      "query": "how to configure Nginx as a reverse proxy",
+      "expected_intent": "howto",
+      "expected_mode": "specialized",
+      "relevance_judgments": {
+        "https://nginx.org/en/docs/http/ngx_http_proxy_module.html": "Perfect",
+        "https://docs.nginx.com/nginx/admin-guide/web-server/reverse-proxy/": "Perfect",
+        "https://www.digitalocean.com/community/tutorials/how-to-configure-nginx-as-a-reverse-proxy-on-ubuntu-22-04": "Perfect",
+        "https://en.wikipedia.org/wiki/Nginx": "NotRelevant"
+      },
+      "expected_keywords": [
+        "Nginx",
+        "reverse proxy",
+        "proxy_pass",
+        "upstream",
+        "location",
+        "server block"
+      ]
+    },
+    {
+      "query": "how to write unit tests in Rust",
+      "expected_intent": "howto",
+      "expected_mode": "specialized",
+      "relevance_judgments": {
+        "https://doc.rust-lang.org/book/ch11-01-writing-tests.html": "Perfect",
+        "https://doc.rust-lang.org/rust-by-example/testing/unit_testing.html": "Perfect",
+        "https://doc.rust-lang.org/cargo/commands/cargo-test.html": "Relevant",
+        "https://en.wikipedia.org/wiki/Rust_(programming_language)": "NotRelevant"
+      },
+      "expected_keywords": [
+        "test",
+        "assert",
+        "cargo test",
+        "mod tests",
+        "Rust",
+        "unit test",
+        "#[test]"
+      ]
+    },
+    {
+      "query": "how to set up a Python virtual environment",
+      "expected_intent": "howto",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://docs.python.org/3/library/venv.html": "Perfect",
+        "https://realpython.com/python-virtual-environments-a-primer/": "Perfect",
+        "https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/": "Perfect"
+      },
+      "expected_keywords": [
+        "venv",
+        "virtualenv",
+        "pip",
+        "activate",
+        "Python",
+        "environment"
+      ]
+    },
+    {
+      "query": "explain how garbage collection works in programming languages",
+      "expected_intent": "research",
+      "expected_mode": "research",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Garbage_collection_(computer_science)": "Perfect",
+        "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Memory_management": "Relevant",
+        "https://docs.oracle.com/en/java/javase/21/gctuning/introduction-garbage-collection-tuning.html": "Relevant",
+        "https://www.britannica.com/technology/computer-programming-language": "NotRelevant"
+      },
+      "expected_keywords": [
+        "garbage collection",
+        "mark and sweep",
+        "reference counting",
+        "heap",
+        "memory",
+        "GC roots"
+      ]
+    },
+    {
+      "query": "how does the TCP three-way handshake work in detail",
+      "expected_intent": "research",
+      "expected_mode": "research",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Transmission_Control_Protocol": "Perfect",
+        "https://developer.mozilla.org/en-US/docs/Glossary/TCP_handshake": "Perfect",
+        "https://www.cloudflare.com/learning/ddos/glossary/tcp-ip/": "Relevant",
+        "https://datatracker.ietf.org/doc/html/rfc9293": "Relevant"
+      },
+      "expected_keywords": [
+        "SYN",
+        "SYN-ACK",
+        "ACK",
+        "handshake",
+        "TCP",
+        "connection",
+        "sequence number"
+      ]
+    },
+    {
+      "query": "explain the CAP theorem and its implications for distributed databases",
+      "expected_intent": "research",
+      "expected_mode": "research",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/CAP_theorem": "Perfect",
+        "https://www.ibm.com/topics/cap-theorem": "Perfect",
+        "https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html": "Perfect",
+        "https://www.mongodb.com/resources/basics/databases/nosql-explained/nosql-vs-sql": "Marginal"
+      },
+      "expected_keywords": [
+        "CAP",
+        "consistency",
+        "availability",
+        "partition tolerance",
+        "distributed",
+        "Brewer"
+      ]
+    },
+    {
+      "query": "how does HTTPS TLS encryption work step by step",
+      "expected_intent": "research",
+      "expected_mode": "research",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Transport_Layer_Security": "Perfect",
+        "https://www.cloudflare.com/learning/ssl/what-happens-in-a-tls-handshake/": "Perfect",
+        "https://developer.mozilla.org/en-US/docs/Web/Security/Transport_Layer_Security": "Relevant",
+        "https://datatracker.ietf.org/doc/html/rfc8446": "Relevant"
+      },
+      "expected_keywords": [
+        "TLS",
+        "certificate",
+        "handshake",
+        "encryption",
+        "public key",
+        "cipher suite",
+        "HTTPS"
+      ]
+    },
+    {
+      "query": "explain transformer architecture in deep learning",
+      "expected_intent": "research",
+      "expected_mode": "research",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)": "Perfect",
+        "https://arxiv.org/abs/1706.03762": "Perfect",
+        "https://jalammar.github.io/illustrated-transformer/": "Perfect",
+        "https://huggingface.co/docs/transformers/": "Relevant"
+      },
+      "expected_keywords": [
+        "transformer",
+        "attention",
+        "self-attention",
+        "encoder",
+        "decoder",
+        "BERT",
+        "GPT"
+      ]
+    },
+    {
+      "query": "how do bloom filters work and what are their use cases",
+      "expected_intent": "research",
+      "expected_mode": "research",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Bloom_filter": "Perfect",
+        "https://www.jasondavies.com/bloomfilter/": "Relevant",
+        "https://llimllib.github.io/bloomfilter-tutorial/": "Relevant"
+      },
+      "expected_keywords": [
+        "Bloom filter",
+        "probabilistic",
+        "hash",
+        "false positive",
+        "bit array",
+        "membership"
+      ]
+    },
+    {
+      "query": "explain the Raft consensus algorithm",
+      "expected_intent": "research",
+      "expected_mode": "research",
+      "relevance_judgments": {
+        "https://en.wikipedia.org/wiki/Raft_(algorithm)": "Perfect",
+        "https://raft.github.io/": "Perfect",
+        "https://raft.github.io/raft.pdf": "Perfect",
+        "https://thesecretlivesofdata.com/raft/": "Relevant"
+      },
+      "expected_keywords": [
+        "Raft",
+        "consensus",
+        "leader election",
+        "log replication",
+        "term",
+        "distributed"
+      ]
+    },
+    {
+      "query": "gmail login",
+      "expected_intent": "navigational",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://mail.google.com/": "Perfect",
+        "https://accounts.google.com/": "Relevant",
+        "https://en.wikipedia.org/wiki/Gmail": "NotRelevant"
+      },
+      "expected_keywords": [
+        "Gmail",
+        "login",
+        "Google",
+        "email"
+      ]
+    },
+    {
+      "query": "github new repository",
+      "expected_intent": "navigational",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://github.com/new": "Perfect",
+        "https://github.com/": "Relevant",
+        "https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-new-repository": "Relevant"
+      },
+      "expected_keywords": [
+        "GitHub",
+        "repository",
+        "create",
+        "new"
+      ]
+    },
+    {
+      "query": "amazon order tracking",
+      "expected_intent": "navigational",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://www.amazon.com/gp/css/order-history": "Perfect",
+        "https://www.amazon.com/": "Relevant",
+        "https://en.wikipedia.org/wiki/Amazon_(company)": "NotRelevant"
+      },
+      "expected_keywords": [
+        "Amazon",
+        "order",
+        "tracking",
+        "delivery"
+      ]
+    },
+    {
+      "query": "youtube trending",
+      "expected_intent": "navigational",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://www.youtube.com/feed/trending": "Perfect",
+        "https://www.youtube.com/": "Relevant",
+        "https://en.wikipedia.org/wiki/YouTube": "NotRelevant"
+      },
+      "expected_keywords": [
+        "YouTube",
+        "trending",
+        "videos"
+      ]
+    },
+    {
+      "query": "stackoverflow rust questions",
+      "expected_intent": "navigational",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://stackoverflow.com/questions/tagged/rust": "Perfect",
+        "https://stackoverflow.com/": "Relevant",
+        "https://en.wikipedia.org/wiki/Stack_Overflow": "NotRelevant"
+      },
+      "expected_keywords": [
+        "Stack Overflow",
+        "Rust",
+        "questions",
+        "tagged"
+      ]
+    },
+    {
+      "query": "MDN CSS flexbox documentation",
+      "expected_intent": "navigational",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_flexible_box_layout": "Perfect",
+        "https://developer.mozilla.org/en-US/docs/Learn/CSS/CSS_layout/Flexbox": "Perfect",
+        "https://developer.mozilla.org/": "Relevant",
+        "https://css-tricks.com/snippets/css/a-guide-to-flexbox/": "Marginal"
+      },
+      "expected_keywords": [
+        "MDN",
+        "flexbox",
+        "CSS",
+        "flex-direction",
+        "justify-content",
+        "align-items"
+      ]
+    },
+    {
+      "query": "Rust crates.io search",
+      "expected_intent": "navigational",
+      "expected_mode": "lite",
+      "relevance_judgments": {
+        "https://crates.io/": "Perfect",
+        "https://docs.rs/": "Relevant",
+        "https://www.rust-lang.org/": "Marginal"
+      },
+      "expected_keywords": [
+        "crates.io",
+        "Rust",
+        "package",
+        "registry",
+        "crate"
+      ]
+    }
+  ]
+}

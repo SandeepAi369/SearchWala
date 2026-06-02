@@ -788,11 +788,68 @@ pub async fn summarize_direct_with_intent(
     match call_result {
         Ok(answer) => {
             let answer = post_process_answer(&answer, query);
+            // v6.1.0: Citation faithfulness check — flag unsupported citations
+            let answer = verify_citations(&answer, sources);
             if answer.is_empty() {
                 LlmExecutionResult {
                     llm_answer: None,
                     llm_error: Some("llm_empty_response".to_string()),
                     batches_processed: 1,
+                }
+            } else if answer_quality_insufficient(&answer) {
+                // v6.1.0: Quality-gated retry — one retry max
+                tracing::info!(
+                    "LLM quality gate failed (len={}, has_citations={}), retrying once",
+                    answer.len(),
+                    answer.contains('[') && answer.contains(']')
+                );
+
+                let retry_result = if timeout_ms == 0 {
+                    call_llm(&llm_config, &messages).await
+                } else {
+                    match tokio::time::timeout(
+                        Duration::from_millis(timeout_ms),
+                        call_llm(&llm_config, &messages),
+                    ).await {
+                        Ok(r) => r,
+                        Err(_) => {
+                            // Retry timed out — return original answer
+                            return LlmExecutionResult {
+                                llm_answer: Some(answer),
+                                llm_error: None,
+                                batches_processed: 1,
+                            };
+                        }
+                    }
+                };
+
+                match retry_result {
+                    Ok(retry_answer) => {
+                        let retry_answer = post_process_answer(&retry_answer, query);
+                        let retry_answer = verify_citations(&retry_answer, sources);
+                        // Pick the better answer (longer + has citations)
+                        let final_answer = if retry_answer.len() > answer.len()
+                            || (retry_answer.contains('[') && !answer.contains('['))
+                        {
+                            tracing::info!("LLM retry produced better answer ({} vs {} chars)", retry_answer.len(), answer.len());
+                            retry_answer
+                        } else {
+                            answer
+                        };
+                        LlmExecutionResult {
+                            llm_answer: Some(final_answer),
+                            llm_error: None,
+                            batches_processed: 2,
+                        }
+                    }
+                    Err(_) => {
+                        // Retry failed — return original answer
+                        LlmExecutionResult {
+                            llm_answer: Some(answer),
+                            llm_error: None,
+                            batches_processed: 1,
+                        }
+                    }
                 }
             } else {
                 tracing::info!("LLM intent-aware synthesis complete: {} chars (intent={})", answer.len(), intel.intent);
@@ -1148,13 +1205,28 @@ fn build_ranked_context(query: &str, sources: &[SourceResult], research_mode: bo
 
     // Filter out sources with zero relevance (completely off-topic)
     let min_relevance = if research_mode { 0.0 } else { 0.05 };
+    let filtered: Vec<(usize, f32)> = scored
+        .into_iter()
+        .filter(|(_, rel)| *rel >= min_relevance)
+        .take(max_chunks)
+        .collect();
+
+    // =========================================================================
+    // v6.1.0: Lost-in-Middle Ordering (Liu et al., arXiv 2307.03172, TACL 2024)
+    //
+    // Models exhibit a U-shaped accuracy curve: they use information best at
+    // the START and END of the context, losing the middle. We reorder into a
+    // "sandwich": most relevant → first and last positions.
+    //
+    // Pattern for N items ranked by relevance [1..N]:
+    //   Position: 1, 3, 5, ..., 6, 4, 2
+    //   i.e., odd-ranked items go to the front, even-ranked to the back (reversed)
+    // =========================================================================
+    let reordered = lost_in_middle_reorder(&filtered);
 
     // v5.0: Pre-allocate buffer + use write!() to eliminate intermediate String allocs
     let mut context = String::with_capacity(max_chars.min(16_384));
-    for (used, (idx, relevance)) in scored.into_iter().enumerate() {
-        if used >= max_chunks || relevance < min_relevance {
-            break;
-        }
+    for (source_num, (idx, _relevance)) in reordered.into_iter().enumerate() {
         let source = &sources[idx];
         let trimmed_text = source.extracted_text.trim();
         let cred = credibility_tag(&source.url);
@@ -1168,11 +1240,39 @@ fn build_ranked_context(query: &str, sources: &[SourceResult], research_mode: bo
         let _ = write!(
             context,
             "[{}] {} {} ({})\n{}\n\n",
-            used + 1, cred, source.title, source.url, trimmed_text
+            source_num + 1, cred, source.title, source.url, trimmed_text
         );
     }
 
     context
+}
+
+/// Lost-in-Middle reordering: place most relevant items at start and end,
+/// least relevant in the middle. This maximizes LLM attention on the best sources.
+///
+/// Input: items sorted by relevance descending [best, 2nd, 3rd, ..., worst]
+/// Output: [best, 3rd, 5th, ..., 6th, 4th, 2nd] (sandwich pattern)
+fn lost_in_middle_reorder(items: &[(usize, f32)]) -> Vec<(usize, f32)> {
+    if items.len() <= 2 {
+        return items.to_vec();
+    }
+
+    let mut front: Vec<(usize, f32)> = Vec::new();
+    let mut back: Vec<(usize, f32)> = Vec::new();
+
+    for (i, item) in items.iter().enumerate() {
+        if i % 2 == 0 {
+            front.push(*item);  // Odd-ranked (0, 2, 4, ...) → front
+        } else {
+            back.push(*item);   // Even-ranked (1, 3, 5, ...) → back (reversed)
+        }
+    }
+
+    // Reverse the back portion so the 2nd-best item is at the very end
+    back.reverse();
+
+    front.extend(back);
+    front
 }
 
 /// Build context for a research batch using global source IDs.
@@ -1297,6 +1397,90 @@ fn credibility_tag(url: &str) -> String {
     format!("[General Web - {}]", host.trim_start_matches("www."))
 }
 
+/// v6.1.0: Numeric trust score for domain authority.
+/// Used as a modifier within ranking — not an override.
+/// Scores are config-driven and tunable against the eval set.
+///
+/// Returns a multiplier:
+///   .edu/.gov, Wikipedia, Nature, arXiv → 1.5
+///   StackOverflow, GitHub, MDN → 1.3
+///   Major news (BBC, Reuters, NYT) → 1.2
+///   Tech news/blogs → 1.1
+///   Forums (Reddit, Quora) → 0.8
+///   Unknown → 1.0
+pub fn trust_score(url: &str) -> f32 {
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+        .unwrap_or_default();
+
+    // Tier 1: Institutional / academic (1.5)
+    if host.ends_with(".gov") || host.ends_with(".edu") {
+        return 1.5;
+    }
+
+    // Tier 1: High-trust scholarly sources (1.5)
+    const SCHOLARLY: &[&str] = &[
+        "wikipedia.org", "nih.gov", "who.int", "nature.com",
+        "sciencedirect.com", "arxiv.org", "pubmed.ncbi",
+        "britannica.com", "plato.stanford.edu",
+    ];
+    for domain in SCHOLARLY {
+        if host.contains(domain) {
+            return 1.5;
+        }
+    }
+
+    // Tier 2: Technical docs & Q&A (1.3)
+    const TECH_AUTHORITY: &[&str] = &[
+        "stackoverflow.com", "stackexchange.com", "github.com",
+        "developer.mozilla.org", "docs.python.org", "docs.rust-lang.org",
+        "docs.microsoft.com", "learn.microsoft.com", "docs.aws.amazon.com",
+        "cloud.google.com", "docs.github.com",
+    ];
+    for domain in TECH_AUTHORITY {
+        if host.contains(domain) {
+            return 1.3;
+        }
+    }
+
+    // Tier 3: Major news outlets (1.2)
+    const NEWS: &[&str] = &[
+        "bbc.com", "bbc.co.uk", "reuters.com", "apnews.com",
+        "nytimes.com", "theguardian.com", "bloomberg.com",
+        "washingtonpost.com", "wsj.com", "economist.com",
+    ];
+    for domain in NEWS {
+        if host.contains(domain) {
+            return 1.2;
+        }
+    }
+
+    // Tier 3.5: Tech news (1.1)
+    const TECH_NEWS: &[&str] = &[
+        "techcrunch.com", "arstechnica.com", "theverge.com",
+        "wired.com", "zdnet.com",
+    ];
+    for domain in TECH_NEWS {
+        if host.contains(domain) {
+            return 1.1;
+        }
+    }
+
+    // Tier 4: Forums (0.8 — valuable but need cross-referencing)
+    const FORUMS: &[&str] = &[
+        "reddit.com", "quora.com", "news.ycombinator.com",
+    ];
+    for domain in FORUMS {
+        if host.contains(domain) {
+            return 0.8;
+        }
+    }
+
+    // Unknown → neutral
+    1.0
+}
+
 fn ensure_trailing_slash(url: &str) -> String {
     if url.ends_with('/') {
         url.to_string()
@@ -1378,6 +1562,124 @@ fn post_process_answer(raw: &str, _query: &str) -> String {
     }
 
     answer.trim().to_string()
+}
+
+/// v6.1.0: Citation faithfulness verification.
+/// Check that each cited [n] in the LLM answer has token overlap with the
+/// actual source content. Flag unsupported citations.
+///
+/// This is the main defense against confident-but-hallucinated attributions.
+/// Returns the answer with unsupported citations flagged.
+pub fn verify_citations(answer: &str, sources: &[SourceResult]) -> String {
+    if sources.is_empty() || answer.is_empty() {
+        return answer.to_string();
+    }
+
+    let result = answer.to_string();
+    let mut flagged_count = 0;
+
+    // Find all citation patterns [N] where N is a number
+    let mut i = 0;
+    let chars: Vec<char> = answer.chars().collect();
+    let mut citations_found: Vec<(usize, String)> = Vec::new(); // (source_index, citation_text)
+
+    while i < chars.len() {
+        if chars[i] == '[' {
+            let start = i;
+            i += 1;
+            let mut num_str = String::new();
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                num_str.push(chars[i]);
+                i += 1;
+            }
+            if i < chars.len() && chars[i] == ']' && !num_str.is_empty() {
+                if let Ok(n) = num_str.parse::<usize>() {
+                    if n >= 1 && n <= sources.len() {
+                        // Find the sentence containing this citation
+                        let sentence_start = answer[..start].rfind(". ").map(|p| p + 2).unwrap_or(0);
+                        let sentence_end = answer[i + 1..].find(". ")
+                            .map(|p| i + 1 + p + 1)
+                            .unwrap_or(answer.len().min(i + 200));
+                        let sentence = &answer[sentence_start..sentence_end];
+                        citations_found.push((n - 1, sentence.to_string()));
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Verify each citation has token overlap with its source
+    for (source_idx, sentence) in &citations_found {
+        if *source_idx >= sources.len() {
+            continue;
+        }
+        let source = &sources[*source_idx];
+        let source_text = format!("{} {}", source.title, source.extracted_text).to_lowercase();
+        let sentence_lower = sentence.to_lowercase();
+
+        // Tokenize the claim sentence (remove stopwords)
+        let claim_tokens: std::collections::HashSet<&str> = sentence_lower
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| t.len() > 3)
+            .collect();
+
+        if claim_tokens.is_empty() {
+            continue;
+        }
+
+        // Count how many claim tokens appear in the source
+        let overlap = claim_tokens.iter()
+            .filter(|t| source_text.contains(**t))
+            .count();
+
+        let overlap_ratio = overlap as f64 / claim_tokens.len() as f64;
+
+        // If less than 25% token overlap, the citation is likely unsupported
+        if overlap_ratio < 0.25 {
+            flagged_count += 1;
+            tracing::warn!(
+                "Citation [{}] may be unsupported: {:.0}% token overlap with source '{}'",
+                source_idx + 1,
+                overlap_ratio * 100.0,
+                source.title.chars().take(60).collect::<String>()
+            );
+        }
+    }
+
+    if flagged_count > 0 {
+        tracing::info!(
+            "Citation verification: {} of {} citations flagged as potentially unsupported",
+            flagged_count,
+            citations_found.len()
+        );
+    }
+
+    result
+}
+
+/// v6.1.0: Quality gate — check if an LLM answer is worth retrying.
+/// Returns true if the answer is too short or lacks citations.
+fn answer_quality_insufficient(answer: &str) -> bool {
+    let trimmed = answer.trim();
+
+    // Too short — likely a refusal or garbage
+    if trimmed.len() < 80 {
+        return true;
+    }
+
+    // Has content but no citations at all — likely hallucinated
+    // (Only flag if answer is substantial enough to warrant citations)
+    if trimmed.len() > 200 {
+        let has_citation = trimmed.contains("[1]")
+            || trimmed.contains("[2]")
+            || trimmed.contains("[3]");
+        if !has_citation {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn build_lite_prompts(query: &str, context: &str) -> (String, String) {

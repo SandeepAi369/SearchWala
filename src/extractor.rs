@@ -49,6 +49,11 @@ const STRIP_TAGS: &[&str] = &[
     "video", "audio", "object", "embed", "template", "dialog", "figcaption",
 ];
 
+// v6.1.0: Static HashSet for O(1) tag lookups — eliminates per-call allocation in extract_visible_text()
+static SKIP_SET: LazyLock<HashSet<&str>> = LazyLock::new(|| {
+    STRIP_TAGS.iter().copied().collect()
+});
+
 // ── Pre-compiled CSS selectors (LazyLock for zero-cost reuse) ──
 
 static SEL_SEMANTIC: LazyLock<Option<Selector>> = LazyLock::new(|| {
@@ -463,14 +468,13 @@ fn compute_text_quality_score(text: &str) -> usize {
 // =============================================================================
 
 /// Recursively extract visible text from an element, skipping non-content tags.
+/// v6.1.0: Uses static SKIP_SET (LazyLock) instead of per-call HashSet allocation.
 fn extract_visible_text(element: &ElementRef) -> String {
     let tag_name = element.value().name();
 
     // Skip known non-content tags
-    for strip in STRIP_TAGS {
-        if tag_name == *strip {
-            return String::new();
-        }
+    if SKIP_SET.contains(tag_name) {
+        return String::new();
     }
 
     // Skip hidden elements
@@ -492,7 +496,6 @@ fn extract_visible_text(element: &ElementRef) -> String {
     }
 
     let mut text_parts: Vec<String> = Vec::new();
-    let skip_set: HashSet<&str> = STRIP_TAGS.iter().copied().collect();
 
     for child in element.children() {
         match child.value() {
@@ -504,7 +507,7 @@ fn extract_visible_text(element: &ElementRef) -> String {
             }
             scraper::node::Node::Element(el) => {
                 let child_tag = el.name();
-                if !skip_set.contains(child_tag) {
+                if !SKIP_SET.contains(child_tag) {
                     if let Some(child_ref) = ElementRef::wrap(child) {
                         let child_text = extract_visible_text(&child_ref);
                         if !child_text.is_empty() {
