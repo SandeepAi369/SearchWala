@@ -1579,29 +1579,46 @@ pub fn verify_citations(answer: &str, sources: &[SourceResult]) -> String {
     let mut flagged_count = 0;
 
     // Find all citation patterns [N] where N is a number
+    // IMPORTANT: Use char_indices to get byte positions, not char positions
     let mut i = 0;
-    let chars: Vec<char> = answer.chars().collect();
+    let chars: Vec<(usize, char)> = answer.char_indices().collect(); // (byte_offset, char)
     let mut citations_found: Vec<(usize, String)> = Vec::new(); // (source_index, citation_text)
 
     while i < chars.len() {
-        if chars[i] == '[' {
-            let start = i;
+        if chars[i].1 == '[' {
+            let bracket_byte_start = chars[i].0; // byte offset of '['
+            let start_ci = i;
             i += 1;
             let mut num_str = String::new();
-            while i < chars.len() && chars[i].is_ascii_digit() {
-                num_str.push(chars[i]);
+            while i < chars.len() && chars[i].1.is_ascii_digit() {
+                num_str.push(chars[i].1);
                 i += 1;
             }
-            if i < chars.len() && chars[i] == ']' && !num_str.is_empty() {
+            if i < chars.len() && chars[i].1 == ']' && !num_str.is_empty() {
                 if let Ok(n) = num_str.parse::<usize>() {
                     if n >= 1 && n <= sources.len() {
-                        // Find the sentence containing this citation
-                        let sentence_start = answer[..start].rfind(". ").map(|p| p + 2).unwrap_or(0);
-                        let sentence_end = answer[i + 1..].find(". ")
-                            .map(|p| i + 1 + p + 1)
-                            .unwrap_or(answer.len().min(i + 200));
-                        let sentence = &answer[sentence_start..sentence_end];
-                        citations_found.push((n - 1, sentence.to_string()));
+                        // Find the sentence containing this citation (byte-safe)
+                        let sentence_start = answer[..bracket_byte_start]
+                            .rfind(". ")
+                            .map(|p| p + 2)
+                            .unwrap_or(0);
+                        let after_bracket = chars[i].0 + chars[i].1.len_utf8();
+                        let sentence_end = if after_bracket < answer.len() {
+                            answer[after_bracket..]
+                                .find(". ")
+                                .map(|p| after_bracket + p + 1)
+                                .unwrap_or(answer.len().min(after_bracket + 200))
+                        } else {
+                            answer.len()
+                        };
+                        // Guard: ensure both indices are valid char boundaries
+                        let safe_start = if answer.is_char_boundary(sentence_start) { sentence_start } else { 0 };
+                        let safe_end = if answer.is_char_boundary(sentence_end) { sentence_end } else { answer.len() };
+                        let safe_end = safe_end.min(answer.len());
+                        if safe_start <= safe_end {
+                            let sentence = &answer[safe_start..safe_end];
+                            citations_found.push((n - 1, sentence.to_string()));
+                        }
                     }
                 }
             }
