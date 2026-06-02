@@ -1,9 +1,9 @@
 // ============================================================================
-// SearchWala v5.2.0
+// SearchWala v6.1.0
 // ============================================================================
 //
 // Native Rust meta-search + extraction + optional BYOK LLM synthesis.
-// v5.2.0: Query Intelligence (RRF + Intent Detection + Temporal Analysis)
+// v6.1.0: Research-grounded architecture upgrade
 // Iterative Deep Research | Dual Database | Time-Aware LLM
 //
 // Pipeline:
@@ -18,7 +18,9 @@
 
 pub mod cache;
 pub mod config;
+pub mod copilot;
 pub mod engines;
+pub mod eval;
 pub mod extractor;
 pub mod llm;
 pub mod models;
@@ -26,7 +28,6 @@ pub mod query_intel;
 pub mod ranking;
 pub mod search;
 pub mod url_utils;
-pub mod copilot;
 pub mod stream;
 pub mod proxy_pool;
 
@@ -277,7 +278,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
     let uptime = state.start_time.elapsed().as_secs();
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: "5.2.0".to_string(),
+        version: "6.1.0".to_string(),
         engines: config::enabled_engines(),
         uptime_seconds: uptime,
     })
@@ -286,7 +287,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
 /// GET /config - Configuration info
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
-        version: "5.2.0".to_string(),
+        version: "6.1.0".to_string(),
         engines: config::enabled_engines(),
         max_urls: config::max_urls(),
         scrape_timeout_secs: config::scrape_timeout_secs(),
@@ -487,7 +488,7 @@ async fn main() {
     let engines = config::enabled_engines();
 
     tracing::info!("============================================");
-    tracing::info!("  SearchWala v5.0.1");
+    tracing::info!("  SearchWala v6.1.0");
     tracing::info!("  Language: Rust");
     tracing::info!("  Engines: {} total", engines.len());
     tracing::info!("  Max URLs: {}", config::max_urls());
