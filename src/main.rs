@@ -93,8 +93,9 @@ async fn search_handler(
     Ok(Json(response))
 }
 
-/// POST /search/lite-llm - LLM flow forced to lite focus mode
-async fn search_lite_llm_handler(
+/// POST /search/auto-llm — LLM flow with auto/fast focus mode
+/// Also handles backward-compatible /search/lite-llm requests
+async fn search_auto_llm_handler(
     state: axum::extract::State<Arc<AppState>>,
     Json(body): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -113,15 +114,18 @@ async fn search_lite_llm_handler(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "LLM config is required for /search/lite-llm"
+                "error": "LLM config is required for /search/auto-llm"
             })),
         ));
     };
 
+    // v6.1.0: Pass through focus_mode (auto/fast) instead of hardcoding
+    let focus = body.focus_mode.or(Some("auto".to_string()));
+
     let response = search::execute_search(
         &query,
         body.max_results.or(Some(50)),
-        Some("lite".to_string()),
+        focus,
         Some(llm_cfg),
         body.enable_copilot,
         Some(&state.temp_db),
@@ -520,7 +524,8 @@ async fn main() {
         .route("/health", get(health_handler))
         .route("/config", get(config_handler))
         .route("/search", get(root_handler).post(search_handler))
-        .route("/search/lite-llm", post(search_lite_llm_handler))
+        .route("/search/auto-llm", post(search_auto_llm_handler))
+        .route("/search/lite-llm", post(search_auto_llm_handler))  // backward compat
         .route("/search/research-llm", post(search_research_llm_handler))
         .route("/search/stream", post(stream_handler))
         .route("/api/models", post(models_handler))
