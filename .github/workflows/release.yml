@@ -14,26 +14,78 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+        with:
+          fetch-depth: 0  # Full history for changelog generation
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-        
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
       - name: Build release binary
         run: cargo build --release
-        
+
       - name: Rename binary
         run: mv target/release/searchwala searchwala-linux-amd64
-        
-      - name: Generate Release Tag
-        id: tag
-        run: echo "TAG=v$(date +'%Y.%m.%d-%H%M%S')" >> $GITHUB_ENV
-        
+
+      - name: Generate SHA256 checksum
+        run: sha256sum searchwala-linux-amd64 > checksums-sha256.txt
+
+      - name: Extract version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "TAG=v${VERSION}-$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
+
+      - name: Generate release notes
+        run: |
+          echo "## SearchWala v${VERSION}" > release_notes.md
+          echo "" >> release_notes.md
+          echo "**Build:** $(date -u +'%Y-%m-%d %H:%M UTC') | **Platform:** Linux x86_64" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### Changes since last release" >> release_notes.md
+          echo "" >> release_notes.md
+          # Get commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            git log ${LAST_TAG}..HEAD --pretty=format:"- %s" --no-merges >> release_notes.md
+          else
+            git log -10 --pretty=format:"- %s" --no-merges >> release_notes.md
+          fi
+          echo "" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### Download" >> release_notes.md
+          echo "" >> release_notes.md
+          echo '```bash' >> release_notes.md
+          echo "# Download and run" >> release_notes.md
+          echo "chmod +x searchwala-linux-amd64" >> release_notes.md
+          echo "./searchwala-linux-amd64" >> release_notes.md
+          echo '```' >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### Checksum (SHA-256)" >> release_notes.md
+          echo '```' >> release_notes.md
+          cat checksums-sha256.txt >> release_notes.md
+          echo '```' >> release_notes.md
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          name: Release ${{ env.TAG }}
-          files: searchwala-linux-amd64
+          name: SearchWala v${{ env.VERSION }}
+          body_path: release_notes.md
+          files: |
+            searchwala-linux-amd64
+            checksums-sha256.txt
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
