@@ -1,5 +1,5 @@
 // ============================================================================
-// SearchWala v6.1.0 - Search Orchestrator (Intelligence-Driven)
+// SearchWala v7.0.0 - Search Orchestrator (Intelligence-Driven)
 // Features:
 //   - QueryIntelligence: intent detection, temporal classification, entity extraction
 //   - RRF k=60 (Cormack 2009): cross-engine consensus ranking
@@ -754,6 +754,7 @@ fn extract_youtube_json_ld(html: &str) -> Option<String> {
 // HTTP Client Builders
 // =============================================================================
 
+/// Build a standard reqwest client for non-WAF-protected targets
 fn build_search_client(proxy: Option<&str>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(8))
@@ -782,6 +783,12 @@ fn build_search_client(proxy: Option<&str>) -> reqwest::Client {
     builder
         .build()
         .expect("Failed to build search HTTP client")
+}
+
+/// Build a wreq stealth client for WAF-protected engines.
+/// Uses BoringSSL to clone Chrome's TLS fingerprint (JA4 + HTTP/2 settings).
+fn build_stealth_search_client(proxy: Option<&str>) -> wreq::Client {
+    config::build_stealth_client(proxy)
 }
 
 /// Build a properly configured scrape client.
