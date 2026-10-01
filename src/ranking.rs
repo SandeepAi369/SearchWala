@@ -37,6 +37,10 @@ const BM25_DELTA: f64 = 1.0;          // v6.1.0: BM25+ lower bound (Lv & Zhai 20
 const RRF_K: f64 = 60.0;              // From the RRF paper (Cormack et al. 2009) — do NOT change
 const MMR_LAMBDA: f64 = 0.7;          // Carbonell & Goldstein 1998 default
 const MAX_CHUNKS_PER_URL_IN_TOP_K: usize = 3; // Hard cap even with MMR
+/// MMR only considers the top `top_k * this` BM25 candidates. Scoring the
+/// whole corpus every round was the v7.0 hot spot and buys nothing: a chunk
+/// ranked thousands of places down does not win on diversity alone.
+const MMR_WINDOW_FACTOR: usize = 5;
 
 // ── Stopwords — top 150 English stopwords (SMART list + extensions) ──
 const STOPWORDS: &[&str] = &[
@@ -352,7 +356,7 @@ pub fn rank_top_chunks_with_rrf(
     // This both caps per-source monoculture AND removes near-duplicate chunks
     // across different URLs (which the per-URL cap misses).
     // ==========================================================================
-    let selected = mmr_rerank(&candidates, &scored, top_k);
+    let selected = mmr_rerank(&candidates, &scored, top_k, &tokenized_docs);
 
     selected
         .into_iter()
@@ -379,79 +383,161 @@ pub fn rank_top_chunks_with_rrf(
 /// Uses token-based Jaccard similarity as the diversity signal
 /// (lightweight, no embedding model required — upgrade path to
 /// semantic similarity in C cross-encoder stage).
+/// Compact token signature: sorted, deduped 64-bit hashes.
+///
+/// v7.0 built a `HashSet<String>` per candidate, re-allocating every token
+/// string even though the caller had already tokenized the same corpus. At
+/// Phase-3 text volumes (374k-680k chars/search) that is hundreds of thousands
+/// of String allocations per query.
+fn token_signature(tokens: &[String]) -> Vec<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut v: Vec<u64> = tokens
+        .iter()
+        .map(|t| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            t.hash(&mut h);
+            h.finish()
+        })
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Jaccard over two sorted u64 slices — linear merge, no allocation.
+fn jaccard_sorted(a: &[u64], b: &[u64]) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let (mut i, mut j, mut inter) = (0usize, 0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Equal => {
+                inter += 1;
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    let union = a.len() + b.len() - inter;
+    if union == 0 {
+        0.0
+    } else {
+        inter as f64 / union as f64
+    }
+}
+
+/// MMR diversity reranking — Carbonell & Goldstein (SIGIR 1998), lambda=0.7.
+///
+/// v8.0 rewrite. The v7.0 loop was `O(top_k * n * |selected|)` with a
+/// `HashSet<String>` Jaccard inside, plus an `O(n)` `Vec::remove` per
+/// selection. After Phase 3 raised text volume 32-58x it became the dominant
+/// cost in the pipeline: 3,011 ms to rank 91 sources.
+///
+/// Four changes:
+///   1. Tokenize ONCE — the signatures are passed in from the caller.
+///   2. Hash tokens to u64 and merge sorted slices (no String allocation).
+///   3. Consider only a CANDIDATE WINDOW. Nothing ranked 5,000th by BM25 wins
+///      on diversity alone, so scoring the whole corpus every round is waste.
+///   4. Track `max_sim` INCREMENTALLY: after selecting s, update each
+///      remaining candidate against s only. This removes the inner
+///      `|selected|` loop entirely, turning the hot path into O(window) per
+///      selection.
 fn mmr_rerank(
     candidates: &[ChunkCandidate],
     scored: &[(usize, f64)],
     top_k: usize,
+    tokenized: &[Vec<String>],
 ) -> Vec<usize> {
-    if scored.is_empty() {
+    if scored.is_empty() || top_k == 0 {
         return Vec::new();
     }
 
-    // Normalize BM25+ scores to 0-1 for MMR
     let max_score = scored.iter().map(|(_, s)| *s).fold(0.0_f64, f64::max).max(1e-9);
 
-    // Pre-tokenize all candidate chunks for similarity computation
-    let candidate_tokens: Vec<HashSet<String>> = candidates
+    // ── Candidate window ──
+    let window = (top_k.saturating_mul(MMR_WINDOW_FACTOR)).clamp(top_k, scored.len());
+
+    // Per-candidate state, built once for the window only.
+    struct Cand {
+        idx: usize,
+        rel: f64,
+        sig: Vec<u64>,
+        url_key: String,
+        /// Running max similarity against everything already selected.
+        max_sim: f64,
+        taken: bool,
+    }
+
+    let mut pool: Vec<Cand> = scored[..window]
         .iter()
-        .map(|c| tokenize_filtered(&c.text).into_iter().collect())
+        .map(|&(idx, rel)| Cand {
+            idx,
+            rel: rel / max_score,
+            sig: token_signature(tokenized.get(idx).map(|v| v.as_slice()).unwrap_or(&[])),
+            url_key: crate::url_utils::canonical_key(&candidates[idx].url),
+            max_sim: 0.0,
+            taken: false,
+        })
         .collect();
 
     let mut selected: Vec<usize> = Vec::with_capacity(top_k);
-    let mut remaining: Vec<(usize, f64)> = scored.to_vec();
     let mut url_counts: HashMap<String, usize> = HashMap::new();
 
-    while selected.len() < top_k && !remaining.is_empty() {
-        let mut best_mmr = f64::MIN;
-        let mut best_pos = 0;
+    while selected.len() < top_k {
+        let mut best: Option<(usize, f64)> = None; // (pool position, mmr)
+        let mut any_eligible = false;
 
-        for (pos, &(cand_idx, rel_score)) in remaining.iter().enumerate() {
-            // Hard cap: max chunks per URL
-            let norm_url = crate::url_utils::canonical_key(&candidates[cand_idx].url);
-            let url_count = url_counts.get(&norm_url).copied().unwrap_or(0);
-            if url_count >= MAX_CHUNKS_PER_URL_IN_TOP_K {
+        for (pos, c) in pool.iter().enumerate() {
+            if c.taken {
                 continue;
             }
-
-            let normalized_rel = rel_score / max_score;
-
-            // Max similarity to any already-selected chunk
-            let max_sim = if selected.is_empty() {
-                0.0
-            } else {
-                selected
-                    .iter()
-                    .map(|&sel_idx| jaccard_similarity(&candidate_tokens[cand_idx], &candidate_tokens[sel_idx]))
-                    .fold(0.0_f64, f64::max)
-            };
-
-            // MMR formula: λ * relevance - (1-λ) * max_similarity
-            let mmr_score = MMR_LAMBDA * normalized_rel - (1.0 - MMR_LAMBDA) * max_sim;
-
-            if mmr_score > best_mmr {
-                best_mmr = mmr_score;
-                best_pos = pos;
+            // Hard per-URL cap.
+            if url_counts.get(&c.url_key).copied().unwrap_or(0) >= MAX_CHUNKS_PER_URL_IN_TOP_K {
+                continue;
+            }
+            any_eligible = true;
+            let mmr = MMR_LAMBDA * c.rel - (1.0 - MMR_LAMBDA) * c.max_sim;
+            if best.is_none_or(|(_, b)| mmr > b) {
+                best = Some((pos, mmr));
             }
         }
 
-        let (cand_idx, _) = remaining.remove(best_pos);
-        let norm_url = crate::url_utils::canonical_key(&candidates[cand_idx].url);
-        *url_counts.entry(norm_url).or_insert(0) += 1;
-        selected.push(cand_idx);
+        // v7.0 BUG: when every remaining candidate was URL-capped, the inner
+        // loop `continue`d for all of them, `best_mmr` stayed f64::MIN and
+        // `best_pos` stayed 0 — so it selected remaining[0] ANYWAY, violating
+        // the cap it had just enforced. Now we stop.
+        let Some((pos, _)) = best else {
+            if !any_eligible {
+                break;
+            }
+            break;
+        };
+
+        pool[pos].taken = true;
+        let chosen_idx = pool[pos].idx;
+        *url_counts.entry(pool[pos].url_key.clone()).or_insert(0) += 1;
+        selected.push(chosen_idx);
+
+        // ── Incremental max_sim update: compare against the NEW pick only ──
+        let (left, right) = pool.split_at_mut(pos);
+        let (chosen, right) = right.split_first_mut().expect("pos is in range");
+        for c in left.iter_mut().chain(right.iter_mut()) {
+            if c.taken {
+                continue;
+            }
+            let sim = jaccard_sorted(&c.sig, &chosen.sig);
+            if sim > c.max_sim {
+                c.max_sim = sim;
+            }
+        }
     }
 
     selected
 }
 
-/// Jaccard similarity between two token sets: |A ∩ B| / |A ∪ B|
-fn jaccard_similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
-    if a.is_empty() && b.is_empty() {
-        return 1.0;
-    }
-    let intersection = a.intersection(b).count() as f64;
-    let union = a.union(b).count() as f64;
-    if union == 0.0 { 0.0 } else { intersection / union }
-}
 
 // =============================================================================
 // Chunking — Sentence-boundary-aware with overlap

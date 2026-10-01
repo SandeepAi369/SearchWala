@@ -2170,3 +2170,46 @@ parallelism.
   flagged (P1-7) is now the dominant CPU cost. This is Phase 4's first job.
 - `MAX_CONTEXT_CHARS_LITE` is still 16,000, so the LLM sees ~16 KB of the
   374k–680k now extracted. Phase 5 (P1-10) raises it.
+
+---
+
+## Phase 4 — COMPLETE (P0-11, P1-3, P1-6, P1-7; P1-8 was done in Phase 2)
+
+Status: **gate PASSED.** 138 unit tests, zero warnings.
+
+This phase was about a single theme: the pipeline computed good signals and
+then discarded them.
+
+### Delivered
+| Item | Change |
+|---|---|
+| P1-3 | **Sources are selected by RRF consensus, not arrival order.** v7.0 scored every URL and then handed `deduplicate` the raw arrival-order list, so the scrape set was whichever engine finished first. `search_results` (what the UI renders) now comes from the same ranked set. |
+| P1-7 | MMR rewritten: tokenize once, u64 signatures merged as sorted slices, a `top_k × 5` candidate window, and **incremental `max_sim`** so the inner `|selected|` loop disappears. Also fixed the cap-escape bug where an all-capped round still selected `remaining[0]`. |
+| P0-11 | `build_ranked_context` returns a `citation_map`. `[n]` now resolves through it instead of against the unreordered slice. |
+| P1-6 | `build_ranked_context` **no longer re-ranks** — it packs only. It also truncates an oversized source instead of `break`-ing out of context assembly. |
+| P1-10 | `ContextBudget::for_model` replaces the fixed `MAX_CONTEXT_CHARS_LITE = 16_000`; `max_tokens` and `temperature` added to request bodies (both absent for OpenAI-compatible in v7.0, and Anthropic was pinned at a truncating 4096). Publication dates are now written INTO the context. |
+| — | `verify_citations` reimplemented to return `Vec<CitationCheck>`. v7.0's body ended with the unmodified input, so despite its doc comment it only wrote log lines. `llm::summarize_direct` (dead) removed. |
+
+### Measured: Phase 3 → Phase 4 (live)
+
+| Metric | before | **after** |
+|---|---|---|
+| Rank stage, 88 sources | 3,011 ms | **93 ms** (32× faster) |
+| Rank stage, 35 sources | ~690 ms | **24 ms** |
+| Source selection | arrival order | **126 candidates → top 40 by RRF** |
+| Sources found by >1 independent family | not computed | **21 of 40** |
+| Engines represented in the UI list | **1** (all `bing_news`) | **10** |
+| UI list ordering | arrival order | **RRF-monotonic** |
+| Top English result | first to arrive | found by **3 families** (wikipedia + bing + brave) |
+| LLM context cap | 16,000 chars fixed | **model-scaled** (24k–400k tokens) |
+| Anthropic `max_tokens` | 4,096 (truncating) | model-scaled, ≥8,192 |
+
+The Hindi top result is now `भारत-पाकिस्तान के बीच मुकाबला तय...`, found by two
+independent families — i.e. exactly the Amar Ujala-class content the audit
+started from, ranked first on consensus rather than luck.
+
+### Test-fixture bugs of my own, fixed
+Two `verify_citations` tests failed initially because my fixture sources were
+under `build_ranked_context`'s 80-character minimum and were correctly skipped.
+The minimum is right — a sub-80-char "source" is not evidence — so the fixtures
+were lengthened rather than the threshold lowered.
