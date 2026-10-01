@@ -70,8 +70,8 @@ fn parse_brave_html(html: &str) -> Vec<RawSearchResult> {
     let mut results = Vec::new();
 
     // Primary selector
-    let result_selector = Selector::parse("#results .snippet").unwrap();
-    let title_link_selector = Selector::parse(".snippet-title a, .result-header a, .heading-serpresult a").unwrap();
+    let result_selector = Selector::parse("#results .snippet, div[data-type=\"web\"] .snippet").unwrap();
+    let title_link_selector = Selector::parse("a.snippet-title, .snippet-title a, .result-header a, .heading-serpresult a, a.heading-serpresult").unwrap();
     let desc_selector = Selector::parse(".snippet-description, .snippet-content, .result-snippet").unwrap();
 
     for element in document.select(&result_selector) {

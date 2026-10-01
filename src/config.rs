@@ -91,13 +91,31 @@ pub fn proxy_cooldown_secs() -> u64 {
         .unwrap_or(120)
 }
 
+/// Random jitter with optional Poisson-like distribution for human realism.
+/// Uniform random between lo..=hi, then applies a bias toward shorter delays
+/// (most human actions are fast with occasional pauses).
 pub fn random_jitter_ms(min_ms: u64, max_ms: u64) -> u64 {
     let lo = min_ms.min(max_ms);
     let hi = min_ms.max(max_ms);
     if lo == hi {
         return lo;
     }
-    rand::rng().random_range(lo..=hi)
+    // Generate two random values and take the minimum for a right-skewed distribution
+    // This mimics human behavior: mostly quick, occasionally slow
+    let mut rng = rand::rng();
+    let a: u64 = rng.random_range(lo..=hi);
+    let b: u64 = rng.random_range(lo..=hi);
+    a.min(b) // right-skewed: bias toward faster actions
+}
+
+/// Session-aware jitter: increases delay slightly with each consecutive request
+/// to mimic human fatigue / reading patterns. Resets each search session.
+pub fn session_jitter_ms(base_min: u64, base_max: u64, request_index: usize) -> u64 {
+    // Add ~5% extra delay per request in the session (caps at 3x)
+    let fatigue_factor = 1.0 + (request_index as f64 * 0.05).min(2.0);
+    let adjusted_min = (base_min as f64 * fatigue_factor) as u64;
+    let adjusted_max = (base_max as f64 * fatigue_factor) as u64;
+    random_jitter_ms(adjusted_min, adjusted_max)
 }
 
 // =============================================================================
@@ -334,11 +352,35 @@ pub fn random_user_agent() -> &'static str {
     random_browser_headers().user_agent
 }
 
+
+/// Context for Sec-Fetch headers — WAFs validate consistency between these
+#[derive(Clone, Copy, Debug)]
+pub enum RequestContext {
+    /// Direct navigation (typing URL / clicking search result)
+    /// Sec-Fetch-Site: none, Sec-Fetch-Mode: navigate, Sec-Fetch-User: ?1
+    Navigation,
+    /// Cross-site navigation (following a link from another site)
+    /// Sec-Fetch-Site: cross-site, Sec-Fetch-Mode: navigate, Sec-Fetch-User: ?1
+    CrossSite,
+    /// Same-site follow-up (pagination, AJAX within same domain)
+    /// Sec-Fetch-Site: same-origin, Sec-Fetch-Mode: navigate
+    SameOrigin,
+}
+
 /// Apply a full suite of browser-realistic headers to any request.
 /// Includes Sec-Fetch-* headers that modern WAFs check for consistency.
 pub fn apply_browser_headers(
     builder: reqwest::RequestBuilder,
     target_url: &str,
+) -> reqwest::RequestBuilder {
+    apply_browser_headers_ctx(builder, target_url, RequestContext::Navigation)
+}
+
+/// Apply headers with explicit Sec-Fetch context
+pub fn apply_browser_headers_ctx(
+    builder: reqwest::RequestBuilder,
+    target_url: &str,
+    ctx: RequestContext,
 ) -> reqwest::RequestBuilder {
     let headers = random_browser_headers();
 
@@ -348,20 +390,29 @@ pub fn apply_browser_headers(
         .and_then(|u| u.host_str().map(|h| format!("https://{}/", h)))
         .unwrap_or_else(|| headers.referer.to_string());
 
+    // Context-aware Sec-Fetch headers (WAFs validate consistency)
+    let (fetch_site, fetch_mode, fetch_user) = match ctx {
+        RequestContext::Navigation => ("none", "navigate", true),
+        RequestContext::CrossSite => ("cross-site", "navigate", true),
+        RequestContext::SameOrigin => ("same-origin", "navigate", false),
+    };
+
     let mut req = builder
         .header("User-Agent", headers.user_agent)
         .header("Accept-Language", headers.accept_language)
         .header("Referer", dynamic_referer)
-        // ── Modern Sec-Fetch headers (required by WAFs) ──
-        .header("Sec-Fetch-Site", "none")
-        .header("Sec-Fetch-Mode", "navigate")
         .header("Sec-Fetch-Dest", "document")
-        .header("Sec-Fetch-User", "?1")
+        .header("Sec-Fetch-Site", fetch_site)
+        .header("Sec-Fetch-Mode", fetch_mode)
         // ── Additional browser signals ──
         .header("DNT", "1")
         .header("Upgrade-Insecure-Requests", "1")
         .header("Cache-Control", "max-age=0")
         .header("Priority", "u=0, i");
+
+    if fetch_user {
+        req = req.header("Sec-Fetch-User", "?1");
+    }
 
     // Chrome/Edge send client hints; Firefox/Safari do not
     if !headers.sec_ch_ua.is_empty() {
