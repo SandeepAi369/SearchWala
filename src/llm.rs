@@ -1587,7 +1587,6 @@ pub fn verify_citations(answer: &str, sources: &[SourceResult]) -> String {
     while i < chars.len() {
         if chars[i].1 == '[' {
             let bracket_byte_start = chars[i].0; // byte offset of '['
-            let start_ci = i;
             i += 1;
             let mut num_str = String::new();
             while i < chars.len() && chars[i].1.is_ascii_digit() {

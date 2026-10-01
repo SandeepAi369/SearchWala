@@ -77,8 +77,12 @@ pub struct RawSearchResult {
     pub title: String,
     pub snippet: String,
     pub engine: String,
-    /// Position in this engine's result list (1-based). Used by RRF ranking.
+    /// Position in this engine's result list (1-based), **global across pages**.
+    /// v7.0 reset this to 1 on every page, which destroyed the rank signal RRF
+    /// depends on: a result at true position 21 scored like position 1.
     pub rank_position: usize,
+    /// Publication date when the engine reports one (news verticals do).
+    pub published: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 // --- Health -----------------------------------------------------------------

@@ -1,15 +1,36 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Yahoo Search Engine — Multi-page HTML scraping
+// Yahoo Search — HTML scraping (Bing-derived index)
+//
+// v8.0: requires TLS impersonation (plain reqwest got connection failures,
+// measured 2026-10-01). Status checked before parsing; rank_position global
+// across pages; pages reduced 5 -> 3.
+//
+// NOTE for ranking: Yahoo is Bing-derived, so `engines::engine_family` maps it
+// to the "bing" family. v7.0 counted `yahoo` and `yahoo_news` as two
+// independent engines (the live run logged "yahoo: 28" twice) AND treated them
+// as independent of Bing, triple-counting one index in RRF "consensus".
 // ══════════════════════════════════════════════════════════════════════════════
 
-use crate::models::RawSearchResult;
-use reqwest::Client;
-use scraper::{Html, Selector};
 use std::collections::HashSet;
+use std::sync::LazyLock;
+
+use scraper::{Html, Selector};
+
+use crate::fetcher::Fetcher;
+use crate::models::RawSearchResult;
 
 pub struct Yahoo;
 
-const PAGES: usize = 5;
+const PAGES: usize = 3;
+
+static SEL_RESULT: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(".algo-sr, .dd.algo, li.ov-a").unwrap());
+static SEL_TITLE: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse("h3.title a, h3 a, .compTitle a, .title a, a.d-ib").unwrap()
+});
+static SEL_DESC: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse(".compText p, .compText, .fc-falcon, .lh-l, div.compText p").unwrap()
+});
 
 #[async_trait::async_trait]
 impl super::SearchEngine for Yahoo {
@@ -17,41 +38,50 @@ impl super::SearchEngine for Yahoo {
         "yahoo"
     }
 
-    async fn search(&self, client: &Client, query: &str) -> Vec<RawSearchResult> {
+    fn needs_stealth(&self) -> bool {
+        true
+    }
+
+    async fn search(&self, f: &Fetcher, query: &str) -> Vec<RawSearchResult> {
         let mut all_results = Vec::new();
         let mut seen_urls: HashSet<String> = HashSet::new();
+        let mut rank_base = 0usize;
 
         for page in 0..PAGES {
-            let start = page * 10 + 1; // Yahoo uses 1-based b= param
             let url = format!(
                 "https://search.yahoo.com/search?p={}&n=20&b={}",
                 urlencoding::encode(query),
-                start
+                page * 10 + 1
             );
 
-            let req = crate::config::apply_browser_headers(client
-                .get(&url), &url);
-            let resp = match req
-                .header("Accept", "text/html,application/xhtml+xml")
-                .send()
-                .await
-            {
+            super::health::record_attempt("yahoo");
+            let resp = match f.get(&url, &[]).await {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::debug!("Yahoo page {} request failed: {}", page, e);
+                    tracing::debug!("Yahoo page {} transport error: {}", page, e);
+                    super::health::record_transport_err("yahoo");
                     break;
                 }
             };
-
-            let html_text = match resp.text().await {
-                Ok(t) => t,
-                Err(_) => break,
-            };
-
-            let page_results = parse_yahoo_html(&html_text);
-            if page_results.is_empty() {
+            if resp.status != 200 {
+                tracing::warn!("Yahoo: HTTP {} — not parsing", resp.status);
+                super::health::record_block("yahoo", resp.status);
                 break;
             }
+            if super::health::looks_like_challenge(&resp.body) {
+                super::health::record_block("yahoo", 0);
+                break;
+            }
+
+            let page_results = parse_yahoo_html(&resp.body, rank_base);
+            super::health::record_parsed("yahoo", page_results.len());
+            if page_results.is_empty() {
+                if page == 0 {
+                    super::health::dump_zero_result_body("yahoo", &url, &resp.body);
+                }
+                break;
+            }
+            rank_base += page_results.len();
 
             for r in page_results {
                 if seen_urls.insert(r.url.clone()) {
@@ -60,42 +90,29 @@ impl super::SearchEngine for Yahoo {
             }
         }
 
-        tracing::info!("Yahoo total: {} results", all_results.len());
+        tracing::info!("Yahoo [{}]: {} results", f.kind(), all_results.len());
         all_results
     }
 }
 
-fn parse_yahoo_html(html: &str) -> Vec<RawSearchResult> {
+pub fn parse_yahoo_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
     let document = Html::parse_document(html);
     let mut results = Vec::new();
 
-    let result_selector = Selector::parse(".algo-sr, .dd.algo, li.ov-a").unwrap();
-    let title_selector = Selector::parse("h3.title a, h3 a, .compTitle a, .title a, a.d-ib").unwrap();
-    let desc_selector = Selector::parse(".compText p, .compText, .fc-falcon, .lh-l, div.compText p").unwrap();
+    for element in document.select(&SEL_RESULT) {
+        let Some(link) = element.select(&SEL_TITLE).next() else { continue };
+        let Some(href) = link.value().attr("href") else { continue };
 
-    for element in document.select(&result_selector) {
-        let link = match element.select(&title_selector).next() {
-            Some(a) => a,
-            None => continue,
-        };
-
-        let href = match link.value().attr("href") {
-            Some(h) => h.to_string(),
-            None => continue,
-        };
-
-        let actual_url = extract_yahoo_url(&href);
+        let actual_url = extract_yahoo_url(href);
         if actual_url.is_empty() {
             continue;
         }
-
         let title = link.text().collect::<String>().trim().to_string();
         if title.is_empty() {
             continue;
         }
-
         let snippet = element
-            .select(&desc_selector)
+            .select(&SEL_DESC)
             .next()
             .map(|s| s.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
@@ -105,33 +122,63 @@ fn parse_yahoo_html(html: &str) -> Vec<RawSearchResult> {
             title,
             snippet,
             engine: "yahoo".to_string(),
-            rank_position: results.len() + 1,
+            rank_position: rank_base + results.len() + 1,
+            published: None,
         });
     }
 
     results
 }
 
-fn extract_yahoo_url(href: &str) -> String {
+/// Yahoo wraps targets as `.../RU=<percent-encoded>/RK=...`.
+pub fn extract_yahoo_url(href: &str) -> String {
     if let Some(pos) = href.find("RU=") {
         let start = pos + 3;
         let end = href[start..].find('/').map(|e| start + e).unwrap_or(href.len());
-        let encoded = &href[start..end];
-        if let Ok(decoded) = urlencoding::decode(encoded) {
-            return decoded.to_string();
+        if let Ok(decoded) = urlencoding::decode(&href[start..end]) {
+            if decoded.starts_with("http") {
+                return decoded.to_string();
+            }
         }
     }
-
     if let Some(pos) = href.rfind("/*http") {
-        let url = &href[pos + 2..];
-        return url.to_string();
+        // Byte-safe: "/*http" is pure ASCII so pos+2 is a valid boundary.
+        return href[pos + 2..].to_string();
     }
-
-    if href.starts_with("http://") || href.starts_with("https://") {
-        if !href.contains("yahoo.com") {
-            return href.to_string();
-        }
+    if (href.starts_with("http://") || href.starts_with("https://")) && !href.contains("yahoo.com") {
+        return href.to_string();
     }
-
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unwraps_ru_redirect() {
+        let href = "https://r.search.yahoo.com/_ylt=abc/RU=https%3a%2f%2fexample.com%2fpage/RK=2/RS=xyz";
+        assert_eq!(extract_yahoo_url(href), "https://example.com/page");
+    }
+
+    #[test]
+    fn passes_through_direct_external_links() {
+        assert_eq!(extract_yahoo_url("https://example.com/x"), "https://example.com/x");
+        assert_eq!(extract_yahoo_url("https://www.yahoo.com/news"), "");
+        assert_eq!(extract_yahoo_url("/relative"), "");
+    }
+
+    #[test]
+    fn parses_results_with_global_rank() {
+        let html = r#"<html><body>
+          <div class="algo-sr"><h3 class="title"><a href="https://a.test/1">Yahoo Result One</a></h3>
+            <div class="compText"><p>Snippet one</p></div></div>
+          <div class="algo-sr"><h3 class="title"><a href="https://b.test/2">Yahoo Result Two</a></h3>
+            <div class="compText"><p>Snippet two</p></div></div>
+        </body></html>"#;
+        let r = parse_yahoo_html(html, 0);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].rank_position, 1);
+        assert_eq!(parse_yahoo_html(html, 20)[0].rank_position, 21);
+    }
 }
