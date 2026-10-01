@@ -164,6 +164,11 @@ pub async fn execute_search(
 
     let engine_instances = engines::get_engines(&engine_list);
     let base_search_client = build_search_client(None);
+    let stealth_client = build_stealth_search_client(None);
+    let stealth_engine_set: std::collections::HashSet<String> = config::stealth_engines()
+        .into_iter().collect();
+    let stealth_mode = config::stealth_mode();
+    tracing::info!("Stealth mode: {} ({} engines configured)", stealth_mode, stealth_engine_set.len());
     let proxy_pool = ProxyPoolManager::from_env();
     if proxy_pool.has_proxies() {
         tracing::info!("Proxy pool loaded with {} entries", proxy_pool.len());
@@ -179,6 +184,7 @@ pub async fn execute_search(
     // ── Single-phase: ALL engines fire simultaneously ──
     let results = dispatch_engines(
         &engine_instances, &query_variations, &base_search_client,
+        &stealth_client, &stealth_engine_set, &stealth_mode,
         &proxy_pool, &engine_semaphore, jitter_min, jitter_max,
         engine_concurrency,
     ).await;
@@ -472,6 +478,9 @@ async fn dispatch_engines(
     engine_instances: &[Box<dyn engines::SearchEngine>],
     query_variations: &[String],
     base_client: &reqwest::Client,
+    _stealth_client: &wreq::Client,
+    stealth_engine_set: &std::collections::HashSet<String>,
+    stealth_mode: &str,
     proxy_pool: &ProxyPoolManager,
     engine_semaphore: &Arc<Semaphore>,
     jitter_min: u64,
@@ -493,6 +502,8 @@ async fn dispatch_engines(
             let proxy_hint = proxy_pool.next_proxy();
             let pool = proxy_pool.clone();
             let sem = engine_semaphore.clone();
+            let stealth_set = stealth_engine_set.clone();
+            let stealth_mode_val = stealth_mode.to_string();
             let extra_spread = (dispatch_index % engine_concurrency as u64) * 15;
             dispatch_index += 1;
 
@@ -507,12 +518,20 @@ async fn dispatch_engines(
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
 
+                let is_stealth = stealth_mode_val != "off"
+                    && (stealth_mode_val == "on" || stealth_set.contains(&ename));
+
                 let client = if let Some(proxy) = proxy_hint.as_deref() {
-                    tracing::debug!("Engine {} using proxy hint {}", ename, proxy);
+                    tracing::debug!("Engine {} using proxy hint {}{}", ename, proxy,
+                        if is_stealth { " [stealth]" } else { "" });
                     build_search_client(Some(proxy))
                 } else {
                     base_client
                 };
+
+                if is_stealth {
+                    tracing::debug!("Engine {} → stealth mode (Chrome TLS impersonation)", ename);
+                }
 
                 // Recreate engine from name inside spawn (all engines are zero-size unit structs)
                 let engine_vec = engines::get_engines(&[ename.clone()]);

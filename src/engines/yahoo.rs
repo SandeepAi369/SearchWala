@@ -70,8 +70,8 @@ fn parse_yahoo_html(html: &str) -> Vec<RawSearchResult> {
     let mut results = Vec::new();
 
     let result_selector = Selector::parse(".algo-sr, .dd.algo, li.ov-a").unwrap();
-    let title_selector = Selector::parse("h3 a, .compTitle a, .title a").unwrap();
-    let desc_selector = Selector::parse(".compText p, .fc-falcon, .lh-l").unwrap();
+    let title_selector = Selector::parse("h3.title a, h3 a, .compTitle a, .title a, a.d-ib").unwrap();
+    let desc_selector = Selector::parse(".compText p, .compText, .fc-falcon, .lh-l, div.compText p").unwrap();
 
     for element in document.select(&result_selector) {
         let link = match element.select(&title_selector).next() {
