@@ -125,8 +125,19 @@ pub async fn execute_search(
         }
     }
 
-    // Single query — no snowballing. User's query is sacred.
-    let query_variations = vec![effective_query.clone()];
+    // v7.0: Multi-query decomposition — expand query into targeted sub-queries
+    let query_variations = if query_intel::multi_query_enabled() && !is_fast_mode {
+        let intel = query_intel::analyze_query(&effective_query);
+        let sub_queries = query_intel::decompose_query(&effective_query, &intel);
+        tracing::info!(
+            "Multi-query: decomposed into {} sub-queries: {:?}",
+            sub_queries.len(),
+            sub_queries.iter().map(|q| &q[..q.len().min(50)]).collect::<Vec<_>>()
+        );
+        sub_queries
+    } else {
+        vec![effective_query.clone()]
+    };
 
     let jitter_min = config::jitter_min_ms();
     let jitter_max = config::jitter_max_ms();

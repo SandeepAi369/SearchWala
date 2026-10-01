@@ -583,3 +583,54 @@ fn tokenize(text: &str) -> Vec<String> {
         })
         .collect()
 }
+
+
+// =============================================================================
+// v7.0: Cross-Query Result Fusion
+// Merges results from multiple sub-queries using weighted RRF.
+// URLs that appear across MULTIPLE sub-queries get boosted scores,
+// producing more robust, cross-validated results.
+// =============================================================================
+
+
+/// Merges results from multiple sub-queries using enhanced RRF.
+/// The original query's results get 2x weight; sub-queries get 1x.
+pub fn cross_query_fusion(
+    query_results: &[(String, Vec<RawSearchResult>)],
+    original_query: &str,
+) -> Vec<RawSearchResult> {
+    let mut url_scores: HashMap<String, f64> = HashMap::new();
+    let mut url_results: HashMap<String, RawSearchResult> = HashMap::new();
+    let mut url_query_count: HashMap<String, usize> = HashMap::new();
+
+    for (sub_query, results) in query_results {
+        // Original query gets 2x weight, sub-queries get 1x
+        let weight = if sub_query == original_query { 2.0 } else { 1.0 };
+
+        for (rank, result) in results.iter().enumerate() {
+            let rrf_score = weight / (60.0 + rank as f64 + 1.0);
+            *url_scores.entry(result.url.clone()).or_insert(0.0) += rrf_score;
+            *url_query_count.entry(result.url.clone()).or_insert(0) += 1;
+            url_results.entry(result.url.clone()).or_insert_with(|| result.clone());
+        }
+    }
+
+    // Bonus: URLs appearing in multiple sub-queries get a cross-validation boost
+    let num_queries = query_results.len().max(1) as f64;
+    for (url, count) in &url_query_count {
+        if *count > 1 {
+            let cross_boost = (*count as f64 / num_queries) * 0.02;
+            if let Some(score) = url_scores.get_mut(url) {
+                *score += cross_boost;
+            }
+        }
+    }
+
+    // Sort by fused score (descending)
+    let mut fused: Vec<(String, f64)> = url_scores.into_iter().collect();
+    fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    fused.into_iter()
+        .filter_map(|(url, _)| url_results.remove(&url))
+        .collect()
+}
