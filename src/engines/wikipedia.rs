@@ -26,14 +26,19 @@ use crate::models::RawSearchResult;
 pub struct Wikipedia;
 
 fn languages() -> Vec<String> {
-    std::env::var("WIKIPEDIA_LANGS")
-        .unwrap_or_else(|_| "en".to_string())
+    parse_languages(&std::env::var("WIKIPEDIA_LANGS").unwrap_or_else(|_| "en".to_string()))
+}
+
+/// Testable core — avoids process-global env mutation in tests.
+fn parse_languages(raw: &str) -> Vec<String> {
+    let out: Vec<String> = raw
         .split(',')
         .map(|s| s.trim().to_lowercase())
         // Guard against injection into the hostname.
         .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
         .take(4)
-        .collect()
+        .collect();
+    if out.is_empty() { vec!["en".to_string()] } else { out }
 }
 
 /// Strip the `<span class="searchmatch">` highlighting Wikipedia wraps around
@@ -145,18 +150,26 @@ mod tests {
     #[test]
     fn language_list_rejects_injection() {
         // Only alphanumeric + '-' survive, so a crafted value cannot escape
-        // into the hostname.
-        std::env::set_var("WIKIPEDIA_LANGS", "en,hi,../../evil,bad host,xx");
-        let langs = languages();
-        std::env::remove_var("WIKIPEDIA_LANGS");
+        // into the hostname we format into the request URL.
+        let langs = parse_languages("en,hi,../../evil,bad host,xx");
         assert!(langs.contains(&"en".to_string()));
         assert!(langs.contains(&"hi".to_string()));
-        assert!(!langs.iter().any(|l| l.contains('/') || l.contains(' ')));
+        assert!(
+            !langs.iter().any(|l| l.contains('/') || l.contains(' ') || l.contains('.')),
+            "unsafe language code survived: {langs:?}"
+        );
     }
 
     #[test]
     fn default_language_is_en() {
-        std::env::remove_var("WIKIPEDIA_LANGS");
-        assert_eq!(languages(), vec!["en".to_string()]);
+        assert_eq!(parse_languages("en"), vec!["en".to_string()]);
+        assert_eq!(parse_languages(""), vec!["en".to_string()]);
+        assert_eq!(parse_languages(",,,"), vec!["en".to_string()]);
+    }
+
+    #[test]
+    fn language_fanout_is_capped() {
+        let langs = parse_languages("en,hi,fr,de,es,it,ja");
+        assert!(langs.len() <= 4, "fan-out must be capped: {langs:?}");
     }
 }

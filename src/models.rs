@@ -6,13 +6,30 @@ use serde::{Deserialize, Serialize};
 
 // --- Request ----------------------------------------------------------------
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub struct LlmConfig {
     pub provider: String,
     pub api_key: String,
     pub model: String,
     pub base_url: Option<String>,
     pub timeout_ms: Option<u64>,
+}
+
+/// Hand-written so a stray `{:?}` cannot write the user's API key to the log.
+///
+/// v7.0 derived `Debug` on a struct holding a plaintext BYOK key. One
+/// `tracing::debug!("{:?}", cfg)` anywhere — now or in future — would have
+/// leaked it.
+impl std::fmt::Debug for LlmConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmConfig")
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("api_key", &"<redacted>")
+            .field("timeout_ms", &self.timeout_ms)
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize)]

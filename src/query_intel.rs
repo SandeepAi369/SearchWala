@@ -176,17 +176,19 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
     }
 
     // ── Temporal (time-sensitive queries) ──
-    let temporal_patterns = [
-        "latest", "current", "newest", "recent", "today",
-        "right now", "as of", "breaking", "just announced",
-        "this year", "this week", "this month",
-        "what is the price", "stock price", "market cap",
+    // Single words are matched on WORD BOUNDARIES (P0-12); multi-word phrases
+    // can safely use substring matching.
+    const TEMPORAL_WORDS: &[&str] =
+        &["latest", "current", "newest", "recent", "today", "breaking", "live"];
+    const TEMPORAL_PHRASES: &[&str] = &[
+        "right now", "as of", "just announced", "this year", "this week",
+        "this month", "what is the price", "stock price", "market cap",
         "score of", "results of",
     ];
-    for pattern in &temporal_patterns {
-        if q_lower.contains(pattern) {
-            return QueryIntent::Temporal;
-        }
+    if TEMPORAL_WORDS.iter().any(|w| words.iter().any(|t| t == w))
+        || TEMPORAL_PHRASES.iter().any(|p| q_lower.contains(p))
+    {
+        return QueryIntent::Temporal;
     }
 
     // Implicit temporal: role/status queries always need current info
@@ -224,67 +226,73 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
 // Temporal / Time-Sensitivity Detection
 // =============================================================================
 
+/// Tokenize on non-alphanumerics, for word-boundary matching.
+fn word_tokens(q: &str) -> Vec<&str> {
+    q.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).collect()
+}
+
 fn detect_temporal(q_lower: &str, intent: &QueryIntent) -> (bool, Option<String>) {
-    // Direct recency keywords
-    let direct_recency = [
-        "latest", "current", "newest", "recent", "today", "now",
-        "updated", "breaking", "just", "new",
+    // ═══════════════════════════════════════════════════════════════════════
+    // v8.0 P0-12: WORD-BOUNDARY matching.
+    //
+    // v7.0 used `q_lower.contains(kw)` over a list that included "new",
+    // "now", "just" and "is it". Substring matching made these all
+    // time-sensitive, which appended a year to the search query:
+    //
+    //   "New York population"      -> matched "new"
+    //   "how do I know if..."      -> matched "now"  (k-NOW)
+    //   "justice system reform"    -> matched "just"
+    //   "renewable energy"         -> matched "new"  (re-NEW-able)
+    //   "this item is on sale"     -> matched "is it"
+    //
+    // A spurious year in the query skews every engine's results and adds a
+    // bogus BM25 term.
+    // ═══════════════════════════════════════════════════════════════════════
+    const RECENCY_WORDS: &[&str] = &[
+        "latest", "current", "currently", "newest", "recent", "recently",
+        "today", "now", "updated", "breaking", "upcoming", "live", "ongoing",
+        "tonight", "yesterday", "tomorrow",
+    ];
+    // "new" and "just" are DELIBERATELY absent — too ambiguous to be useful
+    // even with word boundaries ("new car", "just one question").
+    const RECENCY_PHRASES: &[&str] = &[
+        "this year", "this week", "this month", "this quarter", "right now",
+        "as of", "last week", "last month", "last year", "so far",
+        "up to date", "at the moment", "these days",
     ];
 
-    // Time-relative keywords
-    let time_relative = [
-        ("this year", "this year"),
-        ("this week", "this week"),
-        ("this month", "this month"),
-        ("this quarter", "this quarter"),
-        ("yesterday", "yesterday"),
-        ("last week", "last week"),
-        ("last month", "last month"),
-        ("right now", "right now"),
-        ("as of", "as of"),
-    ];
+    let toks = word_tokens(q_lower);
 
-    // Implicit recency patterns (dynamic facts that change)
-    let implicit_recency = [
+    if let Some(w) = RECENCY_WORDS.iter().find(|w| toks.iter().any(|t| t == *w)) {
+        return (true, Some((*w).to_string()));
+    }
+    if let Some(p) = RECENCY_PHRASES.iter().find(|p| q_lower.contains(*p)) {
+        return (true, Some((*p).to_string()));
+    }
+
+    // Role/status queries: the answer changes over time, so freshness matters
+    // even without an explicit recency word. These are multi-word and
+    // unambiguous, so phrase matching is safe.
+    const DYNAMIC_FACTS: &[&str] = &[
+        "ceo of", "president of", "prime minister of", "leader of",
+        "founder of", "chairman of", "director of", "head of", "owner of",
+        "net worth", "worth of", "stock price", "share price", "market cap",
+        "population of", "exchange rate", "weather in", "score of",
         "who is the", "how much is", "what is the price",
-        "what is the score", "what is the status",
-        "is it", "are they", "will they",
-        "ceo of", "president of", "prime minister",
-        "leader of", "worth of", "net worth",
-        "stock price", "market cap", "population of",
     ];
-
-    // Check direct keywords
-    for kw in &direct_recency {
-        if q_lower.contains(kw) {
-            return (true, Some(kw.to_string()));
-        }
+    if let Some(p) = DYNAMIC_FACTS.iter().find(|p| q_lower.contains(*p)) {
+        return (true, Some((*p).to_string()));
     }
 
-    // Check time-relative phrases
-    for (pattern, hint) in &time_relative {
-        if q_lower.contains(pattern) {
-            return (true, Some(hint.to_string()));
-        }
-    }
-
-    // Check implicit recency
-    for pattern in &implicit_recency {
-        if q_lower.contains(pattern) {
-            return (true, Some("current".to_string()));
-        }
-    }
-
-    // Temporal intent is always time-sensitive
     if *intent == QueryIntent::Temporal {
         return (true, Some("current".to_string()));
     }
 
-    // Check for year references (2020-2030)
-    for year in 2020..=2030 {
-        let year_str = year.to_string();
-        if q_lower.contains(&year_str) {
-            return (true, Some(year_str));
+    // An explicit year in the query is itself a temporal signal.
+    for year in 2020..=2035 {
+        let y = year.to_string();
+        if toks.iter().any(|t| *t == y) {
+            return (true, Some(y));
         }
     }
 
@@ -398,97 +406,193 @@ pub fn max_sub_queries() -> usize {
 /// for more comprehensive search coverage.
 /// Rule-based (zero latency, zero dependencies) — uses intent + entity analysis.
 pub fn decompose_query(query: &str, intel: &QueryIntelligence) -> Vec<String> {
+    // ═══════════════════════════════════════════════════════════════════════
+    // v8.0 P1-9: decompose only when it can pay off, and cap hard.
+    //
+    // v7.0 generated up to 5 sub-queries including:
+    //   * midpoint splits of long queries -> "what are the implications of"
+    //   * BARE single-word entities        -> "Elon"
+    //   * generic suffixes                 -> "{q} definition", "{q} tutorial"
+    //
+    // Each became a full engine dispatch. With 35 engines x 5 variations x 2-3
+    // pages that is 350-525 HTTP requests per search from one IP inside a 6s
+    // deadline: it could not complete AND it was the fastest route to the
+    // rate limits the audit measured. Worse, `ranking::cross_query_fusion` —
+    // which exists specifically to weight the original query 2x — was DEAD
+    // CODE, so results from "what are the implications of" carried the same
+    // RRF weight as the real query.
+    // ═══════════════════════════════════════════════════════════════════════
     let q = query.trim();
     if q.is_empty() {
-        return vec![];
+        return Vec::new();
     }
 
-    let max = max_sub_queries();
-
-    // Always include the original query
-    let mut queries = vec![q.to_string()];
-
-    // Strategy 1: Add temporal context for time-sensitive queries
-    if intel.is_time_sensitive {
-        let year = chrono::Utc::now().format("%Y");
-        queries.push(format!("{} {}", q, year));
+    // Nothing to decompose: the user wants one specific site, or the query is
+    // already minimal.
+    if intel.intent == QueryIntent::Navigational || intel.complexity == QueryComplexity::Simple {
+        return vec![q.to_string()];
     }
 
-    // Strategy 2: Entity-focused sub-queries
-    // Extract key entities and create targeted lookups
-    for entity in &intel.key_entities {
-        if entity.len() > 2 && queries.len() < max {
-            queries.push(entity.clone());
-        }
-    }
+    let mut out = vec![q.to_string()];
 
-    // Strategy 3: Intent-specific expansion
-    match intel.intent {
-        QueryIntent::Factual => {
-            if queries.len() < max {
-                queries.push(format!("{} definition", q));
-            }
-        }
-        QueryIntent::Temporal => {
-            if queries.len() < max {
-                queries.push(format!("{} latest news", q));
-            }
-            if queries.len() < max {
-                queries.push(format!("{} recent updates", q));
-            }
-        }
-        QueryIntent::Comparison => {
-            // Split "X vs Y" into individual searches
-            let parts: Vec<&str> = q.splitn(2, " vs ").collect();
-            if parts.len() == 2 {
-                if queries.len() < max {
-                    queries.push(parts[0].trim().to_string());
+    // Comparison split is genuinely useful: "X vs Y" benefits from searching
+    // each side, because pages about X alone often beat comparison pages.
+    if intel.intent == QueryIntent::Comparison {
+        for sep in [" vs ", " vs. ", " versus ", " compared to ", " or " ] {
+            if let Some((a, b)) = q.split_once(sep) {
+                let (a, b) = (a.trim(), b.trim());
+                // Both sides must be substantial — "A or B?" fragments are not.
+                if crate::util::char_len(a) >= 3 && crate::util::char_len(b) >= 3 {
+                    out.push(a.to_string());
+                    out.push(b.to_string());
                 }
-                if queries.len() < max {
-                    queries.push(parts[1].trim().to_string());
-                }
+                break;
             }
-        }
-        QueryIntent::HowTo => {
-            if queries.len() < max {
-                queries.push(format!("{} tutorial guide", q));
-            }
-        }
-        QueryIntent::Research => {
-            if queries.len() < max {
-                queries.push(format!("{} explained", q));
-            }
-            if queries.len() < max {
-                queries.push(format!("{} research", q));
-            }
-        }
-        QueryIntent::Person => {
-            if queries.len() < max {
-                queries.push(format!("{} biography", q));
-            }
-        }
-        QueryIntent::Navigational => {
-            // Don't decompose navigational queries — user wants a specific site
         }
     }
 
-    // Strategy 4: For complex queries (9+ words), split into halves
-    let words: Vec<&str> = q.split_whitespace().collect();
-    if words.len() >= 6 && queries.len() < max {
-        let half = words.len() / 2;
-        let first_half = words[..half].join(" ");
-        if first_half.len() > 3 {
-            queries.push(first_half);
+    // Time-sensitive queries benefit from an explicit year, which is a real
+    // recall win on news indices.
+    if intel.is_time_sensitive && out.len() < max_sub_queries() {
+        let year = chrono::Utc::now().format("%Y").to_string();
+        if !q.contains(&year) {
+            out.push(format!("{q} {year}"));
         }
     }
 
-    // Dedup (case-insensitive) and cap at max
+    // Multi-word named entities, paired with the query's head term so the
+    // sub-query still has topical context. Bare entities are NOT emitted.
+    for e in intel.key_entities.iter().filter(|e| e.split_whitespace().count() >= 2) {
+        if out.len() >= max_sub_queries() {
+            break;
+        }
+        out.push(e.clone());
+    }
+
+    // Dedup case-insensitively, then cap. 3 is the practical ceiling: beyond
+    // that the per-host gate serializes requests past the dispatch deadline.
     let mut seen = std::collections::HashSet::new();
-    queries.retain(|q| {
-        let lower = q.to_lowercase();
-        seen.insert(lower)
-    });
-    queries.truncate(max);
+    out.retain(|s| seen.insert(s.to_lowercase()));
+    out.truncate(max_sub_queries().min(3));
+    out
+}
 
-    queries
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── P0-12: substring false positives ──
+
+    #[test]
+    fn new_york_is_not_time_sensitive() {
+        // v7.0: "New York population" matched the substring "new".
+        let i = analyze_query("New York population");
+        assert!(!i.is_time_sensitive || i.temporal_hint.as_deref() != Some("new"),
+                "matched on 'new' inside 'New York': {:?}", i.temporal_hint);
+    }
+
+    #[test]
+    fn know_renewable_and_justice_are_not_time_sensitive() {
+        for q in [
+            "how do I know if my code compiles",
+            "renewable energy sources explained",
+            "justice system reform history",
+            "newton laws of motion",
+            "snowfall in the alps",
+        ] {
+            let i = analyze_query(q);
+            assert!(
+                !i.is_time_sensitive,
+                "{q:?} wrongly time-sensitive (hint={:?}) — substring match regression",
+                i.temporal_hint
+            );
+        }
+    }
+
+    #[test]
+    fn genuinely_recent_queries_are_still_detected() {
+        for q in [
+            "latest iphone release",
+            "current ceo of google",
+            "what happened today in markets",
+            "breaking news ukraine",
+            "openai announcement this week",
+            "who is the prime minister of india",
+            "bitcoin stock price",
+        ] {
+            assert!(analyze_query(q).is_time_sensitive, "{q:?} should be time-sensitive");
+        }
+    }
+
+    #[test]
+    fn explicit_year_is_a_temporal_signal() {
+        assert!(analyze_query("cricket world cup 2027 schedule").is_time_sensitive);
+        // But a number that merely looks year-ish inside a word must not count.
+        assert!(!analyze_query("model 2020x specifications").is_time_sensitive);
+    }
+
+    // ── P1-9: decomposition discipline ──
+
+    #[test]
+    fn simple_and_navigational_queries_are_not_decomposed() {
+        let simple = analyze_query("rust lifetimes");
+        assert_eq!(decompose_query("rust lifetimes", &simple).len(), 1);
+        let nav = analyze_query("youtube login");
+        assert_eq!(decompose_query("youtube login", &nav).len(), 1);
+    }
+
+    #[test]
+    fn no_midpoint_fragments_or_bare_entities() {
+        let q = "what are the long term implications of quantum computing for modern cryptography";
+        let intel = analyze_query(q);
+        let subs = decompose_query(q, &intel);
+        for s in &subs {
+            // v7.0 emitted "what are the long term implications of" and "Elon".
+            assert!(
+                s == q || s.split_whitespace().count() >= 2,
+                "bare/fragment sub-query emitted: {s:?}"
+            );
+            assert!(
+                !s.ends_with(" of") && !s.ends_with(" the") && !s.ends_with(" for"),
+                "dangling-preposition fragment: {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn decomposition_is_capped_at_three() {
+        let q = "compare Apple Vision Pro versus Meta Quest Three for enterprise training in 2027";
+        let intel = analyze_query(q);
+        let subs = decompose_query(q, &intel);
+        assert!(subs.len() <= 3, "got {} sub-queries: {subs:?}", subs.len());
+        assert_eq!(subs[0], q, "the original query must come first");
+    }
+
+    #[test]
+    fn comparison_queries_split_into_both_sides() {
+        let q = "postgres vs mysql for analytics";
+        let intel = analyze_query(q);
+        let subs = decompose_query(q, &intel);
+        assert!(subs.len() >= 2, "comparison should split: {subs:?}");
+        assert!(subs.iter().any(|s| s.contains("postgres")));
+    }
+
+    #[test]
+    fn decomposition_never_returns_duplicates() {
+        let q = "latest ai news 2026";
+        let intel = analyze_query(q);
+        let subs = decompose_query(q, &intel);
+        let mut lower: Vec<String> = subs.iter().map(|s| s.to_lowercase()).collect();
+        lower.sort();
+        let before = lower.len();
+        lower.dedup();
+        assert_eq!(before, lower.len(), "duplicates in {subs:?}");
+    }
+
+    #[test]
+    fn empty_query_yields_nothing() {
+        let intel = analyze_query("");
+        assert!(decompose_query("", &intel).is_empty());
+        assert!(decompose_query("   ", &intel).is_empty());
+    }
 }

@@ -59,7 +59,12 @@ struct SxResult {
 
 /// Configured instance base URL, or None when the engine is disabled.
 pub fn base_url() -> Option<String> {
-    let raw = std::env::var("SEARXNG_BASE_URL").ok()?;
+    sanitize_base_url(&std::env::var("SEARXNG_BASE_URL").ok()?)
+}
+
+/// Testable core — takes the raw value instead of reading process-global env,
+/// which races under the parallel test harness.
+pub fn sanitize_base_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return None;
@@ -156,36 +161,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn disabled_without_env() {
-        std::env::remove_var("SEARXNG_BASE_URL");
-        assert!(!is_enabled());
-        assert_eq!(base_url(), None);
+    fn empty_or_blank_is_disabled() {
+        assert_eq!(sanitize_base_url(""), None);
+        assert_eq!(sanitize_base_url("   "), None);
     }
 
     #[test]
     fn rejects_non_http_schemes() {
-        std::env::set_var("SEARXNG_BASE_URL", "file:///etc/passwd");
-        assert_eq!(base_url(), None);
-        std::env::set_var("SEARXNG_BASE_URL", "not a url");
-        assert_eq!(base_url(), None);
-        std::env::remove_var("SEARXNG_BASE_URL");
+        assert_eq!(sanitize_base_url("file:///etc/passwd"), None);
+        assert_eq!(sanitize_base_url("not a url"), None);
+        assert_eq!(sanitize_base_url("ftp://x/"), None);
     }
 
     #[test]
     fn strips_trailing_slash() {
-        std::env::set_var("SEARXNG_BASE_URL", "http://localhost:8080/");
-        assert_eq!(base_url().as_deref(), Some("http://localhost:8080"));
-        std::env::remove_var("SEARXNG_BASE_URL");
+        assert_eq!(sanitize_base_url("http://localhost:8080/").as_deref(), Some("http://localhost:8080"));
+        assert_eq!(sanitize_base_url("https://searx.example/ ").as_deref(), Some("https://searx.example"));
     }
 
     #[test]
     fn upstream_engine_is_preserved_for_family_grouping() {
         // A SearXNG hit sourced from Bing must group into the bing family, so
-        // it cannot inflate consensus alongside our own Bing results.
+        // federating cannot silently double-count the same index alongside our
+        // own Bing results.
         assert_eq!(crate::engines::engine_family("searxng:bing"), "bing");
         assert_eq!(crate::engines::engine_family("searxng:google"), "google");
         assert_eq!(crate::engines::engine_family("searxng:mojeek"), "mojeek");
-        // Unknown upstream falls back to its own family.
+        // Unknown upstream gets its own family rather than being lumped in.
         assert_eq!(crate::engines::engine_family("searxng"), "searxng");
+        assert_eq!(crate::engines::engine_family("searxng:somethingnew"), "searxng");
     }
 }

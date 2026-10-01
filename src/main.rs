@@ -17,6 +17,7 @@
 // ============================================================================
 
 pub mod cache;
+pub mod cache_layer;
 pub mod config;
 pub mod copilot;
 pub mod engines;
@@ -29,6 +30,7 @@ pub mod models;
 pub mod query_intel;
 pub mod ranking;
 pub mod search;
+pub mod ssrf;
 pub mod url_utils;
 pub mod stream;
 #[cfg(test)]
@@ -334,6 +336,16 @@ async fn models_handler(
         ));
     }
 
+    // v8.0 P1-12a: this endpoint takes a caller-supplied base_url and fetches
+    // it with the user's credentials. Without this check, any page in the
+    // user's browser could use it to read loopback services and cloud metadata.
+    if let Err(e) = ssrf::validate_llm_base_url(&base_url) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("rejected base_url: {e}") })),
+        ));
+    }
+
     match llm::fetch_provider_models(&api_key, &base_url, &provider).await {
         Ok(models) => Ok(Json(serde_json::json!({ "models": models }))),
         Err(err) => Err((
@@ -359,6 +371,14 @@ async fn engine_health_handler() -> impl IntoResponse {
         "summary": by_verdict,
         "engines": snap,
     }))
+}
+
+/// GET /health/cache — SERP and page cache hit ratios.
+///
+/// `eval.rs` has defined engine_hit_ratio / scrape_hit_ratio / answer_hit_ratio
+/// since v6.1 and nothing populated them; this is the first real data.
+async fn cache_stats_handler() -> impl IntoResponse {
+    Json(cache_layer::stats())
 }
 
 /// GET /about - Service metadata
@@ -582,6 +602,7 @@ async fn main() {
         .route("/api/history/status", get(history_status_handler))
         .route("/api/tts", get(tts_handler))
         .route("/health/engines", get(engine_health_handler))
+        .route("/health/cache", get(cache_stats_handler))
         // v8.0: a handler panic used to abort the task with no response, so the
         // client saw a bare connection reset. The UTF-8 byte-slice bugs in
         // search.rs/llm.rs did exactly that on Hindi queries.

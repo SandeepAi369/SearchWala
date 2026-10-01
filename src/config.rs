@@ -40,7 +40,78 @@ pub fn scrape_timeout_secs() -> u64 {
     std::env::var("SCRAPE_TIMEOUT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(12)
+        // v8.0: 12s meant any batch containing one slow URL pinned the scrape
+        // stage at 12,003ms. 8s still clears the long tail of real pages while
+        // bounding the stage.
+        .unwrap_or(8)
+}
+
+/// Engine-dispatch early-exit: minimum raw results before we may stop waiting.
+///
+/// **DISABLED BY DEFAULT, on measurement.** Tuning run, same query, cold
+/// (`CACHE=off`):
+///
+/// | threshold   | latency | raw results | multi-family | engines |
+/// |-------------|---------|-------------|--------------|---------|
+/// | R=60  F=3   | 4.25 s  | 64          | 2            | 5       |
+/// | R=120 F=4   | 5.26 s  | 133         | 9            | 5       |
+/// | R=200 F=5   | 7.39 s  | 161         | 9            | 9       |
+/// | disabled    | 4.76 s  | **165**     | 7            | **9**   |
+///
+/// Exiting early cost ~60% of the raw results and most of the cross-family
+/// agreement to save roughly half a second — the wrong trade for a system
+/// whose entire ranking premise is cross-engine consensus. Disabling it is
+/// also no slower in practice, because the dispatch normally completes well
+/// inside its deadline once the per-host gate has spread the load.
+///
+/// The real latency win came from the SCRAPE stage early-exit instead
+/// (8,000 ms → ~1,000 ms), which costs nothing because it requires BOTH
+/// enough sources AND enough extracted text before it fires.
+///
+/// Set `EARLY_EXIT_MIN_RESULTS` to re-enable this for latency-critical
+/// deployments that can accept weaker consensus.
+pub fn early_exit_min_results() -> usize {
+    std::env::var("EARLY_EXIT_MIN_RESULTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(usize::MAX)
+}
+
+/// Minimum INDEPENDENT engine families required alongside the result count.
+/// Guards against exiting on a large result count that all came from one index.
+pub fn early_exit_min_families() -> usize {
+    std::env::var("EARLY_EXIT_MIN_FAMILIES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5)
+}
+
+/// Hard ceiling on the whole scrape stage.
+pub fn scrape_stage_deadline_secs() -> u64 {
+    std::env::var("SCRAPE_STAGE_DEADLINE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10)
+}
+
+/// Sources needed before the scrape stage may stop waiting on stragglers.
+pub fn scrape_min_sources() -> usize {
+    std::env::var("SCRAPE_MIN_SOURCES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(25)
+}
+
+/// Characters of extracted text needed alongside the source count.
+///
+/// Guards against exiting on 25 sources that each yielded a meta description.
+/// Phase 3 extraction averages 5,000-17,000 chars/source, so this is ~8-15
+/// substantial articles.
+pub fn scrape_min_chars() -> usize {
+    std::env::var("SCRAPE_MIN_CHARS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(80_000)
 }
 
 /// Server port.

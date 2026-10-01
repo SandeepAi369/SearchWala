@@ -37,6 +37,14 @@ const BM25_DELTA: f64 = 1.0;          // v6.1.0: BM25+ lower bound (Lv & Zhai 20
 const RRF_K: f64 = 60.0;              // From the RRF paper (Cormack et al. 2009) — do NOT change
 const MMR_LAMBDA: f64 = 0.7;          // Carbonell & Goldstein 1998 default
 const MAX_CHUNKS_PER_URL_IN_TOP_K: usize = 3; // Hard cap even with MMR
+/// Recency half-life per intent, in days (P2-2).
+const FRESHNESS_HALF_LIFE_NEWS: f64 = 7.0;
+const FRESHNESS_HALF_LIFE_PERSON: f64 = 180.0;
+const FRESHNESS_HALF_LIFE_DEFAULT: f64 = 60.0;
+/// Floor on the freshness multiplier, so an old-but-authoritative source is
+/// demoted rather than erased.
+const FRESHNESS_FLOOR: f64 = 0.60;
+
 /// MMR only considers the top `top_k * this` BM25 candidates. Scoring the
 /// whole corpus every round was the v7.0 hot spot and buys nothing: a chunk
 /// ranked thousands of places down does not win on diversity alone.
@@ -184,11 +192,53 @@ pub fn rank_top_chunks(query: &str, sources: &[SourceResult], top_k: usize) -> V
 ///   3. Apply RRF consensus boost (normalized, not magic constant)
 ///   4. Apply extraction confidence prior
 ///   5. MMR diversity reranking (Carbonell & Goldstein 1998)
+/// Exponential recency decay, gated on the query actually being time-sensitive.
+///
+/// v7.0 called itself "time-aware" but had ZERO freshness signal in ranking —
+/// it only appended a year to the query string and told the LLM today's date.
+/// It also never extracted publication dates, so there was nothing to rank on.
+/// Phase 3 provides the dates; this consumes them.
+///
+/// Evergreen queries ("how does TLS work") must NOT be recency-biased, which
+/// is why this returns 1.0 unless the query is time-sensitive.
+pub fn freshness_multiplier(
+    published: Option<chrono::DateTime<chrono::Utc>>,
+    is_time_sensitive: bool,
+    intent: &crate::query_intel::QueryIntent,
+) -> f64 {
+    use crate::query_intel::QueryIntent;
+    if !is_time_sensitive {
+        return 1.0;
+    }
+    let Some(p) = published else {
+        // Unknown date on a time-sensitive query: slight penalty, not a veto.
+        return 0.92;
+    };
+    let days = (chrono::Utc::now() - p).num_days().max(0) as f64;
+    let half_life = match intent {
+        QueryIntent::Temporal => FRESHNESS_HALF_LIFE_NEWS,
+        QueryIntent::Person => FRESHNESS_HALF_LIFE_PERSON,
+        _ => FRESHNESS_HALF_LIFE_DEFAULT,
+    };
+    FRESHNESS_FLOOR + (1.0 - FRESHNESS_FLOOR) * 0.5_f64.powf(days / half_life)
+}
+
 pub fn rank_top_chunks_with_rrf(
     query: &str,
     sources: &[SourceResult],
     top_k: usize,
     rrf_scores: Option<&HashMap<String, f64>>,
+) -> Vec<SourceResult> {
+    rank_top_chunks_with_signals(query, sources, top_k, rrf_scores, None)
+}
+
+/// Full ranking with optional query-intelligence signals (freshness).
+pub fn rank_top_chunks_with_signals(
+    query: &str,
+    sources: &[SourceResult],
+    top_k: usize,
+    rrf_scores: Option<&HashMap<String, f64>>,
+    intel: Option<&crate::query_intel::QueryIntelligence>,
 ) -> Vec<SourceResult> {
     if sources.is_empty() || top_k == 0 {
         return Vec::new();
@@ -333,6 +383,15 @@ pub fn rank_top_chunks_with_rrf(
         // (it is `pub`, which is why cargo did not warn). .gov/.edu/wikipedia
         // and canonical docs now actually outrank random blogspam.
         score *= crate::llm::trust_score(&candidates[idx].url) as f64;
+
+        // ── Freshness prior (P2-2) ──
+        if let Some(it) = intel {
+            score *= freshness_multiplier(
+                candidates[idx].published,
+                it.is_time_sensitive,
+                &it.intent,
+            );
+        }
 
         scored.push((idx, score));
     }
@@ -789,48 +848,94 @@ fn unique_tokens_filtered(text: &str) -> Vec<String> {
 // =============================================================================
 
 
-/// Merges results from multiple sub-queries using enhanced RRF.
-/// The original query's results get 2x weight; sub-queries get 1x.
+/// Fuse results from several sub-queries, weighting the original query higher.
+///
+/// ═══════════════════════════════════════════════════════════════════════════
+/// v8.0: this function existed in v7.0 and was DEAD CODE. `search.rs` did a
+/// flat `all_results.extend(results)` across every query variation, so a URL
+/// surfaced only by a garbage sub-query (v7.0 generated midpoint fragments
+/// like "what are the implications of") carried exactly the same RRF weight as
+/// one surfaced by the user's actual query. It is now wired in, and it reuses
+/// the engine-FAMILY collapse so the two fusion layers cannot double-count.
+/// ═══════════════════════════════════════════════════════════════════════════
 pub fn cross_query_fusion(
     query_results: &[(String, Vec<RawSearchResult>)],
     original_query: &str,
 ) -> Vec<RawSearchResult> {
-    let mut url_scores: HashMap<String, f64> = HashMap::new();
-    let mut url_results: HashMap<String, RawSearchResult> = HashMap::new();
-    let mut url_query_count: HashMap<String, usize> = HashMap::new();
+    /// The original query counts for more than any derived sub-query.
+    const ORIGINAL_WEIGHT: f64 = 2.0;
+    const SUB_WEIGHT: f64 = 1.0;
+
+    let mut scores: HashMap<String, f64> = HashMap::new();
+    let mut repr: HashMap<String, RawSearchResult> = HashMap::new();
+    // (page, family) -> best rank, per sub-query, so one index cannot agree
+    // with itself across its own aliases.
+    let mut sub_query_count: HashMap<String, HashSet<String>> = HashMap::new();
 
     for (sub_query, results) in query_results {
-        // Original query gets 2x weight, sub-queries get 1x
-        let weight = if sub_query == original_query { 2.0 } else { 1.0 };
+        let weight = if sub_query.eq_ignore_ascii_case(original_query) {
+            ORIGINAL_WEIGHT
+        } else {
+            SUB_WEIGHT
+        };
 
-        for (rank, result) in results.iter().enumerate() {
-            let rrf_score = weight / (60.0 + rank as f64 + 1.0);
-            *url_scores.entry(result.url.clone()).or_insert(0.0) += rrf_score;
-            *url_query_count.entry(result.url.clone()).or_insert(0) += 1;
-            url_results.entry(result.url.clone()).or_insert_with(|| result.clone());
+        let mut best: HashMap<(String, &'static str), usize> = HashMap::new();
+        for r in results {
+            let key = crate::url_utils::canonical_key(&r.url);
+            let fam = engines::engine_family(&r.engine);
+            best.entry((key.clone(), fam))
+                .and_modify(|cur| {
+                    if r.rank_position < *cur {
+                        *cur = r.rank_position;
+                    }
+                })
+                .or_insert(r.rank_position.max(1));
+
+            // Keep the richest representative for this URL.
+            repr.entry(key.clone())
+                .and_modify(|e| {
+                    if e.snippet.is_empty() && !r.snippet.is_empty() {
+                        e.snippet = r.snippet.clone();
+                    }
+                })
+                .or_insert_with(|| r.clone());
+
+            sub_query_count.entry(key).or_default().insert(sub_query.clone());
+        }
+
+        for ((key, fam), rank) in best {
+            let fw = engines::family_weight(fam) as f64;
+            *scores.entry(key).or_insert(0.0) += weight * fw / (RRF_K + rank as f64);
         }
     }
 
-    // Bonus: URLs appearing in multiple sub-queries get a cross-validation boost
-    let num_queries = query_results.len().max(1) as f64;
-    for (url, count) in &url_query_count {
-        if *count > 1 {
-            let cross_boost = (*count as f64 / num_queries) * 0.02;
-            if let Some(score) = url_scores.get_mut(url) {
-                *score += cross_boost;
+    // Cross-validation bonus: a page found by MULTIPLE sub-queries is more
+    // likely to be on-topic than one found by a single narrow phrasing.
+    let total_queries = query_results.len().max(1) as f64;
+    for (key, qs) in &sub_query_count {
+        if qs.len() > 1 {
+            if let Some(s) = scores.get_mut(key) {
+                *s *= 1.0 + 0.15 * (qs.len() as f64 / total_queries);
             }
         }
     }
 
-    // Sort by fused score (descending)
-    let mut fused: Vec<(String, f64)> = url_scores.into_iter().collect();
+    let mut fused: Vec<(String, f64)> = scores.into_iter().collect();
     fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    fused.into_iter()
-        .filter_map(|(url, _)| url_results.remove(&url))
+    // Rewrite rank_position to the FUSED order so the downstream RRF pass sees
+    // a coherent ranking rather than per-sub-query ranks.
+    fused
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (key, _))| {
+            repr.remove(&key).map(|mut r| {
+                r.rank_position = i + 1;
+                r
+            })
+        })
         .collect()
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1047,6 +1152,134 @@ mod tests {
         assert!(!chunks.is_empty());
         // Reassembly must not have corrupted any character.
         assert!(chunks.iter().all(|c| !c.contains('\u{FFFD}')));
+    }
+
+    // ── P2-2: freshness ──
+
+    #[test]
+    fn freshness_is_neutral_for_evergreen_queries() {
+        use crate::query_intel::QueryIntent;
+        let old = Some(chrono::Utc::now() - chrono::Duration::days(3000));
+        // "how does TLS work" must not be recency-biased.
+        assert_eq!(freshness_multiplier(old, false, &QueryIntent::HowTo), 1.0);
+        assert_eq!(freshness_multiplier(None, false, &QueryIntent::Factual), 1.0);
+    }
+
+    #[test]
+    fn fresh_news_outranks_stale_news_on_temporal_queries() {
+        use crate::query_intel::QueryIntent;
+        let today = Some(chrono::Utc::now());
+        let month_old = Some(chrono::Utc::now() - chrono::Duration::days(30));
+        let year_old = Some(chrono::Utc::now() - chrono::Duration::days(365));
+        let f_today = freshness_multiplier(today, true, &QueryIntent::Temporal);
+        let f_month = freshness_multiplier(month_old, true, &QueryIntent::Temporal);
+        let f_year = freshness_multiplier(year_old, true, &QueryIntent::Temporal);
+        assert!(f_today > f_month && f_month > f_year, "{f_today} {f_month} {f_year}");
+        assert!(f_today > 0.99, "today should be ~1.0, got {f_today}");
+    }
+
+    #[test]
+    fn freshness_never_erases_an_old_authoritative_source() {
+        use crate::query_intel::QueryIntent;
+        let ancient = Some(chrono::Utc::now() - chrono::Duration::days(10_000));
+        let f = freshness_multiplier(ancient, true, &QueryIntent::Temporal);
+        assert!(f >= FRESHNESS_FLOOR, "floor breached: {f}");
+        assert!(f > 0.0);
+    }
+
+    #[test]
+    fn person_queries_decay_more_slowly_than_news() {
+        use crate::query_intel::QueryIntent;
+        let d = Some(chrono::Utc::now() - chrono::Duration::days(60));
+        let news = freshness_multiplier(d, true, &QueryIntent::Temporal);
+        let person = freshness_multiplier(d, true, &QueryIntent::Person);
+        assert!(person > news, "person {person} should decay slower than news {news}");
+    }
+
+    #[test]
+    fn undated_sources_get_a_mild_penalty_not_a_veto() {
+        use crate::query_intel::QueryIntent;
+        let f = freshness_multiplier(None, true, &QueryIntent::Temporal);
+        assert!(f > 0.85 && f < 1.0, "got {f}");
+    }
+
+    #[test]
+    fn future_dates_do_not_produce_a_bonus_above_one() {
+        use crate::query_intel::QueryIntent;
+        let future = Some(chrono::Utc::now() + chrono::Duration::days(500));
+        let f = freshness_multiplier(future, true, &QueryIntent::Temporal);
+        assert!(f <= 1.0, "clock-skewed future date gave {f}");
+    }
+
+    // ── P1-9: cross-query fusion (was dead code in v7.0) ──
+
+    #[test]
+    fn original_query_outweighs_sub_queries() {
+        let orig = "cricket world cup 2027";
+        let groups = vec![
+            (orig.to_string(), vec![hit("https://a.test/from-original", "bing", 1)]),
+            ("cricket".to_string(), vec![hit("https://b.test/from-sub", "bing", 1)]),
+        ];
+        let fused = cross_query_fusion(&groups, orig);
+        assert_eq!(fused.len(), 2);
+        assert!(
+            fused[0].url.contains("from-original"),
+            "the original query's hit must rank first, got {:?}",
+            fused.iter().map(|r| &r.url).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pages_found_by_multiple_sub_queries_get_a_bonus() {
+        let orig = "postgres vs mysql";
+        let shared = "https://both.test/compare";
+        let only_one = "https://one.test/page";
+        let groups = vec![
+            (orig.to_string(), vec![hit(shared, "bing", 5), hit(only_one, "bing", 1)]),
+            ("postgres".to_string(), vec![hit(shared, "brave", 5)]),
+            ("mysql".to_string(), vec![hit(shared, "yandex", 5)]),
+        ];
+        let fused = cross_query_fusion(&groups, orig);
+        let pos_shared = fused.iter().position(|r| r.url == shared).unwrap();
+        let pos_one = fused.iter().position(|r| r.url == only_one).unwrap();
+        assert!(
+            pos_shared < pos_one,
+            "a page confirmed by 3 sub-queries and 3 families should beat a \
+             single-query rank-1 hit"
+        );
+    }
+
+    #[test]
+    fn fusion_rewrites_rank_to_the_fused_order() {
+        let orig = "q";
+        let groups = vec![
+            (orig.to_string(), vec![hit("https://a.test/1", "bing", 7), hit("https://b.test/2", "bing", 9)]),
+        ];
+        let fused = cross_query_fusion(&groups, orig);
+        // Downstream RRF needs a coherent ranking, not per-sub-query ranks.
+        assert_eq!(fused[0].rank_position, 1);
+        assert_eq!(fused[1].rank_position, 2);
+    }
+
+    #[test]
+    fn fusion_collapses_url_spellings_and_aliases() {
+        let orig = "q";
+        let groups = vec![(
+            orig.to_string(),
+            vec![
+                hit("https://example.com/story", "bing", 1),
+                hit("https://www.example.com/story/", "bing_uk", 1),
+                hit("https://m.example.com/story?utm_source=x", "bing_de", 1),
+            ],
+        )];
+        let fused = cross_query_fusion(&groups, orig);
+        assert_eq!(fused.len(), 1, "one page, three spellings: {fused:?}");
+    }
+
+    #[test]
+    fn fusion_handles_empty_groups() {
+        assert!(cross_query_fusion(&[], "q").is_empty());
+        assert!(cross_query_fusion(&[("q".into(), vec![])], "q").is_empty());
     }
 
     #[test]
