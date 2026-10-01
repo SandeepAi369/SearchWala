@@ -1,10 +1,14 @@
 // ============================================================================
-// SearchWala v5.0.1 - Configuration
+// SearchWala v7.0.0 - Configuration
 // Advanced browser fingerprinting, WAF bypass, and stealth scraping config
 // ============================================================================
 
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 use rand::Rng;
+use rand::RngExt;
+
+/// Canonical version string sourced from Cargo.toml at compile time.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Maximum URLs to scrape per query.
 pub fn max_urls() -> usize {
@@ -93,7 +97,7 @@ pub fn random_jitter_ms(min_ms: u64, max_ms: u64) -> u64 {
     if lo == hi {
         return lo;
     }
-    rand::thread_rng().gen_range(lo..=hi)
+    rand::rng().random_range(lo..=hi)
 }
 
 // =============================================================================
@@ -306,7 +310,7 @@ pub struct BrowserHeaders {
 }
 
 pub fn random_browser_headers() -> BrowserHeaders {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let profile = BROWSER_PROFILES
         .choose(&mut rng)
         .unwrap_or(&BROWSER_PROFILES[0]);
@@ -381,13 +385,13 @@ pub fn apply_browser_headers(
     }
 
     // v5.0: Randomize Accept header variants (evade fingerprint-based blocking)
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let accept_variants = [
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     ];
-    req = req.header("Accept", accept_variants[rng.gen_range(0..accept_variants.len())]);
+    req = req.header("Accept", *accept_variants.choose(&mut rng).unwrap());
 
     // 2026: Accept-Encoding with zstd support (modern browsers)
     let encoding_variants = [
@@ -395,7 +399,7 @@ pub fn apply_browser_headers(
         "gzip, deflate, br",
         "gzip, deflate, br, zstd",
     ];
-    req = req.header("Accept-Encoding", encoding_variants[rng.gen_range(0..encoding_variants.len())]);
+    req = req.header("Accept-Encoding", *encoding_variants.choose(&mut rng).unwrap());
 
     req
 }

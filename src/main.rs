@@ -1,9 +1,9 @@
 // ============================================================================
-// SearchWala v6.1.0
+// SearchWala v7.0.0
 // ============================================================================
 //
 // Native Rust meta-search + extraction + optional BYOK LLM synthesis.
-// v6.1.0: Research-grounded architecture upgrade
+// v7.0.0: Research-grounded architecture upgrade
 // Iterative Deep Research | Dual Database | Time-Aware LLM
 //
 // Pipeline:
@@ -282,7 +282,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
     let uptime = state.start_time.elapsed().as_secs();
     Json(HealthResponse {
         status: "ok".to_string(),
-        version: "6.1.0".to_string(),
+        version: crate::config::VERSION.to_string(),
         engines: config::enabled_engines(),
         uptime_seconds: uptime,
     })
@@ -291,7 +291,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
 /// GET /config - Configuration info
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
-        version: "6.1.0".to_string(),
+        version: crate::config::VERSION.to_string(),
         engines: config::enabled_engines(),
         max_urls: config::max_urls(),
         scrape_timeout_secs: config::scrape_timeout_secs(),
@@ -337,7 +337,7 @@ async fn models_handler(
 async fn about_handler() -> impl IntoResponse {
     Json(serde_json::json!({
         "name": "SearchWala",
-        "version": "5.2.0",
+        "version": crate::config::VERSION,
         "language": "Rust",
         "description": "Ultra-fast native meta-search & scrape API with iterative deep research LLM synthesis",
         "features": [
@@ -492,7 +492,7 @@ async fn main() {
     let engines = config::enabled_engines();
 
     tracing::info!("============================================");
-    tracing::info!("  SearchWala v6.1.0");
+    tracing::info!("  SearchWala v{}", crate::config::VERSION);
     tracing::info!("  Language: Rust");
     tracing::info!("  Engines: {} total", engines.len());
     tracing::info!("  Max URLs: {}", config::max_urls());
