@@ -59,6 +59,9 @@ impl super::SearchEngine for Qwant {
 
         let results = parse_qwant_html(&resp.body, 0);
         super::health::record_parsed("qwant", results.len());
+        if results.is_empty() {
+            super::health::dump_zero_result_body("qwant", &url, &resp.body);
+        }
         tracing::info!("Qwant [{}]: {} results", f.kind(), results.len());
         results
     }

@@ -88,18 +88,67 @@ struct ChunkCandidate {
 /// URLs that appear in top positions across MULTIPLE engines get the highest scores.
 /// Engine weights (Tier 1-4) ensure Google/Bing results count more than Dogpile.
 pub fn compute_rrf_scores(results: &[RawSearchResult]) -> HashMap<String, f64> {
-    let mut scores: HashMap<String, f64> = HashMap::new();
-
+    // ── Step 1: collapse to the BEST rank per (page, engine-family) ──
+    //
+    // RRF's premise is that agreement between INDEPENDENT rankers is evidence
+    // of quality. v7.0 violated it on two axes at once:
+    //
+    //   * 15 Bing aliases (bing, bing_us, bing_uk, bing_in, ...) all built the
+    //     SAME URL, because spec_for ignored the suffix and never added a
+    //     market param. RRF summed Bing's ordering 15 times and reported it as
+    //     "cross-engine consensus".
+    //   * Startpage proxies Google; Yahoo and DuckDuckGo are Bing-derived.
+    //     Counting a Google proxy as independent evidence FOR Google's ranking
+    //     is the same error, just less visible.
+    //
+    // Measured on the v7.0 baseline: a single query produced 127 raw results
+    // from what the logs called 33 engines, of which only 2 were independent
+    // indices. Collapsing by family makes "found by N engines" mean what it
+    // says.
+    //
+    // Also note the key: `canonical_key` unifies www/m/amp variants and sorts
+    // query params, so the same article surfaced as three URL spellings is one
+    // page rather than three "agreeing" hits.
+    let mut best_rank: HashMap<(String, &'static str), usize> = HashMap::new();
     for result in results {
-        let normalized = crate::url_utils::normalize_url(&result.url)
-            .unwrap_or_else(|| result.url.clone());
-        let weight = engines::engine_weight(&result.engine) as f64;
-        let rank = result.rank_position.max(1) as f64;
-        let rrf_contribution = weight / (RRF_K + rank);
-        *scores.entry(normalized).or_insert(0.0) += rrf_contribution;
+        let key = crate::url_utils::canonical_key(&result.url);
+        let family = engines::engine_family(&result.engine);
+        let rank = result.rank_position.max(1);
+        best_rank
+            .entry((key, family))
+            .and_modify(|cur| {
+                if rank < *cur {
+                    *cur = rank;
+                }
+            })
+            .or_insert(rank);
+    }
+
+    // ── Step 2: fuse across families ──
+    let mut scores: HashMap<String, f64> = HashMap::new();
+    for ((key, family), rank) in best_rank {
+        let weight = engines::family_weight(family) as f64;
+        *scores.entry(key).or_insert(0.0) += weight / (RRF_K + rank as f64);
     }
 
     scores
+}
+
+/// How many INDEPENDENT engine families surfaced each URL.
+///
+/// This is the honest "found by N engines" number for the UI, and a much
+/// better consensus signal than a raw hit count.
+pub fn family_agreement(results: &[RawSearchResult]) -> HashMap<String, Vec<&'static str>> {
+    let mut map: HashMap<String, Vec<&'static str>> = HashMap::new();
+    for result in results {
+        let key = crate::url_utils::canonical_key(&result.url);
+        let family = engines::engine_family(&result.engine);
+        let entry = map.entry(key).or_default();
+        if !entry.contains(&family) {
+            entry.push(family);
+        }
+    }
+    map
 }
 
 /// Sort URLs by RRF score (descending). Returns ordered list of (url, rrf_score).
@@ -145,11 +194,7 @@ pub fn rank_top_chunks_with_rrf(
     let mut candidates = Vec::new();
     for source in sources {
         let url_rrf = rrf_scores
-            .and_then(|s| {
-                let norm = crate::url_utils::normalize_url(&source.url)
-                    .unwrap_or_else(|| source.url.clone());
-                s.get(&norm).copied()
-            })
+            .and_then(|s| s.get(&crate::url_utils::canonical_key(&source.url)).copied())
             .unwrap_or(0.0);
 
         for chunk in paragraph_chunks(&source.extracted_text) {
@@ -336,8 +381,7 @@ fn mmr_rerank(
 
         for (pos, &(cand_idx, rel_score)) in remaining.iter().enumerate() {
             // Hard cap: max chunks per URL
-            let norm_url = crate::url_utils::normalize_url(&candidates[cand_idx].url)
-                .unwrap_or_else(|| candidates[cand_idx].url.clone());
+            let norm_url = crate::url_utils::canonical_key(&candidates[cand_idx].url);
             let url_count = url_counts.get(&norm_url).copied().unwrap_or(0);
             if url_count >= MAX_CHUNKS_PER_URL_IN_TOP_K {
                 continue;
@@ -365,8 +409,7 @@ fn mmr_rerank(
         }
 
         let (cand_idx, _) = remaining.remove(best_pos);
-        let norm_url = crate::url_utils::normalize_url(&candidates[cand_idx].url)
-            .unwrap_or_else(|| candidates[cand_idx].url.clone());
+        let norm_url = crate::url_utils::canonical_key(&candidates[cand_idx].url);
         *url_counts.entry(norm_url).or_insert(0) += 1;
         selected.push(cand_idx);
     }
@@ -616,4 +659,145 @@ pub fn cross_query_fusion(
     fused.into_iter()
         .filter_map(|(url, _)| url_results.remove(&url))
         .collect()
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::RawSearchResult;
+
+    fn hit(url: &str, engine: &str, rank: usize) -> RawSearchResult {
+        RawSearchResult {
+            url: url.to_string(),
+            title: "t".into(),
+            snippet: String::new(),
+            engine: engine.to_string(),
+            rank_position: rank,
+            published: None,
+        }
+    }
+
+    #[test]
+    fn rrf_counts_bing_aliases_once() {
+        // THE v7.0 BUG: 15 Bing aliases returning the same URL at rank 1 were
+        // summed as 15 independent agreements.
+        let aliases = [
+            "bing", "bing_us", "bing_uk", "bing_in", "bing_de", "bing_fr",
+            "bing_es", "bing_it", "bing_jp", "bing_ca", "bing_au", "bing_nl",
+            "bing_se", "bing_no", "bing_fi",
+        ];
+        let many: Vec<RawSearchResult> =
+            aliases.iter().map(|e| hit("https://a.test/x", e, 1)).collect();
+        let one = vec![hit("https://a.test/x", "bing", 1)];
+
+        let s_many = compute_rrf_scores(&many);
+        let s_one = compute_rrf_scores(&one);
+        let k = crate::url_utils::canonical_key("https://a.test/x");
+        assert!(
+            (s_many[&k] - s_one[&k]).abs() < 1e-12,
+            "15 Bing aliases scored {} vs one alias {} — aliases are inflating consensus",
+            s_many[&k],
+            s_one[&k]
+        );
+    }
+
+    #[test]
+    fn rrf_treats_bing_derived_engines_as_one_family() {
+        // Yahoo and DuckDuckGo are Bing-derived; Startpage/Ecosia proxy Google.
+        let derived = vec![
+            hit("https://a.test/x", "bing", 1),
+            hit("https://a.test/x", "yahoo", 1),
+            hit("https://a.test/x", "duckduckgo", 1),
+        ];
+        let single = vec![hit("https://a.test/x", "bing", 1)];
+        let k = crate::url_utils::canonical_key("https://a.test/x");
+        assert!(
+            (compute_rrf_scores(&derived)[&k] - compute_rrf_scores(&single)[&k]).abs() < 1e-12
+        );
+
+        let google_family = vec![
+            hit("https://a.test/x", "google", 1),
+            hit("https://a.test/x", "startpage", 1),
+            hit("https://a.test/x", "ecosia", 1),
+        ];
+        assert!(
+            (compute_rrf_scores(&google_family)[&k] - compute_rrf_scores(&single)[&k]).abs() < 1e-9
+        );
+    }
+
+    #[test]
+    fn genuinely_independent_engines_do_accumulate() {
+        // The flip side: real cross-engine agreement MUST raise the score,
+        // otherwise RRF is doing nothing.
+        let independent = vec![
+            hit("https://a.test/x", "bing", 1),
+            hit("https://a.test/x", "google", 1),
+            hit("https://a.test/x", "brave", 1),
+            hit("https://a.test/x", "yandex", 1),
+            hit("https://a.test/x", "marginalia_api", 1),
+        ];
+        let single = vec![hit("https://a.test/x", "bing", 1)];
+        let k = crate::url_utils::canonical_key("https://a.test/x");
+        let multi = compute_rrf_scores(&independent)[&k];
+        let one = compute_rrf_scores(&single)[&k];
+        assert!(multi > one * 3.0, "5 independent families scored {multi} vs {one}");
+    }
+
+    #[test]
+    fn rrf_uses_the_best_rank_within_a_family() {
+        // bing at rank 9 and bing_uk at rank 2 => the family contributes rank 2.
+        let mixed = vec![
+            hit("https://a.test/x", "bing", 9),
+            hit("https://a.test/x", "bing_uk", 2),
+        ];
+        let best_only = vec![hit("https://a.test/x", "bing", 2)];
+        let k = crate::url_utils::canonical_key("https://a.test/x");
+        assert!(
+            (compute_rrf_scores(&mixed)[&k] - compute_rrf_scores(&best_only)[&k]).abs() < 1e-12
+        );
+    }
+
+    #[test]
+    fn rrf_unifies_url_spellings_of_one_page() {
+        // The same article as three URL spellings is ONE page, not three
+        // engines agreeing.
+        let spellings = vec![
+            hit("https://example.com/story", "bing", 1),
+            hit("https://www.example.com/story/", "bing", 1),
+            hit("https://m.example.com/story?utm_source=x", "bing", 1),
+        ];
+        let scores = compute_rrf_scores(&spellings);
+        assert_eq!(scores.len(), 1, "expected one canonical key, got {scores:?}");
+    }
+
+    #[test]
+    fn higher_rank_scores_higher() {
+        let a = compute_rrf_scores(&[hit("https://a.test/1", "bing", 1)]);
+        let b = compute_rrf_scores(&[hit("https://a.test/1", "bing", 20)]);
+        let k = crate::url_utils::canonical_key("https://a.test/1");
+        assert!(a[&k] > b[&k], "rank 1 must beat rank 20");
+    }
+
+    #[test]
+    fn family_agreement_reports_independent_families() {
+        let results = vec![
+            hit("https://a.test/x", "bing", 1),
+            hit("https://a.test/x", "bing_uk", 3),
+            hit("https://a.test/x", "yahoo", 2),     // bing family
+            hit("https://a.test/x", "brave", 1),     // independent
+            hit("https://a.test/x", "marginalia_api", 5),
+        ];
+        let agree = family_agreement(&results);
+        let k = crate::url_utils::canonical_key("https://a.test/x");
+        let fams = &agree[&k];
+        assert_eq!(fams.len(), 3, "expected bing+brave+marginalia, got {fams:?}");
+        assert!(fams.contains(&"bing") && fams.contains(&"brave") && fams.contains(&"marginalia"));
+    }
+
+    #[test]
+    fn empty_input_is_handled() {
+        assert!(compute_rrf_scores(&[]).is_empty());
+        assert!(family_agreement(&[]).is_empty());
+    }
 }

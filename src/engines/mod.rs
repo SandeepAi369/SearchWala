@@ -12,6 +12,7 @@ pub mod health;
 pub mod marginalia_api;
 pub mod mojeek;
 pub mod qwant;
+pub mod searxng;
 pub mod startpage;
 pub mod wiby;
 pub mod wikipedia;
@@ -104,6 +105,11 @@ pub fn get_engines(enabled: &[String]) -> Vec<Arc<dyn SearchEngine>> {
                     engines.push(Arc::new(wiby::Wiby));
                 }
             }
+            "searxng" => {
+                if seen.insert("searxng".to_string()) {
+                    engines.push(Arc::new(searxng::SearxNG));
+                }
+            }
             "marginalia" | "marginalia_api" => {
                 if seen.insert("marginalia_api".to_string()) {
                     engines.push(Arc::new(marginalia_api::MarginaliaApi));
@@ -133,17 +139,19 @@ pub fn get_engines(enabled: &[String]) -> Vec<Arc<dyn SearchEngine>> {
 /// dispatch deadline.
 pub fn primary_engines() -> Vec<String> {
     vec![
-        "wikipedia",      // JSON API, always works
-        "marginalia_api", // JSON API, verified live, no key
-        "duckduckgo",     // needs stealth
-        "brave",          // needs stealth
-        "bing",           // needs stealth
-        "yahoo",          // needs stealth
-        "google",         // needs stealth (still JS-walled; kept for when it works)
+        // ── JSON APIs: reliable, no scraping, no WAF ──
+        "wikipedia",      // full-text search API (v8.0 fix)
+        "marginalia_api", // public JSON API, no key
+        "wiby",           // indie JSON API
+        // ── HTML, stealth-fetched, verified working 2026-10-01 ──
+        "bing",           // 86 results/query
+        "brave",          // via brave_news on the same family
+        "duckduckgo",     // 80 results/query
+        "yahoo",          // 63 results/query
+        // ── IP-sensitive: 403/303 here, may work elsewhere. The health
+        //    registry quarantines them automatically if they stay dead. ──
         "mojeek",
-        "startpage",
-        "qwant",
-        "wiby",
+        "yandex",
     ]
     .into_iter()
     .map(|s| s.to_string())
@@ -153,29 +161,67 @@ pub fn primary_engines() -> Vec<String> {
 /// Secondary engines — broader coverage, less reliable.
 pub fn backup_engines() -> Vec<String> {
     vec![
-        // Verticals with genuinely distinct endpoints.
-        "bing_news", "google_news", "brave_news", "yahoo_news",
-        // Regional variants — now carry real market/locale params (P0-8a).
-        "bing_uk", "bing_in", "bing_de", "google_uk", "google_in", "google_de",
-        // Independents that returned results in the audit.
-        "yandex", "mwmbl", "ecosia",
-        // 200-but-selector-dependent; health registry will quarantine if dead.
-        "4get", "yacy",
-        // REMOVED (measured dead 2026-10-01): alexandria, excite, lycos,
-        // mullvad_leta, pipilika, searchencrypt (no DNS/refused);
-        // whoogle 502, librex 404, right_dao 503, ask 404, stract 404;
-        // dogpile/webcrawler/info/searchalot/aol/gibiru/kiddle (JS+token walls).
+        // Verticals with genuinely distinct endpoints and verified parsers.
+        "bing_news", "brave_news",
+        // Regional Bing variants — real market params, one page each.
+        "bing_uk", "bing_in", "bing_de",
+        // Independents worth trying; quarantine handles them if dead.
+        "mwmbl", "ecosia", "yacy",
     ]
     .into_iter()
     .map(|s| s.to_string())
     .collect()
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// REMOVED FROM THE DEFAULT ROSTER (v8.0)
+//
+// These are STRUCTURALLY broken, not merely IP-blocked, so auto-quarantine
+// would only discover that after wasting dispatch deadline on every search.
+// Their specs are retained so `ENGINES=...` can still force them for anyone
+// with a working path (a proxy, a self-hosted instance, a residential IP).
+//
+// Evidence, all measured 2026-10-01:
+//
+//   google, google_news, google_uk, google_in, google_de
+//     HTTP 200 but an `enablejs` JS interstitial with
+//     `table,div,span,p{display:none}` and ZERO result links. Retested with
+//     `CONSENT=YES+...`, `SOCS=...`, `gbv=1` and `hl/gl` — every variant still
+//     returned enablejs, 0 `/url?q=`, 0 `<h3>`. Google now requires full JS
+//     execution; there is no HTML path.
+//
+//   startpage
+//     Serves a consent/submit page, not a SERP: 19 anchors, all pointing at
+//     startpage.com, plus a "Submit" button. The POST flow needs a token the
+//     page itself mints.
+//
+//   qwant (incl. lite.qwant.com)
+//     118 KB of JavaScript with ZERO server-rendered anchors — not even
+//     `a[href^='http']` matched. A pure SPA shell.
+//
+//   4get
+//     The 4get.ca instance is DOWN; the page links to
+//     bsky.app/profile/4getisdown.bsky.social.
+//
+//   yahoo_news
+//     JS-rendered; only a single `.NewsArticle` wrapper and one self-link are
+//     present server-side. Plain `yahoo` covers the family at 63 results.
+//
+// Previously removed in the Phase 1 pass (no DNS / 404 / dead instance):
+//   alexandria, excite, lycos, mullvad_leta, pipilika, searchencrypt,
+//   whoogle, librex, right_dao, ask, stract, dogpile, webcrawler, info,
+//   searchalot, aol, gibiru, kiddle, presearch, yep.
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// ALL engines dispatched simultaneously — maximum coverage, no waiting.
 /// Quarantined engines are filtered out by the caller via `health::should_skip`.
 pub fn all_engines() -> Vec<String> {
     let mut all = primary_engines();
     all.extend(backup_engines());
+    // Optional upstream: only when the operator has configured an instance.
+    if searxng::is_enabled() {
+        all.insert(0, "searxng".to_string());
+    }
     all
 }
 
@@ -253,6 +299,17 @@ pub fn specialized_engines(domain: &str) -> Vec<String> {
 
 /// The independent-evidence group an engine belongs to.
 pub fn engine_family(name: &str) -> &'static str {
+    // SearXNG federates upstream engines. A hit it sourced from Bing must land
+    // in the "bing" family, or federating would silently double-count the same
+    // index alongside our own Bing results.
+    if let Some(upstream) = name.strip_prefix("searxng:") {
+        let fam = engine_family(upstream);
+        // Unknown upstream => its own family, not "indie" lumped with others.
+        return if fam == "indie" { "searxng" } else { fam };
+    }
+    if name == "searxng" {
+        return "searxng";
+    }
     // Order matters: check the most specific prefixes first.
     if name.starts_with("google") {
         return "google";
@@ -316,4 +373,100 @@ pub fn family_weight(family: &str) -> f32 {
 /// Backwards-compatible per-engine weight, resolved through the family table.
 pub fn engine_weight(name: &str) -> f32 {
     family_weight(engine_family(name))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_default_engine_is_constructible() {
+        // Guards against a roster entry with no matching spec, which v7.0
+        // handled by logging "Unknown engine" and silently dispatching nothing.
+        for name in all_engines() {
+            let built = get_engines(&[name.clone()]);
+            assert_eq!(built.len(), 1, "roster entry {name:?} produced no engine");
+            assert!(!built[0].name().is_empty());
+        }
+    }
+
+    #[test]
+    fn duplicate_aliases_collapse_to_one_instance() {
+        // v7.0 mapped brave+brave_news and yahoo+yahoo_news to the SAME struct,
+        // then counted each twice in RRF (the live log showed "yahoo: 28" twice).
+        let built = get_engines(&[
+            "duckduckgo".into(),
+            "duckduckgo_html".into(), // same endpoint
+            "wikipedia".into(),
+            "wikipedia".into(),       // literal duplicate
+        ]);
+        let names: Vec<&str> = built.iter().map(|e| e.name()).collect();
+        assert_eq!(built.len(), 2, "aliases did not collapse: {names:?}");
+    }
+
+    #[test]
+    fn structurally_broken_engines_are_not_in_the_default_roster() {
+        let roster = all_engines();
+        for dead in [
+            "google", "google_news", "google_uk", "google_in", "google_de",
+            "startpage", "qwant", "4get", "yahoo_news",
+        ] {
+            assert!(
+                !roster.contains(&dead.to_string()),
+                "{dead} is JS-walled/dead and must not be dispatched by default"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_engines_can_still_be_forced_explicitly() {
+        // Specs are retained so ENGINES=google works for anyone with a path.
+        for forced in ["google", "startpage", "qwant"] {
+            let built = get_engines(&[forced.to_string()]);
+            assert_eq!(built.len(), 1, "{forced} should still be constructible on request");
+        }
+    }
+
+    #[test]
+    fn waf_engines_declare_needs_stealth() {
+        for name in ["bing", "brave", "duckduckgo", "yahoo"] {
+            let built = get_engines(&[name.to_string()]);
+            assert!(built[0].needs_stealth(), "{name} must use TLS impersonation");
+        }
+        // JSON APIs do not need it.
+        for name in ["wikipedia", "marginalia_api", "wiby"] {
+            let built = get_engines(&[name.to_string()]);
+            assert!(!built[0].needs_stealth(), "{name} should not need stealth");
+        }
+    }
+
+    #[test]
+    fn engine_family_groups_derived_indices_correctly() {
+        // Bing-derived.
+        for e in ["bing", "bing_uk", "bing_news", "duckduckgo", "yahoo", "yahoo_news"] {
+            assert_eq!(engine_family(e), "bing", "{e}");
+        }
+        // Google-derived (incl. proxies).
+        for e in ["google", "google_in", "startpage", "ecosia"] {
+            assert_eq!(engine_family(e), "google", "{e}");
+        }
+        // Genuinely independent.
+        assert_eq!(engine_family("brave"), "brave");
+        assert_eq!(engine_family("brave_news"), "brave");
+        assert_eq!(engine_family("marginalia_api"), "marginalia");
+        assert_eq!(engine_family("yandex"), "yandex");
+        assert_eq!(engine_family("mojeek"), "mojeek");
+    }
+
+    #[test]
+    fn default_roster_has_enough_independent_families() {
+        let fams: std::collections::HashSet<&str> =
+            all_engines().iter().map(|e| engine_family(e)).collect();
+        assert!(
+            fams.len() >= 6,
+            "only {} independent families in the roster: {fams:?}",
+            fams.len()
+        );
+    }
 }

@@ -52,11 +52,17 @@ static SEL_LINK: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("a[href^=\"http\"]").unwrap());
 static SEL_SNIPPET: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse(".b_caption p, .b_algoSlug, p").unwrap());
-// News vertical has its own card markup.
-static SEL_NEWS_CARD: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse(".news-card, .newsitem, .na_cnt").unwrap());
+// News vertical markup, verified against tests/fixtures/serp_bing_news.html
+// (2026-10-01). The v7.0/early-v8.0 guesses all matched ZERO:
+//   .news-card -> 0, .newsitem -> 0, .na_cnt -> 0
+// What actually exists: div[data-url] -> 5 containers, a.title -> 5 links.
+static SEL_NEWS_CARD: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse("div[data-url], .news-card, .newsitem, .na_cnt").unwrap()
+});
 static SEL_NEWS_LINK: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("a.title, a[href^=\"http\"]").unwrap());
+static SEL_NEWS_SNIPPET: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(".snippet, .news_snippet, p").unwrap());
 
 impl Bing {
     pub fn new(name: &str) -> Self {
@@ -307,13 +313,19 @@ pub fn parse_bing_news(html: &str, engine: &str, rank_base: usize) -> Vec<RawSea
             .attr("title")
             .map(|t| t.to_string())
             .unwrap_or_else(|| link.text().collect::<String>().trim().to_string());
+        let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
         if crate::util::char_len(&title) < 5 || !seen.insert(href.to_string()) {
             continue;
         }
+        let snippet = el
+            .select(&SEL_NEWS_SNIPPET)
+            .next()
+            .map(|s| s.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
         out.push(RawSearchResult {
             url: href.to_string(),
             title,
-            snippet: String::new(),
+            snippet,
             engine: engine.to_string(),
             rank_position: rank_base + out.len() + 1,
             published: None,
@@ -435,6 +447,26 @@ mod tests {
                 x.url
             );
             assert!(x.url.starts_with("http"), "bad url {:?}", x.url);
+        }
+        assert_eq!(r[0].rank_position, 1);
+    }
+
+    /// Real Bing News SERP captured 2026-10-01 from a run that returned 0.
+    const FIXTURE_NEWS: &str = include_str!("../../tests/fixtures/serp_bing_news.html");
+
+    #[test]
+    fn parses_live_bing_news_fixture() {
+        let r = parse_bing_news(FIXTURE_NEWS, "bing_news", 0);
+        assert!(
+            r.len() >= 4,
+            "bing_news must parse; got {} (the .news-card/.newsitem/.na_cnt \
+             selectors all matched zero)",
+            r.len()
+        );
+        for x in &r {
+            assert!(x.url.starts_with("http"), "bad url {:?}", x.url);
+            assert!(!x.url.contains("bing.com"), "self-link {:?}", x.url);
+            assert!(crate::util::char_len(&x.title) >= 5, "short title {:?}", x.title);
         }
         assert_eq!(r[0].rank_position, 1);
     }
