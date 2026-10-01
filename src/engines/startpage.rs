@@ -87,7 +87,7 @@ impl super::SearchEngine for Startpage {
             let page_results = parse_startpage_html(&resp.body, rank_base);
             super::health::record_parsed("startpage", page_results.len());
             if page_results.is_empty() {
-                if page == 0 {
+                if page == 1 {
                     super::health::dump_zero_result_body(
                         "startpage",
                         "https://www.startpage.com/sp/search",

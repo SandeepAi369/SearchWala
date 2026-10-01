@@ -504,12 +504,21 @@ pub const SKIP_EXTENSIONS: &[&str] = &[
 // Tracking Parameters to Remove
 // =============================================================================
 
+// v8.0: `ref`, `source`, `src`, `campaign`, `partner`, `affiliate` and `amp`
+// were REMOVED from this list. They are load-bearing query parameters on many
+// sites (documentation portals use `?src=`, repository hosts use `?ref=`), and
+// stripping them turned working URLs into 404s. Only unambiguous ad/analytics
+// parameters remain.
 pub const TRACKING_PARAMS: &[&str] = &[
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-    "utm_id", "utm_cid", "fbclid", "gclid", "gclsrc", "dclid", "msclkid",
-    "twclid", "igshid", "ref", "source", "src", "campaign", "affiliate", "partner",
-    "_ga", "_gl", "_gid", "mc_cid", "mc_eid", "mkt_tok", "amp", "amp_js_v", "usqp",
-    "spm", "share_from", "scm",
+    "utm_id", "utm_cid", "utm_reader", "utm_name", "utm_social",
+    "fbclid", "gclid", "gclsrc", "dclid", "msclkid", "twclid", "igshid",
+    "ttclid", "li_fat_id", "wbraid", "gbraid",
+    "_ga", "_gl", "_gid", "mc_cid", "mc_eid", "mkt_tok",
+    "amp_js_v", "usqp", "spm", "share_from", "scm",
+    "yclid", "_openstat", "vero_id", "pk_campaign", "pk_kwd", "piwik_campaign",
+    "hsa_acc", "hsa_cam", "hsa_grp", "hsa_ad", "hsa_src", "hsa_tgt", "hsa_kw",
+    "hsa_mt", "hsa_net", "hsa_ver", "_hsenc", "_hsmi",
 ];
 
 

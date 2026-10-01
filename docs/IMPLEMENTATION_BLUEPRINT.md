@@ -2004,3 +2004,83 @@ Status: **gate PASSED**. 73 unit tests, zero build warnings.
 - Steady-state RSS ~241 MB after 72 searches (deltas decelerating to
   ~0.1 MB/search, so not a leak). Driven by `MAX_URLS=420`; Phase 4 source
   selection and Phase 5 caching should reduce it.
+
+---
+
+## Phase 2 — COMPLETE (P0-6 … P0-10, P1-1, P1-2, P0-8b, + P1-8 brought forward)
+
+Status: **3 of 4 gate criteria passed.** 104 unit tests, zero warnings.
+The family-count criterion is blocked by external IP-level blocking, not code —
+detail below.
+
+### Delivered
+| Item | Change |
+|---|---|
+| P0-8b | `compute_rrf_scores` now collapses to the **best rank per (page, engine-family)** before fusing. 15 Bing aliases score exactly as one; 5 independent families score >3× higher. `family_agreement()` added for an honest "found by N engines". |
+| P1-8 | *Brought forward from Phase 4* because RRF needs a canonical key. `url_utils::canonical_key` is now the single implementation: sorts query params, unifies www/m./amp./mobile. and /amp, /index.html. `should_skip` matches the **host**, not a substring of the whole URL. |
+| P1-2 | Roster pruned to verified-working engines, with the measurement for each removal recorded in `engines/mod.rs`. Specs retained so `ENGINES=...` can force any of them. |
+| P1-2b | `engines/searxng.rs` — optional self-hosted SearXNG upstream (`SEARXNG_BASE_URL`). Upstream engine names are preserved as `searxng:<upstream>` so a federated Bing hit groups into the bing family instead of double-counting. |
+| — | `engines/bing.rs` news parser fixed; `TRACKING_PARAMS` corrected (removed `ref`/`source`/`src`/`campaign`/`partner`/`amp`, which are load-bearing and were producing 404s). |
+
+### Parser forensics (via `DUMP_SERP_DIR`)
+The health registry flagged four engines as HTTP 200 / 0 parsed. Dumping the
+bodies gave a definitive verdict for each — three were not selector problems at
+all:
+
+| Engine | Finding | Action |
+|---|---|---|
+| `bing_news` | `.news-card`/`.newsitem`/`.na_cnt` → **0**. Real markup: `div[data-url]` → 5, `a.title` → 5. | **Fixed** + fixture test |
+| `startpage` | Consent/submit page, not a SERP: 19 anchors all to startpage.com + a "Submit" button. POST needs a page-minted token. | Removed from roster |
+| `qwant` | 118 KB of JS with **zero** server-rendered anchors — not even `a[href^='http']` matched. Pure SPA shell. | Removed from roster |
+| `4get` | Instance is **down**; page links to `bsky.app/profile/4getisdown.bsky.social`. | Removed from roster |
+| `yahoo_news` | JS-rendered; one `.NewsArticle` wrapper + one self-link server-side. | Removed (plain `yahoo` covers the family) |
+
+**Google was retested properly before removal.** `CONSENT=YES+...`, `SOCS=...`,
+`gbv=1`, and `hl`/`gl` variants were all tried with a Chrome-149 fingerprint:
+every one returned HTTP 200 with the `enablejs` interstitial, **0** `/url?q=`
+links and **0** `<h3>`. Google now requires full JS execution; there is no HTML
+path. All 5 Google aliases left the default roster.
+
+### Measured: v7.0 → Phase 1 → Phase 2
+
+| Metric | v7.0 | Phase 1 | **Phase 2** | Gate |
+|---|---|---|---|---|
+| Engines producing results | 4 / 35 | 12 / 26 | **12 / 17** | — |
+| Engines producing, per query | 4 | 9–10 | **10** (stable) | — |
+| Independent RRF families / query | **2** | 3–6 | **5** | ≥8 ✗ |
+| Raw results per query | 127 | 135–156 | **136–158** | up ✅ |
+| HTTP requests per search | ~175–525 | — | **~24** | −50% ✅ **(−86%)** |
+| Engines dispatched | 35 | 26 | **17** | — |
+| 15 Bing aliases in RRF | counted **15×** | 15× | **1×** | ✅ |
+
+### The family gate: why 5 and not 8
+
+This is an external constraint, so recording it honestly rather than
+reclassifying it as a pass. From this IP, on 2026-10-01:
+
+- `mojeek` **403**, `ecosia` **403**, `mwmbl` **303**, `yacy` timeout
+- `google*` JS-walled (retested with consent cookies, see above)
+- `startpage`, `qwant`, `4get`, `yahoo_news` structurally broken
+
+Five families (bing, brave, wikipedia, marginalia, wiby/yandex) is what free
+HTML scraping yields here. The three legitimate routes past it, in order of
+practicality:
+
+1. **Self-hosted SearXNG** (`SEARXNG_BASE_URL`) — implemented this phase. Uses
+   the operator's own IP and rate budget, and SearXNG maintains ~80 upstream
+   parsers so rot stops being our problem. Public instances are not viable
+   (measured 429/429/403, and searx.be returns HTML), so none are shipped.
+2. **BYOK search APIs** — mirrors the existing BYOK-LLM design. Note the 2026
+   pricing reality: Brave removed its free Search API tier in Feb 2026
+   (~$5/1k, with $5/mo credits ≈ 1,000 free queries); Mojeek's Web Search API
+   is a negotiated B2B arrangement at ~£2–3 CPM.
+3. **Proxy pool** — `PROXY_POOL` already exists and now routes through
+   `Fetcher`; residential egress would likely recover mojeek/ecosia/mwmbl.
+
+### Known-remaining
+- `brave` web endpoint still 429s while `brave_news` on the same host succeeds
+  (164→152 results, so the family is covered). Likely needs a homepage visit to
+  mint a session cookie. Low priority while brave_news works.
+- `bing_news` parses on some queries (11 results) but not all — 3 zero-result
+  dumps remain. Bing News appears to A/B a JS-rendered layout.
+- `yandex` degraded (8 results) — heavy throttling.
