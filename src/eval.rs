@@ -458,7 +458,7 @@ pub fn build_eval_report(
 
     EvalReport {
         timestamp: chrono::Utc::now().to_rfc3339(),
-        version: "6.1.0".to_string(),
+        version: crate::config::VERSION.to_string(),
         queries_evaluated: ranking_results.len(),
         mean_ndcg_at_10: mean_ndcg,
         mrr,

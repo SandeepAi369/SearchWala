@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# SearchWala v5.0.1 — Multi-stage Docker Build
+# SearchWala v7.0.0 — Multi-stage Docker Build
 # Final image: ~15MB, runs on 512MB VPS or HF Spaces
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/qrux /app/qrux
+COPY --from=builder /app/target/release/searchwala /app/searchwala
 
 # Default environment
 ENV PORT=7860

@@ -1,5 +1,5 @@
 // ============================================================================
-// SearchWala v5.0.1 — Dual Database System
+// SearchWala v7.0.0 — Dual Database System
 //
 // 1. TempDb   — In-memory HashMap for active search sessions.
 //               Auto-wipes completely when a task finishes.
