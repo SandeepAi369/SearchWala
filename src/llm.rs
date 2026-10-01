@@ -30,6 +30,13 @@ use tokio::sync::mpsc;
 use crate::models::{LlmConfig, SourceResult};
 use crate::query_intel::{QueryIntelligence, QueryIntent};
 
+/// Language-mirroring instruction appended to every system prompt.
+///
+/// v7.0's prompts were hardcoded English, so a Hindi query about Hindi sources
+/// produced an English answer. For a tool whose best-performing extraction
+/// case is Hindi news, that is a product defect, not a nicety.
+const LANGUAGE_RULE: &str = " LANGUAGE: Answer in the SAME language the user      asked in. If the question is in Hindi, answer in Hindi; if in Spanish,      answer in Spanish. When the sources are in a different language from the      question, translate the facts into the question's language — never switch      the answer's language to match the sources.";
+
 const MAX_CONTEXT_CHUNKS_LITE: usize = 30;    // v5.2.0: increased from 25 for richer context
 const BATCH_SIZE_RESEARCH: usize = 50;
 const MAX_CONTEXT_CHARS_LITE: usize = 16_000;  // v5.2.0: increased from 10,000 — modern LLMs handle more
@@ -1715,8 +1722,8 @@ fn build_lite_prompts(query: &str, context: &str) -> (String, String) {
          8. RECENCY IS CRITICAL: Today is {}. Always prefer the MOST RECENT information from sources. \
             If a source mentions dates from {} or later, prioritize that over older data. \
             If the user asks about 'latest', 'current', 'now', or 'today', always provide the MOST UP-TO-DATE answer possible. \
-            NEVER present old/outdated data as current unless explicitly noting it is historical.",
-        now, now, year
+            NEVER present old/outdated data as current unless explicitly noting it is historical.{}",
+        now, now, year, LANGUAGE_RULE
     );
 
     let user = format!(
@@ -1745,9 +1752,10 @@ fn build_research_initial_prompts(query: &str, context: &str, total_batches: usi
          4. Flag any information that appears outdated given today's date. \
          5. Write in a structured, detailed, analytical style — NOT bullet points. \
          6. Use clear section headings (## format). \
-         7. Be thorough — this is a deep research report, not a summary.",
+         7. Be thorough — this is a deep research report, not a summary.{}",
         current_datetime_str(),
-        total_batches
+        total_batches,
+        LANGUAGE_RULE
     );
 
     let user = format!(
@@ -1780,10 +1788,11 @@ fn build_research_continuation_prompts(
          RULES: 1. Integrate new info into the report — do NOT restart. \
          2. ADD new details and evidence. 3. KEEP existing content. \
          4. Cite source numbers like [51], [52]. 5. NEVER hallucinate. \
-         6. Maintain structure. Add sections if warranted.",
+         6. Maintain structure. Add sections if warranted.{}",
         current_datetime_str(),
         batch_num,
-        total_batches
+        total_batches,
+        LANGUAGE_RULE
     );
 
     // Truncate previous report to fit within model context limits
@@ -1899,8 +1908,8 @@ fn build_intent_prompts(query: &str, context: &str, intel: &QueryIntelligence) -
          4. Every factual statement MUST cite the source like [1], [2]. \
          5. Prioritize [High Trust] sources over [General Web]. \
          6. If no source directly answers the query, say so HONESTLY. \
-         7. NEVER present outdated data as current unless explicitly noting it is historical.",
-        now, intel.intent, intent_instruction
+         7. NEVER present outdated data as current unless explicitly noting it is historical.{}",
+        now, intel.intent, intent_instruction, LANGUAGE_RULE
     );
 
     let user = format!(

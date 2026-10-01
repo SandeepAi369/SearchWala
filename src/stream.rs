@@ -241,7 +241,7 @@ pub fn execute_stream_search(
                 {
                     Some((title, text)) => {
                         let char_count = text.len();
-                        Some(SourceResult { url, title, extracted_text: text, char_count, engine: engine_name })
+                        Some(SourceResult { url, title, extracted_text: text, char_count, engine: engine_name, ..Default::default() })
                     }
                     None => None,
                 }
@@ -407,7 +407,7 @@ async fn scrape_url_inner(
 
     let html_bytes = &bytes[..bytes.len().min(max_bytes)];
     let html = String::from_utf8_lossy(html_bytes).to_string();
-    let title = extractor::extract_title(&html);
+    let title = extractor::extract_title_from_html(&html);
 
     if matches!(focus_mode, Some("youtube")) || target_url.contains("youtube.com/watch") {
         if let Some(desc) = extract_youtube_short_description(&html) {

@@ -771,40 +771,37 @@ mod tests {
     /// invoked inside every spawned dispatch task, each Google alias leaked a
     /// String on every query variation of every search, forever.
     ///
-    /// 200k iterations would leak ~10 MB under the old code. With `Cow` the
-    /// allocations are owned and dropped, so RSS must not move.
+    /// This measures LIVE ALLOCATED BYTES via a counting allocator rather than
+    /// process RSS. An earlier version of this test read /proc/self/status,
+    /// which is process-wide and therefore polluted by the other tests running
+    /// in parallel (the extractor suite loads an 890 KB fixture) — it reported
+    /// a 15 MB "leak" that was really a neighbouring test's working set.
     #[test]
     fn spec_for_does_not_leak_across_many_calls() {
-        fn rss_kb() -> usize {
-            std::fs::read_to_string("/proc/self/status")
-                .ok()
-                .and_then(|s| {
-                    s.lines()
-                        .find(|l| l.starts_with("VmRSS:"))
-                        .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
-                })
-                .unwrap_or(0)
-        }
+        use crate::testalloc;
 
-        // Warm up so first-touch page faults are not counted.
-        for _ in 0..20_000 {
+        // Warm up: first-touch allocations and any lazy statics.
+        for _ in 0..1_000 {
             std::hint::black_box(spec_for("google_uk"));
         }
-        let before = rss_kb();
 
-        for _ in 0..200_000 {
+        let before = testalloc::live_bytes();
+        for _ in 0..100_000 {
             std::hint::black_box(spec_for("google"));
             std::hint::black_box(spec_for("google_uk"));
             std::hint::black_box(spec_for("google_news"));
             std::hint::black_box(spec_for("bing_de"));
         }
+        let after = testalloc::live_bytes();
 
-        let after = rss_kb();
-        let growth_kb = after.saturating_sub(before);
-        // 800k spec_for calls. Old code: ~800k leaked Strings (tens of MB).
+        // 400k spec_for calls. Under the old code every Google-variant call
+        // leaked a ~60-byte String: ~18 MB retained. With Cow the allocations
+        // are owned and dropped, so live bytes must be ~unchanged.
+        let growth = after.saturating_sub(before);
         assert!(
-            growth_kb < 4_096,
-            "RSS grew {growth_kb} KB over 800k spec_for calls — Box::leak may be back"
+            growth < 256 * 1024,
+            "live allocations grew {growth} bytes over 400k spec_for calls \
+             — Box::leak may be back"
         );
     }
 

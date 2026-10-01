@@ -70,8 +70,14 @@ struct ChunkCandidate {
     title: String,
     engine: String,
     text: String,
-    rrf_score: f64,           // Inherited from URL-level RRF
-    extraction_confidence: f64, // v6.1.0: from extractor
+    rrf_score: f64,
+    /// REAL extraction confidence from the extractor (v8.0). v7.0 hardcoded
+    /// 0.7 here with the comment "will be overridden when C4 provides real
+    /// confidence", so the confidence prior was a constant no-op.
+    extraction_confidence: f64,
+    published: Option<chrono::DateTime<chrono::Utc>>,
+    language: Option<String>,
+    extractor: &'static str,
 }
 
 // =============================================================================
@@ -207,7 +213,11 @@ pub fn rank_top_chunks_with_rrf(
                 engine: source.engine.clone(),
                 text: chunk,
                 rrf_score: url_rrf,
-                extraction_confidence: 0.7, // Default; will be overridden when C4 provides real confidence
+                // Real value now, not the v7.0 hardcoded 0.7.
+                extraction_confidence: if source.confidence > 0.0 { source.confidence } else { 0.7 },
+                published: source.published,
+                language: source.language.clone(),
+                extractor: source.extractor,
             });
         }
     }
@@ -226,8 +236,12 @@ pub fn rank_top_chunks_with_rrf(
                 url: c.url,
                 title: c.title,
                 engine: c.engine,
-                char_count: c.text.chars().count(),
+                char_count: crate::util::char_len(&c.text),
                 extracted_text: c.text,
+                published: c.published,
+                language: c.language,
+                confidence: c.extraction_confidence,
+                extractor: c.extractor,
             })
             .collect();
     }
@@ -303,10 +317,18 @@ pub fn rank_top_chunks_with_rrf(
         let rrf_normalized = candidates[idx].rrf_score / max_rrf;
         score *= 1.0 + (rrf_normalized * 0.5);
 
-        // ── Extraction confidence prior (v6.1.0) ──
-        // Small additive prior: +0.05 * (confidence - 0.5)
-        // High-confidence extractions get a slight boost, low-confidence a slight penalty
-        score += 0.05 * (candidates[idx].extraction_confidence - 0.5);
+        // ── Extraction confidence prior (v8.0: a REAL value) ──
+        // v7.0 computed `0.05 * (0.7 - 0.5)` = a constant +0.01 for every
+        // chunk, because extraction_confidence was hardcoded. It is now the
+        // extractor's own quality score, applied multiplicatively so a
+        // half-confidence extraction is genuinely demoted.
+        score *= 0.80 + 0.20 * candidates[idx].extraction_confidence.clamp(0.0, 1.0);
+
+        // ── Source trust prior ──
+        // `llm::trust_score` was fully implemented in v7.0 and NEVER CALLED
+        // (it is `pub`, which is why cargo did not warn). .gov/.edu/wikipedia
+        // and canonical docs now actually outrank random blogspam.
+        score *= crate::llm::trust_score(&candidates[idx].url) as f64;
 
         scored.push((idx, score));
     }
@@ -340,8 +362,12 @@ pub fn rank_top_chunks_with_rrf(
                 url: chunk.url.clone(),
                 title: chunk.title.clone(),
                 engine: chunk.engine.clone(),
-                char_count: chunk.text.chars().count(),
+                char_count: crate::util::char_len(&chunk.text),
                 extracted_text: chunk.text.clone(),
+                published: chunk.published,
+                language: chunk.language.clone(),
+                confidence: chunk.extraction_confidence,
+                extractor: chunk.extractor,
             }
         })
         .collect()
@@ -494,41 +520,101 @@ fn paragraph_chunks(text: &str) -> Vec<String> {
     chunks
 }
 
-/// Split text at sentence boundaries (`. ` followed by uppercase letter).
-/// Produces chunks ≤ MAX_CHUNK_CHARS.
-fn split_at_sentence_boundaries(text: &str) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
+/// Sentence terminators across writing systems.
+///
+/// v7.0 only recognised `. ! ?` AND required the following character to be
+/// uppercase. Devanagari has no case and uses `।` (U+0964 DANDA) as its full
+/// stop, so for a Hindi article NO boundary was ever found: the whole article
+/// became a single chunk, which BM25 then scored as one undifferentiated blob.
+/// The same held for Arabic, CJK, Thai and every other uncased script.
+const SENTENCE_TERMINATORS: &[char] = &[
+    '.', '!', '?',
+    '\u{0964}', // DEVANAGARI DANDA — Hindi/Marathi/Nepali full stop
+    '\u{0965}', // DEVANAGARI DOUBLE DANDA
+    '\u{06D4}', // ARABIC FULL STOP
+    '\u{3002}', // IDEOGRAPHIC FULL STOP (CJK)
+    '\u{FF01}', // FULLWIDTH EXCLAMATION MARK
+    '\u{FF1F}', // FULLWIDTH QUESTION MARK
+    '\u{0589}', // ARMENIAN FULL STOP
+    '\u{104A}', // MYANMAR SIGN LITTLE SECTION
+    '\u{104B}', // MYANMAR SIGN SECTION
+    '\u{1362}', // ETHIOPIC FULL STOP
+    '\u{17D4}', // KHMER SIGN KHAN
+    '\u{0E2F}', // THAI PAIYANNOI
+];
 
-    // Simple sentence boundary detection: ". " + uppercase, "! ", "? "
+/// Does this script distinguish case? Devanagari, Arabic, CJK, Thai, Hebrew
+/// and others do not, so requiring an uppercase sentence start is wrong there.
+fn script_has_case(c: char) -> bool {
+    c.is_uppercase() || c.is_lowercase()
+}
+
+/// Is position `i` a sentence boundary?
+fn is_sentence_boundary(chars: &[char], i: usize) -> bool {
+    if !SENTENCE_TERMINATORS.contains(&chars[i]) {
+        return false;
+    }
+    // A terminator at the very end closes the sentence.
+    let Some(&next) = chars.get(i + 1) else { return true };
+
+    // CJK/Devanagari terminators often have no following space.
+    if !next.is_whitespace() {
+        // Accept anyway for terminators that are unambiguous sentence enders.
+        return matches!(chars[i], '\u{0964}' | '\u{0965}' | '\u{3002}' | '\u{FF01}' | '\u{FF1F}');
+    }
+
+    match chars.get(i + 2) {
+        None => true,
+        Some(&after) => {
+            // Avoid splitting decimals/abbreviations in cased scripts only.
+            if script_has_case(after) {
+                after.is_uppercase()
+            } else {
+                // Uncased script (Devanagari, Arabic, CJK, Thai): whitespace
+                // after a terminator IS the boundary.
+                true
+            }
+        }
+    }
+}
+
+/// Split oversized text at sentence boundaries, producing chunks that are at
+/// most `MAX_CHUNK_CHARS` where the text allows.
+fn split_at_sentence_boundaries(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_chars = 0usize;
+    let mut i = 0usize;
 
     while i < chars.len() {
         current.push(chars[i]);
+        current_chars += 1;
 
-        // Check for sentence boundary
-        let is_sentence_end = (chars[i] == '.' || chars[i] == '!' || chars[i] == '?')
-            && i + 2 < chars.len()
-            && chars[i + 1] == ' '
-            && chars[i + 2].is_uppercase();
-
-        if is_sentence_end && current.chars().count() >= MIN_CHUNK_CHARS {
-            // Include the space after the period
-            current.push(chars[i + 1]);
+        if current_chars >= MIN_CHUNK_CHARS && is_sentence_boundary(&chars, i) {
             chunks.push(current.trim().to_string());
-            current = String::new();
-            i += 2; // Skip the space, start from the uppercase letter
+            current.clear();
+            current_chars = 0;
+            // Skip the separator whitespace.
+            i += 1;
+            while i < chars.len() && chars[i].is_whitespace() {
+                i += 1;
+            }
             continue;
         }
 
+        // Hard stop so a terminator-free blob (common in scripts we may still
+        // not handle) cannot produce one enormous chunk.
+        if current_chars >= MAX_CHUNK_CHARS * 2 {
+            chunks.push(current.trim().to_string());
+            current.clear();
+            current_chars = 0;
+        }
         i += 1;
     }
 
-    // Flush remaining text
     if !current.trim().is_empty() {
-        if current.chars().count() < MIN_CHUNK_CHARS && !chunks.is_empty() {
-            // Merge short trailing text into last chunk
+        if current_chars < MIN_CHUNK_CHARS && !chunks.is_empty() {
             let last = chunks.last_mut().unwrap();
             last.push(' ');
             last.push_str(current.trim());
@@ -536,11 +622,9 @@ fn split_at_sentence_boundaries(text: &str) -> Vec<String> {
             chunks.push(current.trim().to_string());
         }
     }
-
     if chunks.is_empty() {
         chunks.push(text.to_string());
     }
-
     chunks
 }
 
@@ -793,6 +877,90 @@ mod tests {
         let fams = &agree[&k];
         assert_eq!(fams.len(), 3, "expected bing+brave+marginalia, got {fams:?}");
         assert!(fams.contains(&"bing") && fams.contains(&"brave") && fams.contains(&"marginalia"));
+    }
+
+    // ── Script-aware chunking (P1-5a) ──
+
+    #[test]
+    fn hindi_article_splits_on_danda_not_one_blob() {
+        // THE v7.0 BUG: `. ! ?` + an uppercase-next requirement meant a Hindi
+        // article never found a boundary, so the whole thing became ONE chunk
+        // and BM25 scored it as an undifferentiated blob.
+        let sentence = "भारत और पाकिस्तान के बीच मुकाबला दस अक्टूबर को खेला जाएगा।";
+        let article = std::iter::repeat(sentence).take(12).collect::<Vec<_>>().join(" ");
+        let chunks = paragraph_chunks(&article);
+        assert!(
+            chunks.len() >= 3,
+            "Hindi article produced {} chunk(s) — danda boundaries not detected",
+            chunks.len()
+        );
+        // And every chunk must actually contain Devanagari.
+        assert!(chunks.iter().all(|c| c.contains('\u{0915}') || c.contains('\u{092E}')
+                                   || c.contains('\u{092C}') || c.contains('\u{0926}')));
+    }
+
+    #[test]
+    fn cjk_text_splits_on_ideographic_full_stop() {
+        // Must exceed MAX_CHUNK_CHARS, otherwise staying as one chunk is the
+        // CORRECT behaviour and the test proves nothing.
+        let s = "这是一个句子。这是另一个句子。还有第三个句子。";
+        let article = std::iter::repeat(s).take(40).collect::<Vec<_>>().join("");
+        assert!(article.chars().count() > MAX_CHUNK_CHARS, "test input too short");
+        let chunks = paragraph_chunks(&article);
+        assert!(chunks.len() >= 2, "CJK produced {} chunk(s)", chunks.len());
+        assert!(chunks.iter().all(|c| c.chars().count() <= MAX_CHUNK_CHARS * 2));
+    }
+
+    #[test]
+    fn short_text_correctly_stays_one_chunk() {
+        // Splitting a 200-char paragraph would hurt BM25, not help it.
+        let s = "这是一个句子。".repeat(10);
+        assert!(s.chars().count() < MAX_CHUNK_CHARS);
+        assert_eq!(paragraph_chunks(&s).len(), 1);
+    }
+
+    #[test]
+    fn english_sentences_still_split_correctly() {
+        let s = "This is the first sentence of the document. Here is a second one that continues. \
+                 And a third sentence follows after it. Then a fourth appears here as well.";
+        let article = std::iter::repeat(s).take(6).collect::<Vec<_>>().join(" ");
+        let chunks = paragraph_chunks(&article);
+        assert!(chunks.len() >= 2, "English produced {} chunk(s)", chunks.len());
+    }
+
+    #[test]
+    fn decimals_and_abbreviations_do_not_split_english() {
+        // "3.14" and "e.g. this" must not become boundaries in a cased script.
+        let chars: Vec<char> = "pi is 3.14 exactly".chars().collect();
+        let dot = chars.iter().position(|c| *c == '.').unwrap();
+        assert!(!is_sentence_boundary(&chars, dot), "split inside a decimal");
+    }
+
+    #[test]
+    fn terminator_free_text_still_gets_chunked() {
+        // A blob with no recognised terminator must not become one huge chunk.
+        let blob = "x".repeat(MAX_CHUNK_CHARS * 6);
+        let chunks = paragraph_chunks(&blob);
+        assert!(chunks.len() >= 3, "terminator-free blob produced {} chunk(s)", chunks.len());
+    }
+
+    #[test]
+    fn script_case_detection() {
+        assert!(script_has_case('A') && script_has_case('z'));
+        // Devanagari, Arabic, CJK, Thai have no case.
+        assert!(!script_has_case('\u{0915}'));
+        assert!(!script_has_case('\u{0627}'));
+        assert!(!script_has_case('\u{4E2D}'));
+        assert!(!script_has_case('\u{0E01}'));
+    }
+
+    #[test]
+    fn chunking_is_utf8_safe_on_mixed_scripts() {
+        let mixed = "Hello world. नमस्ते दुनिया। 你好世界。مرحبا بالعالم؟ Done.".repeat(20);
+        let chunks = paragraph_chunks(&mixed);
+        assert!(!chunks.is_empty());
+        // Reassembly must not have corrupted any character.
+        assert!(chunks.iter().all(|c| !c.contains('\u{FFFD}')));
     }
 
     #[test]

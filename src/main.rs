@@ -31,6 +31,8 @@ pub mod ranking;
 pub mod search;
 pub mod url_utils;
 pub mod stream;
+#[cfg(test)]
+pub mod testalloc;
 pub mod proxy_pool;
 pub mod util;
 
@@ -55,6 +57,11 @@ struct AppState {
 }
 
 const SEARCH_UI: &str = include_str!("../ui.html");
+
+/// Test-only: lets leak tests assert on live allocated bytes instead of RSS.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOC: testalloc::Counting = testalloc::Counting;
 
 /// POST /search - Main search endpoint
 async fn search_handler(

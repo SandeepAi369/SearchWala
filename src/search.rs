@@ -323,14 +323,18 @@ pub async fn execute_search(
             )
             .await
             {
-                Some((title, text)) => {
-                    let char_count = text.len();
+                Some(e) => {
+                    let char_count = crate::util::char_len(&e.text);
                     Some(SourceResult {
                         url,
-                        title,
-                        extracted_text: text,
+                        title: e.title,
+                        extracted_text: e.text,
                         char_count,
                         engine: engine_name,
+                        published: e.published,
+                        language: e.language,
+                        confidence: e.confidence,
+                        extractor: e.source,
                     })
                 }
                 None => None,
@@ -351,9 +355,15 @@ pub async fn execute_search(
     }
 
     let scrape_ms = stage_start.elapsed().as_millis();
+    // Extraction VOLUME is the metric that matters for answer quality — v7.0
+    // averaged 470 chars/source, i.e. meta-description-level content, and had
+    // no instrumentation that would have revealed it.
+    let total_chars: usize = raw_scraped_results.iter().map(|r| r.char_count).sum();
+    let avg_chars = total_chars / raw_scraped_results.len().max(1);
+    let with_date = raw_scraped_results.iter().filter(|r| r.published.is_some()).count();
     tracing::info!(
-        "⏱ Stage [scrape]: {}ms — {} sources extracted out of {} deduplicated URLs",
-        scrape_ms, raw_scraped_results.len(), deduped_count
+        "⏱ Stage [scrape]: {}ms — {} sources from {} URLs | extracted {} chars (avg {}/source) | {} with publish date",
+        scrape_ms, raw_scraped_results.len(), deduped_count, total_chars, avg_chars, with_date
     );
 
     // ── v6.1.0: Stage timing — ranking ──
@@ -680,17 +690,17 @@ async fn scrape_url(
     max_bytes: usize,
     _lite_mode: bool,
     focus_mode: Option<&str>,
-) -> Option<(String, String)> {
+) -> Option<crate::extractor::Extracted> {
     // First attempt
     match scrape_url_inner(client, url, timeout_secs, max_bytes, focus_mode).await {
-        ScrapeResult::Ok(title, text) => Some((title, text)),
+        ScrapeResult::Ok(e) => Some(e),
         ScrapeResult::Blocked => {
             // ── Retry with fresh browser profile after delay ──
             let delay = config::random_jitter_ms(200, 500);
             tokio::time::sleep(Duration::from_millis(delay)).await;
             tracing::debug!("Retry after block: {}", url);
             match scrape_url_inner(client, url, timeout_secs, max_bytes, focus_mode).await {
-                ScrapeResult::Ok(title, text) => Some((title, text)),
+                ScrapeResult::Ok(e) => Some(e),
                 _ => None,
             }
         }
@@ -699,7 +709,7 @@ async fn scrape_url(
 }
 
 enum ScrapeResult {
-    Ok(String, String),
+    Ok(crate::extractor::Extracted),
     Blocked,
     Skip,
 }
@@ -757,32 +767,42 @@ async fn scrape_url_inner(
         Err(_) => return ScrapeResult::Skip,
     };
 
+    // Charset-aware decode (v8.0). `from_utf8_lossy` mangled every
+    // windows-1252 / ISO-8859-1 / GBK / Shift_JIS page into replacement chars.
     let html_bytes = &bytes[..bytes.len().min(max_bytes)];
-    let html = String::from_utf8_lossy(html_bytes).to_string();
+    let html = crate::fetcher::decode_body(html_bytes);
 
     // ── Single-pass DOM extraction: title + text in one parse ──
     // v5.0 fix: eliminates the double Html::parse_document() bottleneck
     if matches!(focus_mode, Some("youtube")) || target_url.contains("youtube.com/watch") {
         // YouTube fast path: try JSON-LD first (no DOM parse needed)
         if let Some(desc) = extract_youtube_json_ld(&html) {
-            let title = extractor::extract_title(&html);
-            return ScrapeResult::Ok(title, desc);
+            return ScrapeResult::Ok(crate::extractor::Extracted {
+                title: extractor::extract_title_from_html(&html),
+                text: desc,
+                confidence: 0.6,
+                ..Default::default()
+            });
         }
         // Fallback: single DOM parse for both meta desc + title
         let doc = Html::parse_document(&html);
         let title = extractor::extract_title_from_doc_pub(&doc);
         if let Some(desc) = extractor::extract_youtube_meta(&doc) {
-            return ScrapeResult::Ok(title, desc);
+            return ScrapeResult::Ok(crate::extractor::Extracted {
+                title,
+                text: desc,
+                confidence: 0.6,
+                ..Default::default()
+            });
         }
     }
 
-    // Normal pages: single DOM parse for both title + article text
-    let (title, text) = extractor::extract_title_and_text(&html);
-    if text.len() < config::min_text_length() {
+    // Normal pages: trafilatura + conditional Readability (v8.0 P1-4).
+    let extracted = extractor::extract(&html, &target_url);
+    if !extractor::is_usable(&extracted) {
         return ScrapeResult::Skip;
     }
-
-    ScrapeResult::Ok(title, text)
+    ScrapeResult::Ok(extracted)
 }
 
 /// Extract YouTube shortDescription from JSON-LD without any DOM parsing.
