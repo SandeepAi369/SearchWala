@@ -36,6 +36,18 @@ scraper = "0.27"
 # mangles windows-1252 / ISO-8859-1 / GBK / Shift_JIS pages (v8.0 P0-1).
 encoding_rs = "0.8"
 
+# ── Content extraction (v8.0 P1-4) ──
+# Benchmarked against the hand-rolled v7.0 extractor on a 10-page corpus
+# (Hindi news, English news, docs, wiki, blog). Totals:
+#   v7.0 hand-rolled      76,462 chars   55ms   no metadata
+#   rs-trafilatura       117,032 chars  374ms   date + language + quality
+#   dom_smoothie (Readability) 102,248 chars   78ms   no metadata
+#   trafilatura + conditional readability  120,898 chars  416ms   <- chosen
+# On the Amar Ujala article the v7.0 extractor returned 180 chars (a WebPage
+# meta description) where trafilatura returns 5,812 — a 32x difference.
+rs-trafilatura = "0.2"
+dom_smoothie = "0.18"
+
 # URL handling
 url = "2"
 
@@ -50,7 +62,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Time
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 
 # Environment variables
 dotenvy = "0.15"

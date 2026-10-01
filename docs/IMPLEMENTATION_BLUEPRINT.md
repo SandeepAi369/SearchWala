@@ -2084,3 +2084,89 @@ practicality:
 - `bing_news` parses on some queries (11 results) but not all — 3 zero-result
   dumps remain. Bing News appears to A/B a JS-rendered layout.
 - `yandex` degraded (8 results) — heavy throttling.
+
+---
+
+## Phase 3 — COMPLETE (P1-4, P1-5)
+
+Status: **gate PASSED by a wide margin.** 123 unit tests, zero warnings.
+
+### The extractor decision was made by measurement, not by the plan
+
+The blueprint proposed `rs-trafilatura`. Before adopting it I benchmarked three
+candidates on a 10-page corpus (Hindi news ×3, English news, docs, wiki ×2,
+blog ×2, medical) committed under `tests/fixtures/articles/`.
+
+**Correction to the audit:** the project did **not** already have Mozilla
+Readability. There was no `readability` crate in `Cargo.toml`/`Cargo.lock` and
+no reference in `src/`. The v7.0 extractor was entirely hand-rolled; it
+borrowed trafilatura's *ideas* (link-density penalty, text-density scoring) but
+was not Readability. So the real choice was hand-rolled vs trafilatura vs a
+genuine Readability port (`dom_smoothie`).
+
+| policy | chars | ms | boilerplate hits |
+|---|---|---|---|
+| v7.0 hand-rolled 7-strategy | 76,462 | 55 | 0 |
+| rs-trafilatura only | 117,032 | 374 | 0 |
+| dom_smoothie (Readability) only | 102,248 | 78 | 1 |
+| both always, take longer | 121,490 | 457 | 1 |
+| **trafilatura + conditional readability** | **120,898** | **416** | 1 |
+
+**Chosen: trafilatura primary + conditional Readability second opinion.**
+
+Reasoning:
+1. Trafilatura alone is 96.3% of best-of-all, but **the average hides tail
+   risk**: on the NIH page it extracted 1,733 chars where Readability got
+   3,887 — a 55% loss on that page shape. Readability won 6 of 10 pages;
+   trafilatura won big on long-form (wikipedia_en 23,968 vs 11,927).
+2. An absolute "< 600 chars" fallback trigger **never fired** in testing. The
+   trigger that works is *relative*: thin output for the page's size
+   (`chars/html_bytes < 0.035`), low confidence, or very short text.
+3. Readability alone is not viable — −13% content and, decisively, **no
+   metadata**. Trafilatura is the only one providing `date`, `language` and
+   `extraction_quality`, all three of which the pipeline now depends on.
+4. The result: 99.5% of the always-both content at 91% of its cost.
+
+The v7.0 extractor is **retired**, not kept as a third tier: it loses on volume
+(76k vs 117k), provides no metadata, and carries the accidentally-quadratic
+`element.html()` scoring loop.
+
+### Delivered
+| Item | Change |
+|---|---|
+| P1-4 | `extractor.rs` rewritten around the measured policy. Returns `Extracted { title, text, published, language, page_type, confidence, source }`. |
+| P1-4b | JSON-LD reader fixed as a last-resort tier: walks `@graph` + `hasPart` + `mainEntityOfPage`, handles `@type` as an array, and is **articleBody-only** so a `WebPage` `description` can never win. |
+| P1-5a | Script-aware sentence segmentation: 13 terminators incl. `।` U+0964 danda, `。`, `؟`, Thai/Myanmar/Ethiopic. Uncased scripts no longer require an uppercase next char. |
+| P1-5b | `char_count` is now characters everywhere (it was bytes in `search.rs`, chars in `ranking.rs` — same field, two units). `MIN_TEXT_CHARS` replaces the byte gate. |
+| P1-5c | Charset-aware decode wired into the scrape path (was `from_utf8_lossy`). |
+| P1-5d | `LANGUAGE_RULE` appended to all 4 prompt builders — a Hindi query no longer gets an English answer. |
+| P1-6a | Real `extraction_quality` replaces the hardcoded `0.7`, applied multiplicatively. |
+| P1-6b | **`llm::trust_score` is now actually called.** It was fully implemented and `pub` in v7.0 — which is why cargo never warned — and never invoked. |
+
+### Measured: v7.0 → Phase 3 (live searches)
+
+| Metric | v7.0 baseline | **Phase 3** | Gate |
+|---|---|---|---|
+| Extracted chars **per source** (English) | 470 | **17,436** | >2,500 ✅ |
+| Extracted chars **per source** (Hindi) | 470 | **5,054** | >2,500 ✅ |
+| Total extracted per search | 11,768 | **374k–680k** | >120k ✅ |
+| Sources with a publish date | **0** | 28/39, 70/74 | — ✅ |
+| Language detected | **none** | `hi` on 38/40 Hindi chunks | — ✅ |
+| Extraction confidence | hardcoded 0.7 | real, mean 0.97, min 0.60 | — ✅ |
+| Amar Ujala article | **180 chars** | **>4,000 chars** + date + `hi` | ✅ |
+| Readability fallback firing | n/a | 1/25 EN, 7/40 HI | works ✅ |
+
+### A test-methodology bug I introduced and fixed
+My first `Box::leak` regression test read `/proc/self/status` RSS. That is
+process-wide, so with `cargo test`'s parallel harness the extractor suite
+loading an 890 KB fixture showed up as a 15 MB "leak" in the generic-engine
+test. Replaced with a counting global allocator (`src/testalloc.rs`, test-only)
+that asserts on **live allocated bytes**, which is deterministic under
+parallelism.
+
+### Known-remaining
+- The `rank` stage now takes **3,011 ms** for 91 sources. Phase 3 multiplied the
+  text volume 32–58×, so the MMR `O(top_k · n · |selected|)` loop that the audit
+  flagged (P1-7) is now the dominant CPU cost. This is Phase 4's first job.
+- `MAX_CONTEXT_CHARS_LITE` is still 16,000, so the LLM sees ~16 KB of the
+  374k–680k now extracted. Phase 5 (P1-10) raises it.

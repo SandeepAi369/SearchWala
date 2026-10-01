@@ -1,876 +1,528 @@
 // ============================================================================
-// SearchWala v5.2.0 - Trafilatura-Level Content Extractor
-// Advanced 7-strategy extraction with:
-// - Strategy 0: JSON-LD structured data extraction (highest confidence)
-// - Paragraph-level deduplication (anti-boilerplate like trafilatura)
-// - Link density penalty
-// - Tag-level scoring with class/ID pattern matching
-// - Structured content selectors for 90% of CMS platforms
-// - Meta description fallback for stubborn pages
-// - Multi-pass cleaning pipeline
+// SearchWala v8.0 — Content Extractor
+//
+// POLICY: rs-trafilatura primary, dom_smoothie (Readability) as a conditional
+// second opinion, take the longer result, always keep trafilatura's metadata.
+//
+// WHY, measured on a 10-page corpus (Hindi news, English news, docs, wiki,
+// blog) on 2026-10-01:
+//
+//   policy                                    chars     ms   boilerplate
+//   v7.0 hand-rolled 7-strategy              76,462     55        0
+//   rs-trafilatura only                     117,032    374        0
+//   dom_smoothie (Readability) only          102,248     78        1
+//   both always, take longer                 121,490    457        1
+//   trafilatura + CONDITIONAL readability    120,898    416        1   <-- this
+//
+// Trafilatura alone is 96.3% of best-of-all, but the average hides tail risk:
+// on nih_gov it extracted 1,733 chars where Readability got 3,887 — a 55% loss
+// on that page shape. The conditional second opinion recovers that for +11%
+// CPU, and gets 99.5% of the always-both result at 91% of its cost.
+//
+// Readability alone is not viable: −13% content and, decisively, it provides
+// NO metadata. Trafilatura gives `date`, `language` and `extraction_quality`,
+// which the freshness ranking (P2-2) and the ranking confidence prior (P1-6)
+// both need, and which the v7.0 extractor never produced at all.
+//
+// The v7.0 extractor is retired. Its specific defects, for the record:
+//   1. JSON-LD short-circuited on `@type: "WebPage"` and returned that node's
+//      `description`. On the Amar Ujala article that meant 180 chars instead
+//      of the 4,596-char `articleBody` sitting in block 3 of the same page —
+//      a 26x content loss, measured.
+//   2. No `@graph` support, so Yoast/RankMath sites (a large share of
+//      WordPress news) got no structured extraction at all.
+//   3. `@type` as an array (`["Article","NewsArticle"]`) silently failed
+//      `.as_str()`.
+//   4. `try_scored_extraction` called `element.html()` per container,
+//      re-serializing the subtree — accidentally quadratic on large pages.
+//   5. `extract_visible_text` joined block children with `" "` after wrapping
+//      them in `"\n{}\n"`, producing `"\nA\n \nB\n"`. `clean_and_deduplicate`
+//      split on `"\n\n"`, which therefore never matched: paragraph dedup never
+//      ran and chunking saw one giant blob.
+//   6. ASCII-only sentence detection (`[A-Z].*[.!?]$`) and byte-based length
+//      gates, both of which mis-handle Devanagari and CJK.
 // ============================================================================
 
-use regex::Regex;
-use scraper::{ElementRef, Html, Selector};
-use std::collections::HashSet;
+use scraper::{Html, Selector};
 use std::sync::LazyLock;
 
-// ── Pre-compiled regexes (zero-cost after first use) ──
-
-static WHITESPACE_COLLAPSE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\s{3,}").unwrap());
-
-static MULTI_NEWLINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\n{3,}").unwrap());
-
-static CONTROL_CHARS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u{200B}\u{200C}\u{200D}\u{FEFF}\u{00AD}\u{2028}\u{2029}]").unwrap());
-
-static NEGATIVE_PATTERNS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(comment|footer|sidebar|nav|menu|header|breadcrumb|widget|ad-|advert|social|share|related|popup|modal|cookie|banner|promo|newsletter|signup|subscribe|pagination|pager|toolbar|masthead|skip-link|sidebar|complementary|supplementary|sponsor|outbrain|taboola|recirculation|trending|more-stories|recommendations|you-may-also|suggested|feedback|rating|login|register|print|email-article)").unwrap()
-});
-
-static POSITIVE_PATTERNS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(article|content|main|body|text|post|entry|story|page|prose|markdown|document|paper|passage|reading|hentry|blog|blog-post|single-post|article-content|article-text|article-body|ArticleBody|post-content|post-text|postBody|storycontent)").unwrap()
-});
-
-static BOILERPLATE_LINES: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(share (this|on|via)|read more|subscribe|sign up|follow us|cookie|accept all|privacy policy|terms of (service|use)|advertisement|sponsored|related articles|trending|popular posts|most read|you may also (like|enjoy)|© \d{4}|all rights reserved|powered by|loading\.\.\.|please wait|click here|read the full|continue reading|view more|show more|see also|tags?:|categories?:|filed under|posted in|last (updated|modified)|published|modified|edited|log ?in|register|sign ?in|free trial|download now|buy now|add to cart|leave a (comment|reply)|your email|required fields|notify me|rss|print this|email this|bookmark|save to|report (this|abuse)|flag|spam|inappropriate|next article|previous article|newer posts?|older posts?|page \d+ of \d+|showing \d+|results? for|sort by|filter by|refine|close|dismiss|got it|accept|decline|no thanks|maybe later|not now|we use cookies|manage (preferences|consent)|cookie (settings|preferences|consent)|accept (all )?cookies|reject (all )?cookies|gdpr|data protection|we value your privacy|consent|personalize|customize your|opt[ -]?(in|out)|unsubscribe|paywall|premium content|members only|subscriber exclusive|sign in to (read|continue)|create (a )?free account|start your free|already a (member|subscriber)|this content is|upgrade to)").unwrap()
-});
-
-static SENTENCE_LIKE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[A-Z].*[.!?]$").unwrap());
-
-// ── Tags to strip entirely (their content is never useful) ──
-
-const STRIP_TAGS: &[&str] = &[
-    "script", "style", "nav", "header", "footer", "aside", "form", "button",
-    "input", "select", "textarea", "iframe", "noscript", "svg", "path", "canvas",
-    "video", "audio", "object", "embed", "template", "dialog", "figcaption",
-];
-
-// v6.1.0: Static HashSet for O(1) tag lookups — eliminates per-call allocation in extract_visible_text()
-static SKIP_SET: LazyLock<HashSet<&str>> = LazyLock::new(|| {
-    STRIP_TAGS.iter().copied().collect()
-});
-
-// ── Pre-compiled CSS selectors (LazyLock for zero-cost reuse) ──
-
-static SEL_SEMANTIC: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse("article, [role='main'], main, [itemprop='articleBody'], [data-testid='article-body'], [itemtype*='Article']").ok()
-});
-
-static SEL_STRUCTURED: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse(concat!(
-        ".post-content, .entry-content, .article-body, .story-body, ",
-        ".article__body, .article-text, .post-body, .td-post-content, ",
-        ".post-entry, .content-body, .page-content, .rich-text, .prose, ",
-        ".markdown-body, .mw-parser-output, .field-body, .node__content, ",
-        ".blog-post-content, .single-post-content, .post-text, .articleBody, ",
-        ".caas-body, .article__content, .story-content, .post__content, ",
-        "#article-body, #content, #main-content, #post-content, ",
-        "#story-body, #mw-content-text, [data-component='text-block']"
-    )).ok()
-});
-
-static SEL_CONTAINER: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse("div, section, td, main, article").ok()
-});
-
-static SEL_P: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse("p").ok()
-});
-
-static SEL_CONTENT_ELEMENTS: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse("p, li, blockquote, pre, td, h2, h3, h4, h5, h6, dd, dt, figcaption").ok()
-});
-
-static SEL_TITLE: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse("title").ok()
-});
-
-static SEL_OG_TITLE: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse(r#"meta[property="og:title"]"#).ok()
-});
-
-static SEL_META_TITLE: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse(r#"meta[name="title"]"#).ok()
-});
-
-static SEL_H1: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse("h1").ok()
-});
-
-static SEL_BODY: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse("body").ok()
-});
-
-static SEL_LINKS: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse("a").ok()
-});
-// ── Pre-compiled rich-tag selectors for score_element (was compiled per element!) ──
-static SEL_BLOCKQUOTE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("blockquote").ok());
-static SEL_PRE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("pre").ok());
-static SEL_CODE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("code").ok());
-static SEL_TABLE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("table").ok());
-static SEL_FIGURE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("figure").ok());
-static SEL_UL: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("ul").ok());
-static SEL_OL: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("ol").ok());
-// ── YouTube meta selector (was compiled per YouTube URL!) ──
-static SEL_META_DESC: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("meta[name='description']").ok());
-
-// ── JSON-LD structured data selector (Strategy 0 — v5.2.0) ──
-static SEL_JSON_LD: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse("script[type='application/ld+json']").ok()
-});
-
-// ── og:description meta fallback selector (v5.2.0) ──
-static SEL_OG_DESC: LazyLock<Option<Selector>> = LazyLock::new(|| {
-    Selector::parse(r#"meta[property="og:description"]"#).ok()
-});
-
-
-// =============================================================================
-// Public API
-// =============================================================================
-
-/// Extract the main article text from an HTML document using a 5-tier strategy:
-/// 1. Structured class/ID selectors (.entry-content, .post-body, etc.)
-/// 2. Semantic HTML5 elements (<article>, <main>, [role="main"])
-/// 3. Scored container extraction (text-density scoring with link penalty)
-/// 4. Content element fallback (all <p>, <li>, <blockquote>, etc.)
-/// 5. Full body text fallback
-pub fn extract_article_text(html: &str) -> String {
-    let document = Html::parse_document(html);
-
-    // Strategy 0: JSON-LD structured data (highest confidence — v5.2.0)
-    if let Some(text) = try_json_ld_extraction(&document) {
-        let cleaned = clean_and_deduplicate(&text);
-        if cleaned.len() >= 100 {
-            return cleaned;
-        }
-    }
-
-    // Strategy 1: Structured class/ID selectors
-    if let Some(text) = try_structured_extraction(&document) {
-        let cleaned = clean_and_deduplicate(&text);
-        if cleaned.len() >= 100 {
-            return cleaned;
-        }
-    }
-
-    // Strategy 2: Semantic HTML5 elements
-    if let Some(text) = try_semantic_extraction(&document) {
-        let cleaned = clean_and_deduplicate(&text);
-        if cleaned.len() >= 80 {
-            return cleaned;
-        }
-    }
-
-    // Strategy 3: Scored extraction (text density analysis)
-    if let Some(text) = try_scored_extraction(&document) {
-        let cleaned = clean_and_deduplicate(&text);
-        if cleaned.len() >= 50 {
-            return cleaned;
-        }
-    }
-
-    // Strategy 4: Content element fallback (p, li, blockquote, etc.)
-    let text = fallback_content_element_extraction(&document);
-    if !text.trim().is_empty() {
-        return clean_and_deduplicate(&text);
-    }
-
-    // Strategy 5: Meta description fallback (v5.2.0)
-    if let Some(text) = try_meta_description_fallback(&document) {
-        if text.len() >= 30 {
-            return text;
-        }
-    }
-
-    // Strategy 6: Full body text (last resort)
-    if let Some(sel) = SEL_BODY.as_ref() {
-        if let Some(body) = document.select(sel).next() {
-            let text = extract_visible_text(&body);
-            return clean_and_deduplicate(&text);
-        }
-    }
-
-    String::new()
+/// Minimum characters for an extraction to count as success.
+/// CHARACTERS, not bytes — Devanagari is 3 bytes/char, so a byte gate let
+/// Hindi pages through with a third of the content (v7.0 bug).
+fn min_text_chars() -> usize {
+    std::env::var("MIN_TEXT_CHARS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120)
 }
 
-/// Extract the page title using multiple strategies.
-pub fn extract_title(html: &str) -> String {
-    let document = Html::parse_document(html);
-
-    // 1. <meta property="og:title"> — most reliable for article titles
-    if let Some(sel) = SEL_OG_TITLE.as_ref() {
-        if let Some(meta) = document.select(sel).next() {
-            if let Some(content) = meta.value().attr("content") {
-                let text = content.trim().to_string();
-                if !text.is_empty() {
-                    return text;
-                }
-            }
-        }
-    }
-
-    // 2. <title> tag
-    if let Some(sel) = SEL_TITLE.as_ref() {
-        if let Some(title) = document.select(sel).next() {
-            let text = title.text().collect::<String>().trim().to_string();
-            if !text.is_empty() {
-                // Strip common site name suffixes: " - Site Name", " | Site Name"
-                let cleaned = text
-                    .splitn(2, " - ")
-                    .next()
-                    .unwrap_or(&text)
-                    .splitn(2, " | ")
-                    .next()
-                    .unwrap_or(&text)
-                    .trim()
-                    .to_string();
-                if !cleaned.is_empty() {
-                    return cleaned;
-                }
-            }
-        }
-    }
-
-    // 3. <meta name="title">
-    if let Some(sel) = SEL_META_TITLE.as_ref() {
-        if let Some(meta) = document.select(sel).next() {
-            if let Some(content) = meta.value().attr("content") {
-                let text = content.trim().to_string();
-                if !text.is_empty() {
-                    return text;
-                }
-            }
-        }
-    }
-
-    // 4. First <h1>
-    if let Some(sel) = SEL_H1.as_ref() {
-        if let Some(h1) = document.select(sel).next() {
-            return h1.text().collect::<String>().trim().to_string();
-        }
-    }
-
-    String::new()
+/// Result of extracting one page.
+#[derive(Debug, Clone, Default)]
+pub struct Extracted {
+    pub title: String,
+    pub text: String,
+    /// Publication date, when the page declares one. The "time-aware" v7.0
+    /// never extracted this, so ranking had no freshness signal at all.
+    pub published: Option<chrono::DateTime<chrono::Utc>>,
+    /// BCP-47-ish language code from the extractor ("hi", "en", ...).
+    pub language: Option<String>,
+    /// Page-type classification ("article", "forum", "documentation", ...).
+    pub page_type: Option<String>,
+    /// 0.0–1.0 extraction confidence. v7.0 hardcoded 0.7 with the comment
+    /// "will be overridden when C4 provides real confidence" — this is it.
+    pub confidence: f64,
+    /// Which extractor produced the text that was kept.
+    pub source: &'static str,
 }
 
-// =============================================================================
-// Extraction Strategies
-// =============================================================================
+// ============================================================================
+// Primary: rs-trafilatura
+// ============================================================================
 
-/// Strategy 1: Target well-known content class names and IDs.
-fn try_structured_extraction(doc: &Html) -> Option<String> {
-    let sel = SEL_STRUCTURED.as_ref()?;
-
-    let mut best_text = String::new();
-    let mut best_score = 0usize;
-
-    for element in doc.select(sel) {
-        let text = extract_visible_text(&element);
-        let score = compute_text_quality_score(&text);
-        if score > best_score {
-            best_score = score;
-            best_text = text;
-        }
-    }
-
-    if best_text.is_empty() { None } else { Some(best_text) }
-}
-
-/// Strategy 2: Semantic HTML5 extraction
-fn try_semantic_extraction(doc: &Html) -> Option<String> {
-    let sel = SEL_SEMANTIC.as_ref()?;
-
-    let mut best_text = String::new();
-    let mut best_score = 0usize;
-
-    for element in doc.select(sel) {
-        let text = extract_visible_text(&element);
-        let score = compute_text_quality_score(&text);
-        if score > best_score {
-            best_score = score;
-            best_text = text;
-        }
-    }
-
-    if best_text.is_empty() { None } else { Some(best_text) }
-}
-
-/// Strategy 3: Score every container by text density, paragraph count,
-/// link density (penalty), and class/ID pattern matching.
-fn try_scored_extraction(doc: &Html) -> Option<String> {
-    let container_sel = SEL_CONTAINER.as_ref()?;
-    let p_sel = SEL_P.as_ref()?;
-
-    let mut best_score = f64::MIN;
-    let mut best_text = String::new();
-
-    for element in doc.select(container_sel) {
-        let score = score_element(&element, p_sel);
-        if score > best_score {
-            let text = extract_visible_text(&element);
-            if text.len() > 100 {
-                best_score = score;
-                best_text = text;
-            }
-        }
-    }
-
-    if best_text.is_empty() { None } else { Some(best_text) }
-}
-
-/// Score a container element for content likelihood.
-fn score_element(element: &ElementRef, p_sel: &Selector) -> f64 {
-    let mut score: f64 = 0.0;
-
-    // Paragraph count bonus
-    let p_count = element.select(p_sel).count();
-    score += p_count as f64 * 3.0;
-
-    // Class/ID pattern matching
-    let class = element.value().attr("class").unwrap_or("");
-    let id = element.value().attr("id").unwrap_or("");
-    let combined = format!("{} {}", class, id);
-
-    if POSITIVE_PATTERNS.is_match(&combined) {
-        score += 25.0;
-    }
-    if NEGATIVE_PATTERNS.is_match(&combined) {
-        score -= 25.0;
-    }
-
-    let text = element.text().collect::<String>();
-    let text_len = text.len();
-    let html_len = element.html().len();
-
-    // Text density bonus (text / html ratio)
-    if html_len > 0 {
-        let density = text_len as f64 / html_len as f64;
-        score += density * 50.0;
-    }
-
-    // Long content bonus
-    if text_len > 200 {
-        score += 5.0;
-    }
-    if text_len > 1000 {
-        score += 10.0;
-    }
-    if text_len > 3000 {
-        score += 15.0;
-    }
-
-    // ── Link density penalty (trafilatura-style) ──
-    if let Some(a_sel) = SEL_LINKS.as_ref() {
-        let link_text_len: usize = element
-            .select(a_sel)
-            .map(|a| a.text().collect::<String>().len())
-            .sum();
-        if text_len > 0 {
-            let link_ratio = link_text_len as f64 / text_len as f64;
-            if link_ratio > 0.5 {
-                score -= 40.0;
-            } else if link_ratio > 0.3 {
-                score -= 20.0;
-            } else if link_ratio > 0.15 {
-                score -= 8.0;
-            }
-        }
-    }
-
-    // Bonus for rich-content children (pre-compiled selectors — zero alloc)
-    let rich_sels: [&Option<Selector>; 7] = [
-        &*SEL_BLOCKQUOTE, &*SEL_PRE, &*SEL_CODE, &*SEL_TABLE,
-        &*SEL_FIGURE, &*SEL_UL, &*SEL_OL,
-    ];
-    for sel_opt in rich_sels {
-        if let Some(sel) = sel_opt {
-            let count = element.select(sel).count();
-            score += count as f64 * 3.0;
-        }
-    }
-
-    // Penalty for deeply nested elements (navigation trees)
-    let depth = element.value().name().len(); // rough heuristic
-    if depth > 10 {
-        score -= 5.0;
-    }
-
-    score
-}
-
-/// Collect all content elements as a fallback.
-fn fallback_content_element_extraction(doc: &Html) -> String {
-    let sel = match SEL_CONTENT_ELEMENTS.as_ref() {
-        Some(s) => s,
-        None => return String::new(),
+fn trafilatura_extract(html: &str, url: &str) -> Option<Extracted> {
+    let opts = rs_trafilatura::Options {
+        url: Some(url.to_string()),
+        include_tables: true,
+        // Links and comments add boilerplate without adding evidence.
+        include_links: false,
+        include_comments: false,
+        ..Default::default()
     };
-    let mut paragraphs = Vec::new();
+    let r = rs_trafilatura::extract_with_options(html, &opts).ok()?;
+    Some(Extracted {
+        title: r.metadata.title.clone().unwrap_or_default(),
+        text: r.content_text,
+        published: r.metadata.date,
+        language: r.metadata.language.clone(),
+        page_type: r.metadata.page_type.clone(),
+        confidence: r.extraction_quality.clamp(0.0, 1.0),
+        source: "trafilatura",
+    })
+}
 
-    for p in doc.select(sel) {
-        // Skip elements with negative class patterns
-        let class = p.value().attr("class").unwrap_or("");
-        let id = p.value().attr("id").unwrap_or("");
-        let combined = format!("{} {}", class, id);
-        if NEGATIVE_PATTERNS.is_match(&combined) {
+// ============================================================================
+// Second opinion: dom_smoothie (Mozilla Readability port)
+// ============================================================================
+
+fn readability_extract(html: &str, url: &str) -> Option<String> {
+    let cfg = dom_smoothie::Config { ..Default::default() };
+    let mut r = dom_smoothie::Readability::new(html, Some(url), Some(cfg)).ok()?;
+    let article = r.parse().ok()?;
+    let text = article.text_content.to_string();
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// Should we spend the extra ~8ms/page on a second opinion?
+///
+/// An absolute "< 600 chars" threshold never fired on the benchmark corpus —
+/// trafilatura always produced *something*. What it misses is content that is
+/// thin RELATIVE to the page, which is the nih_gov failure mode.
+fn wants_second_opinion(primary: &Extracted, html_len: usize) -> bool {
+    let chars = crate::util::char_len(&primary.text);
+    if chars < 600 {
+        return true;
+    }
+    if primary.confidence < 0.80 {
+        return true;
+    }
+    // Text-to-markup ratio: a content-rich page that yielded little text is
+    // the signal that the primary extractor picked the wrong container.
+    let ratio = chars as f64 / html_len.max(1) as f64;
+    ratio < 0.035
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/// Extract readable content from a page.
+pub fn extract(html: &str, url: &str) -> Extracted {
+    let mut best = trafilatura_extract(html, url).unwrap_or_default();
+
+    if wants_second_opinion(&best, html.len()) {
+        if let Some(alt) = readability_extract(html, url) {
+            if crate::util::char_len(&alt) > crate::util::char_len(&best.text) {
+                // Keep trafilatura's METADATA (date/language/quality) — only
+                // the text body is replaced.
+                best.text = alt;
+                best.source = "readability";
+            }
+        }
+    }
+
+    // Title fallback chain, for the pages where trafilatura reports none.
+    if best.title.trim().is_empty() {
+        best.title = extract_title_from_html(html);
+    }
+
+    // Last resort: JSON-LD articleBody. Rare now, but it is ground truth when
+    // present and costs one DOM pass.
+    if crate::util::char_len(&best.text) < min_text_chars() {
+        if let Some(body) = json_ld_article_body(html) {
+            if crate::util::char_len(&body) > crate::util::char_len(&best.text) {
+                best.text = body;
+                best.source = "json-ld";
+                best.confidence = best.confidence.max(0.85);
+            }
+        }
+    }
+
+    best.text = normalize_whitespace(&best.text);
+    best
+}
+
+/// Back-compat shim for call sites that only need (title, text).
+pub fn extract_title_and_text(html: &str) -> (String, String) {
+    let e = extract(html, "https://example.invalid/");
+    (e.title, e.text)
+}
+
+/// Back-compat shim.
+pub fn extract_article_text(html: &str) -> String {
+    extract(html, "https://example.invalid/").text
+}
+
+/// True when the extraction is substantial enough to keep.
+pub fn is_usable(e: &Extracted) -> bool {
+    crate::util::char_len(&e.text) >= min_text_chars()
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+static SEL_OG_TITLE: LazyLock<Option<Selector>> =
+    LazyLock::new(|| Selector::parse(r#"meta[property="og:title"]"#).ok());
+static SEL_TITLE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("title").ok());
+static SEL_H1: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("h1").ok());
+static SEL_META_DESC: LazyLock<Option<Selector>> =
+    LazyLock::new(|| Selector::parse("meta[name='description']").ok());
+static SEL_JSON_LD: LazyLock<Option<Selector>> =
+    LazyLock::new(|| Selector::parse("script[type='application/ld+json']").ok());
+
+/// Title with site-name suffix stripped.
+///
+/// v7.0 had two title functions that disagreed: `extract_title` stripped
+/// " - Site Name" suffixes while `extract_title_from_doc` (the one actually
+/// called) did not.
+pub fn extract_title_from_html(html: &str) -> String {
+    let doc = Html::parse_document(html);
+    extract_title_from_doc(&doc)
+}
+
+pub fn extract_title_from_doc(doc: &Html) -> String {
+    if let Some(sel) = SEL_OG_TITLE.as_ref() {
+        if let Some(m) = doc.select(sel).next() {
+            if let Some(c) = m.value().attr("content") {
+                let t = c.trim();
+                if !t.is_empty() {
+                    return t.to_string();
+                }
+            }
+        }
+    }
+    if let Some(sel) = SEL_TITLE.as_ref() {
+        if let Some(t) = doc.select(sel).next() {
+            let raw = t.text().collect::<String>().trim().to_string();
+            if !raw.is_empty() {
+                return strip_site_suffix(&raw);
+            }
+        }
+    }
+    if let Some(sel) = SEL_H1.as_ref() {
+        if let Some(h) = doc.select(sel).next() {
+            return h.text().collect::<String>().trim().to_string();
+        }
+    }
+    String::new()
+}
+
+/// Strip a trailing " - Site" / " | Site" / " — Site" segment.
+fn strip_site_suffix(title: &str) -> String {
+    for sep in [" | ", " - ", " — ", " – ", " :: ", " » "] {
+        if let Some(idx) = title.rfind(sep) {
+            let head = title[..idx].trim();
+            // Only strip when a substantial title remains.
+            if crate::util::char_len(head) >= 15 {
+                return head.to_string();
+            }
+        }
+    }
+    title.to_string()
+}
+
+pub fn extract_title_from_doc_pub(doc: &Html) -> String {
+    extract_title_from_doc(doc)
+}
+
+/// YouTube meta description (kept from v7.0 — the YouTube fast path uses it).
+pub fn extract_youtube_meta(doc: &Html) -> Option<String> {
+    let sel = SEL_META_DESC.as_ref()?;
+    let m = doc.select(sel).next()?;
+    let c = m.value().attr("content")?.trim();
+    if crate::util::char_len(c) > 30 {
+        Some(c.to_string())
+    } else {
+        None
+    }
+}
+
+/// Collect every JSON-LD node, including `@graph` and nested arrays, and
+/// return the LONGEST `articleBody`.
+///
+/// This is deliberately articleBody-only. v7.0 accepted a `description` from
+/// the first article-ish node — and it counted `"WebPage"` as article-ish — so
+/// on Amar Ujala it returned block 0's 180-char page blurb and never reached
+/// block 3's 4,596-char `articleBody`.
+pub fn json_ld_article_body(html: &str) -> Option<String> {
+    let doc = Html::parse_document(html);
+    let sel = SEL_JSON_LD.as_ref()?;
+    let mut nodes = Vec::new();
+    for script in doc.select(sel) {
+        let raw = script.text().collect::<String>();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw.trim()) {
+            flatten_ld(&v, &mut nodes);
+        }
+    }
+
+    let mut best: Option<String> = None;
+    for n in &nodes {
+        let Some(body) = n.get("articleBody").and_then(|v| v.as_str()) else { continue };
+        let body = strip_tags(body.trim());
+        if crate::util::char_len(&body) < 100 {
             continue;
         }
-
-        let text: String = p.text().collect::<String>().trim().to_string();
-        if text.len() >= 10 {
-            paragraphs.push(text);
-        }
-    }
-
-    paragraphs.join("\n\n")
-}
-
-// =============================================================================
-// Text Quality Scoring (trafilatura-inspired)
-// =============================================================================
-
-/// Compute a quality score for extracted text.
-/// Higher = better content, lower = more boilerplate.
-fn compute_text_quality_score(text: &str) -> usize {
-    let mut score = 0usize;
-
-    // Length contributes
-    score += text.len() / 10;
-
-    // Count sentence-like structures (starts with uppercase, ends with period)
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.len() >= 30 && SENTENCE_LIKE.is_match(trimmed) {
-            score += 5;
-        }
-    }
-
-    // Penalty for excessive short lines (likely menus or lists)
-    let lines: Vec<&str> = text.lines().collect();
-    if !lines.is_empty() {
-        let short_lines = lines.iter().filter(|l| l.trim().len() < 15).count();
-        let ratio = short_lines as f64 / lines.len() as f64;
-        if ratio > 0.6 {
-            score = score.saturating_sub(score / 3);
-        }
-    }
-
-    score
-}
-
-// =============================================================================
-// Text Extraction Helpers
-// =============================================================================
-
-/// Recursively extract visible text from an element, skipping non-content tags.
-/// v6.1.0: Uses static SKIP_SET (LazyLock) instead of per-call HashSet allocation.
-fn extract_visible_text(element: &ElementRef) -> String {
-    let tag_name = element.value().name();
-
-    // Skip known non-content tags
-    if SKIP_SET.contains(tag_name) {
-        return String::new();
-    }
-
-    // Skip hidden elements
-    if let Some(style) = element.value().attr("style") {
-        let lower = style.to_lowercase();
-        if lower.contains("display:none") || lower.contains("display: none")
-            || lower.contains("visibility:hidden") || lower.contains("visibility: hidden")
+        if best
+            .as_ref()
+            .is_none_or(|b| crate::util::char_len(&body) > crate::util::char_len(b))
         {
-            return String::new();
+            best = Some(body);
         }
     }
-    if element.value().attr("hidden").is_some() {
-        return String::new();
-    }
-    if let Some(aria) = element.value().attr("aria-hidden") {
-        if aria == "true" {
-            return String::new();
-        }
-    }
+    best
+}
 
-    let mut text_parts: Vec<String> = Vec::new();
-
-    for child in element.children() {
-        match child.value() {
-            scraper::node::Node::Text(text) => {
-                let t = text.trim();
-                if !t.is_empty() {
-                    text_parts.push(t.to_string());
-                }
+/// Walk arrays and `@graph` so nested nodes are reachable. Yoast and RankMath
+/// — which power a large share of WordPress news sites — put everything under
+/// `@graph`, and v7.0 only looked at top-level objects or a top-level array.
+fn flatten_ld(v: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
+    match v {
+        serde_json::Value::Array(a) => {
+            for x in a {
+                flatten_ld(x, out);
             }
-            scraper::node::Node::Element(el) => {
-                let child_tag = el.name();
-                if !SKIP_SET.contains(child_tag) {
-                    if let Some(child_ref) = ElementRef::wrap(child) {
-                        let child_text = extract_visible_text(&child_ref);
-                        if !child_text.is_empty() {
-                            // Add paragraph breaks for block-level elements
-                            if is_block_element(child_tag) {
-                                text_parts.push(format!("\n{}\n", child_text));
-                            } else {
-                                text_parts.push(child_text);
-                            }
-                        }
+        }
+        serde_json::Value::Object(o) => {
+            if let Some(g) = o.get("@graph") {
+                flatten_ld(g, out);
+            }
+            out.push(v.clone());
+            for key in ["mainEntityOfPage", "mainContentOfPage", "hasPart"] {
+                if let Some(x) = o.get(key) {
+                    if x.is_object() || x.is_array() {
+                        flatten_ld(x, out);
                     }
                 }
             }
+        }
+        _ => {}
+    }
+}
+
+/// `@type` may be a string OR an array of strings.
+/// v7.0's `.as_str()` returned None for `["Article","NewsArticle"]`.
+pub fn ld_types(n: &serde_json::Value) -> Vec<String> {
+    match n.get("@type") {
+        Some(serde_json::Value::String(s)) => vec![s.clone()],
+        Some(serde_json::Value::Array(a)) => {
+            a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Strip HTML tags from a text fragment (JSON-LD bodies sometimes contain them).
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0usize;
+    for c in s.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
             _ => {}
         }
     }
-
-    text_parts.join(" ")
+    out
 }
 
-/// Check if a tag is a block-level element (for paragraph separation)
-fn is_block_element(tag: &str) -> bool {
-    matches!(
-        tag,
-        "p" | "div" | "section" | "article" | "blockquote" | "pre"
-            | "ul" | "ol" | "li" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
-            | "table" | "tr" | "td" | "th" | "figure" | "details" | "summary"
-            | "dd" | "dt" | "dl" | "hr" | "br" | "address"
-    )
-}
-
-// =============================================================================
-// Text Cleaning Pipeline (Trafilatura-Level)
-// =============================================================================
-
-/// Clean extracted text: strip boilerplate, normalize whitespace, deduplicate paragraphs.
-fn clean_and_deduplicate(text: &str) -> String {
-    // 1. Strip invisible/control characters
-    let text = CONTROL_CHARS.replace_all(text, "");
-
-    // 2. Normalize line endings
-    let text = text.replace('\r', "\n");
-
-    // 3. Split into paragraphs
-    let paragraphs: Vec<String> = text
-        .split("\n\n")
-        .map(|p| p.trim().to_string())
-        .filter(|p| !p.is_empty())
-        .collect();
-
-    // 4. Paragraph-level deduplication (trafilatura feature)
-    let mut seen_fingerprints: HashSet<String> = HashSet::new();
-    let mut clean_paragraphs: Vec<String> = Vec::new();
-
-    for para in &paragraphs {
-        // Create a fingerprint: lowercase, collapse whitespace, first 80 chars
-        let fingerprint = para.to_lowercase()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        let fp_key = fingerprint.chars().take(80).collect::<String>();
-
-        if !seen_fingerprints.insert(fp_key) {
-            continue; // duplicate paragraph
-        }
-
-        // Filter lines within the paragraph
-        let clean_lines: Vec<&str> = para
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| {
-                if l.is_empty() {
-                    return false;
-                }
-                if l.len() < 3 {
-                    return false;
-                }
-                // Remove boilerplate lines
-                if BOILERPLATE_LINES.is_match(l) {
-                    return false;
-                }
-                true
-            })
-            .collect();
-
-        if clean_lines.is_empty() {
+/// Collapse runs of whitespace while preserving paragraph breaks.
+fn normalize_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut blank_run = 0usize;
+    for line in s.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            blank_run += 1;
             continue;
         }
-
-        let cleaned_para = clean_lines.join(" ");
-        if cleaned_para.len() >= 10 {
-            clean_paragraphs.push(cleaned_para);
+        if !out.is_empty() {
+            // Any run of blank lines becomes exactly one paragraph break, so
+            // downstream `split("\n\n")` actually works. v7.0 produced
+            // "\nA\n \nB\n", which that split never matched.
+            out.push_str(if blank_run > 0 { "\n\n" } else { "\n" });
         }
+        blank_run = 0;
+        let collapsed: String = t.split_whitespace().collect::<Vec<_>>().join(" ");
+        out.push_str(&collapsed);
     }
-
-    // 5. Join and normalize whitespace
-    let result = clean_paragraphs.join("\n\n");
-
-    // 6. Collapse excessive whitespace and newlines
-    let result = WHITESPACE_COLLAPSE.replace_all(&result, " ");
-    let result = MULTI_NEWLINE.replace_all(&result, "\n\n");
-
-    result.trim().to_string()
+    out
 }
 
-// =============================================================================
-// Combined Title + Text Extraction (Single DOM Parse)
-// Eliminates the double Html::parse_document() bottleneck.
-// =============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Extract both title and article text from HTML with a single DOM parse.
-/// This saves ~50% of DOM parsing overhead vs calling extract_title + extract_article_text separately.
-pub fn extract_title_and_text(html: &str) -> (String, String) {
-    let document = Html::parse_document(html);
+    const AMARUJALA: &str = include_str!("../tests/fixtures/articles/amarujala_hi.html");
 
-    // --- Title extraction (inlined from extract_title) ---
-    let title = extract_title_from_doc(&document);
-
-    // --- Article text extraction (inlined from extract_article_text) ---
-    // Strategy 0: JSON-LD structured data (v5.2.0)
-    if let Some(text) = try_json_ld_extraction(&document) {
-        let cleaned = clean_and_deduplicate(&text);
-        if cleaned.len() >= 100 {
-            return (title, cleaned);
-        }
+    /// THE headline regression test.
+    ///
+    /// v7.0 returned 180 characters here — the `@type: "WebPage"` node's
+    /// `description` — while a 4,596-character `articleBody` sat in block 3 of
+    /// the same document. A 26x content loss on every Yoast-style page.
+    #[test]
+    fn amarujala_hindi_article_extracts_full_body_not_the_meta_description() {
+        let got = extract(
+            AMARUJALA,
+            "https://www.amarujala.com/cricket/cricket-news/odi-world-cup-2026-india-vs-pakistan-match-venue-date-time-all-you-need-to-know-2026-10-01",
+        );
+        let chars = crate::util::char_len(&got.text);
+        assert!(
+            chars > 4_000,
+            "expected >4000 chars, got {chars} (v7.0 returned 180). source={} text={:?}",
+            got.source,
+            got.text.chars().take(120).collect::<String>()
+        );
+        // Must be the Hindi article body, not an English chrome string.
+        assert!(
+            got.text.contains('\u{0915}') || got.text.contains('\u{092E}'),
+            "extracted text does not look like Devanagari"
+        );
     }
 
-    // Strategy 1: Structured class/ID selectors
-    if let Some(text) = try_structured_extraction(&document) {
-        let cleaned = clean_and_deduplicate(&text);
-        if cleaned.len() >= 100 {
-            return (title, cleaned);
-        }
+    #[test]
+    fn amarujala_yields_publication_date_and_language() {
+        let got = extract(AMARUJALA, "https://www.amarujala.com/cricket/cricket-news/x");
+        // v7.0 extracted neither, despite calling itself "time-aware".
+        assert!(got.published.is_some(), "datePublished must be extracted");
+        assert_eq!(got.language.as_deref(), Some("hi"), "language should be Hindi");
+        assert!(got.confidence > 0.5, "confidence {} too low", got.confidence);
     }
 
-    // Strategy 2: Semantic HTML5 elements
-    if let Some(text) = try_semantic_extraction(&document) {
-        let cleaned = clean_and_deduplicate(&text);
-        if cleaned.len() >= 80 {
-            return (title, cleaned);
-        }
+    #[test]
+    fn json_ld_prefers_longest_articlebody_over_any_description() {
+        // Block order mirrors the real Amar Ujala document: WebPage first.
+        let html = r#"<html><head>
+          <script type="application/ld+json">
+            {"@context":"https://schema.org","@type":"WebPage",
+             "description":"A short page blurb that v7.0 returned instead of the article, padded out past the hundred character gate so it would win."}
+          </script>
+          <script type="application/ld+json">
+            {"@context":"https://schema.org","@type":["Article","NewsArticle"],
+             "articleBody":"THE REAL BODY. Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua enim ad minim veniam quis nostrud exercitation ullamco."}
+          </script>
+        </head><body></body></html>"#;
+        let body = json_ld_article_body(html).expect("should find articleBody");
+        assert!(body.starts_with("THE REAL BODY"), "got {body:?}");
     }
 
-    // Strategy 3: Scored container (text density)
-    if let Some(text) = try_scored_extraction(&document) {
-        let cleaned = clean_and_deduplicate(&text);
-        if cleaned.len() >= 60 {
-            return (title, cleaned);
-        }
+    #[test]
+    fn json_ld_walks_graph_nodes() {
+        // Yoast/RankMath shape — v7.0 never looked inside @graph.
+        let html = r#"<html><head><script type="application/ld+json">
+          {"@context":"https://schema.org","@graph":[
+            {"@type":"WebSite","name":"Site"},
+            {"@type":"NewsArticle","articleBody":"Graph nested body text that is comfortably longer than the one hundred character minimum so the extractor accepts it as real content."}
+          ]}
+        </script></head><body></body></html>"#;
+        let body = json_ld_article_body(html).expect("must find body inside @graph");
+        assert!(body.starts_with("Graph nested body"), "got {body:?}");
     }
 
-    // Strategy 4: Content element fallback
-    let fallback = fallback_content_element_extraction(&document);
-    if !fallback.is_empty() {
-        let cleaned = clean_and_deduplicate(&fallback);
-        if cleaned.len() >= 40 {
-            return (title, cleaned);
-        }
+    #[test]
+    fn ld_types_handles_string_and_array() {
+        let s: serde_json::Value = serde_json::json!({"@type":"NewsArticle"});
+        let a: serde_json::Value = serde_json::json!({"@type":["Article","NewsArticle"]});
+        assert_eq!(ld_types(&s), vec!["NewsArticle"]);
+        assert_eq!(ld_types(&a), vec!["Article", "NewsArticle"]);
+        assert!(ld_types(&serde_json::json!({})).is_empty());
     }
 
-    // Strategy 5: Meta description fallback (v5.2.0)
-    if let Some(meta_text) = try_meta_description_fallback(&document) {
-        if meta_text.len() >= 30 {
-            return (title, meta_text);
-        }
+    #[test]
+    fn normalize_whitespace_produces_real_paragraph_breaks() {
+        // v7.0 emitted "\nA\n \nB\n" and then split on "\n\n", which never
+        // matched — so paragraph dedup and chunking both saw one blob.
+        let messy = "\nFirst para\n \n\nSecond   para\n\n\n\nThird\n";
+        let out = normalize_whitespace(messy);
+        assert_eq!(out.split("\n\n").count(), 3, "got {out:?}");
+        assert!(!out.contains("   "), "whitespace not collapsed: {out:?}");
     }
 
-    // Strategy 6: Full body text
-    if let Some(body_sel) = SEL_BODY.as_ref() {
-        if let Some(body) = document.select(body_sel).next() {
-            let body_text = extract_visible_text(&body);
-            let cleaned = clean_and_deduplicate(&body_text);
-            return (title, cleaned);
-        }
+    #[test]
+    fn strip_site_suffix_keeps_substantial_titles() {
+        assert_eq!(
+            strip_site_suffix("India vs Pakistan World Cup Match Date | Amar Ujala"),
+            "India vs Pakistan World Cup Match Date"
+        );
+        // Must not reduce a title to nothing.
+        assert_eq!(strip_site_suffix("Short | X"), "Short | X");
     }
 
-    (title, String::new())
-}
-
-/// Extract title from an already-parsed DOM document (no re-parse).
-pub fn extract_title_from_doc(document: &scraper::Html) -> String {
-    // Try og:title
-    if let Some(sel) = SEL_OG_TITLE.as_ref() {
-        if let Some(meta) = document.select(sel).next() {
-            if let Some(content) = meta.value().attr("content") {
-                let text = content.trim().to_string();
-                if !text.is_empty() {
-                    return text;
-                }
-            }
-        }
-    }
-
-    // Try <title>
-    if let Some(sel) = SEL_TITLE.as_ref() {
-        if let Some(title) = document.select(sel).next() {
-            let text = title.text().collect::<String>().trim().to_string();
-            if !text.is_empty() {
-                return text;
-            }
-        }
-    }
-
-    // Try meta[name="title"]
-    if let Some(sel) = SEL_META_TITLE.as_ref() {
-        if let Some(meta) = document.select(sel).next() {
-            if let Some(content) = meta.value().attr("content") {
-                let text = content.trim().to_string();
-                if !text.is_empty() {
-                    return text;
-                }
-            }
-        }
-    }
-
-    // Try <h1>
-    if let Some(sel) = SEL_H1.as_ref() {
-        if let Some(h1) = document.select(sel).next() {
-            return h1.text().collect::<String>().trim().to_string();
-        }
-    }
-
-    String::new()
-}
-
-/// Extract YouTube meta description from an already-parsed DOM (no re-parse).
-pub fn extract_youtube_meta(document: &scraper::Html) -> Option<String> {
-    if let Some(sel) = SEL_META_DESC.as_ref() {
-        if let Some(meta) = document.select(sel).next() {
-            if let Some(content) = meta.value().attr("content") {
-                let cleaned = content.trim();
-                if !cleaned.is_empty() && cleaned.len() > 30 {
-                    return Some(cleaned.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-
-/// Public wrapper for title extraction from pre-parsed document.
-pub fn extract_title_from_doc_pub(document: &scraper::Html) -> String {
-    extract_title_from_doc(document)
-}
-
-// =============================================================================
-// Strategy 0: JSON-LD Structured Data Extraction (v5.2.0)
-// Many modern news sites and CMS platforms embed article content in
-// <script type="application/ld+json"> tags. This is the HIGHEST confidence
-// extraction method because the content is explicitly structured by the publisher.
-// =============================================================================
-
-/// Extract article text from JSON-LD structured data.
-/// Looks for Schema.org Article/NewsArticle/BlogPosting types with articleBody.
-fn try_json_ld_extraction(doc: &Html) -> Option<String> {
-    let sel = SEL_JSON_LD.as_ref()?;
-
-    for script in doc.select(sel) {
-        let json_text = script.text().collect::<String>();
-        let json_text = json_text.trim();
-        if json_text.is_empty() {
-            continue;
-        }
-
-        // Parse JSON — may be a single object or an array
-        let parsed: serde_json::Value = match serde_json::from_str(json_text) {
-            Ok(v) => v,
-            Err(_) => continue,
+    #[test]
+    fn second_opinion_triggers_on_thin_relative_output() {
+        let thin = Extracted {
+            text: "x".repeat(700),
+            confidence: 0.95,
+            ..Default::default()
         };
+        // 700 chars from a 100KB page => ratio 0.007, well under 0.035.
+        assert!(wants_second_opinion(&thin, 100_000));
+        // Same text from a small page is fine.
+        assert!(!wants_second_opinion(&thin, 10_000));
+        // Low confidence always triggers.
+        let unsure = Extracted { text: "x".repeat(5000), confidence: 0.4, ..Default::default() };
+        assert!(wants_second_opinion(&unsure, 10_000));
+        // Very short always triggers.
+        let tiny = Extracted { text: "x".repeat(100), confidence: 1.0, ..Default::default() };
+        assert!(wants_second_opinion(&tiny, 1_000));
+    }
 
-        // Handle both single object and array of objects
-        let objects: Vec<&serde_json::Value> = if parsed.is_array() {
-            parsed.as_array().unwrap().iter().collect()
-        } else {
-            vec![&parsed]
-        };
+    #[test]
+    fn strip_tags_removes_markup() {
+        assert_eq!(strip_tags("a <b>bold</b> word"), "a bold word");
+        assert_eq!(strip_tags("<p>only</p>"), "only");
+    }
 
-        for obj in objects {
-            // Check @type for article-like types
-            let obj_type = obj.get("@type")
-                .and_then(|t| t.as_str())
-                .unwrap_or("");
-
-            let is_article = matches!(
-                obj_type,
-                "Article" | "NewsArticle" | "BlogPosting" | "TechArticle"
-                | "ScholarlyArticle" | "Report" | "WebPage" | "CreativeWork"
-            );
-
-            if !is_article {
-                continue;
-            }
-
-            // Try articleBody first (full article text)
-            if let Some(body) = obj.get("articleBody").and_then(|v| v.as_str()) {
-                let trimmed = body.trim();
-                if trimmed.len() >= 100 {
-                    return Some(trimmed.to_string());
-                }
-            }
-
-            // Try description as fallback
-            if let Some(desc) = obj.get("description").and_then(|v| v.as_str()) {
-                let trimmed = desc.trim();
-                if trimmed.len() >= 50 {
-                    return Some(trimmed.to_string());
-                }
-            }
-
-            // Try text field
-            if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
-                let trimmed = text.trim();
-                if trimmed.len() >= 50 {
-                    return Some(trimmed.to_string());
-                }
-            }
+    #[test]
+    fn handles_empty_and_garbage_input_without_panicking() {
+        for input in ["", "<html></html>", "not html at all", "<<<>>>"] {
+            let e = extract(input, "https://x.test/");
+            assert!(!is_usable(&e) || crate::util::char_len(&e.text) >= min_text_chars());
         }
     }
 
-    None
-}
-
-// =============================================================================
-// Strategy 5: Meta Description Fallback (v5.2.0)
-// When all DOM-based extraction strategies fail (e.g., heavy JS-rendered pages),
-// fall back to og:description and meta description tags.
-// =============================================================================
-
-/// Extract content from og:description and meta description as a last resort.
-fn try_meta_description_fallback(doc: &Html) -> Option<String> {
-    let mut combined = String::new();
-
-    // Try og:description (usually more detailed)
-    if let Some(sel) = SEL_OG_DESC.as_ref() {
-        if let Some(meta) = doc.select(sel).next() {
-            if let Some(content) = meta.value().attr("content") {
-                let trimmed = content.trim();
-                if !trimmed.is_empty() {
-                    combined.push_str(trimmed);
-                }
-            }
-        }
-    }
-
-    // Try meta[name="description"]
-    if let Some(sel) = SEL_META_DESC.as_ref() {
-        if let Some(meta) = doc.select(sel).next() {
-            if let Some(content) = meta.value().attr("content") {
-                let trimmed = content.trim();
-                if !trimmed.is_empty() && !combined.contains(trimmed) {
-                    if !combined.is_empty() {
-                        combined.push_str("\n\n");
-                    }
-                    combined.push_str(trimmed);
-                }
-            }
-        }
-    }
-
-    if combined.is_empty() {
-        None
-    } else {
-        Some(combined)
+    #[test]
+    fn min_text_gate_is_character_based() {
+        // 50 Devanagari chars = 150 bytes. A byte gate would wrongly pass this
+        // as "150 characters" of content (the v7.0 behaviour).
+        let hindi = "क".repeat(50);
+        assert_eq!(crate::util::char_len(&hindi), 50);
+        assert_eq!(hindi.len(), 150);
+        let e = Extracted { text: hindi, ..Default::default() };
+        assert!(!is_usable(&e), "50 chars must not pass a 120-char gate");
     }
 }

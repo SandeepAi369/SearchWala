@@ -45,13 +45,28 @@ pub struct SearchResponse {
     pub engine_stats: EngineStats,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Default)]
 pub struct SourceResult {
     pub url: String,
     pub title: String,
     pub extracted_text: String,
+    /// CHARACTER count. v7.0 set this from `text.len()` (bytes) in search.rs
+    /// but `text.chars().count()` in ranking.rs — the same field in two units,
+    /// which inflated Devanagari/CJK by 3x on one path.
     pub char_count: usize,
     pub engine: String,
+    /// Publication date when the page declares one (P2-2 freshness ranking).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published: Option<chrono::DateTime<chrono::Utc>>,
+    /// Detected content language, e.g. "hi" (drives language-mirrored answers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Real extraction confidence 0.0-1.0. v7.0 hardcoded 0.7 in ranking.rs
+    /// with a comment promising this value.
+    pub confidence: f64,
+    /// Which extractor produced the text ("trafilatura" | "readability" | "json-ld").
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub extractor: &'static str,
 }
 
 #[derive(Debug, Serialize, Clone)]
