@@ -53,10 +53,15 @@ pub struct ContextBudget {
 
 impl ContextBudget {
     pub fn for_model(model: &str) -> Self {
-        if let Some(v) = std::env::var("CONTEXT_MAX_TOKENS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-        {
+        Self::for_model_with_override(
+            model,
+            std::env::var("CONTEXT_MAX_TOKENS").ok().and_then(|v| v.parse::<usize>().ok()),
+        )
+    }
+
+    /// Testable core — the override is a parameter, not an env read.
+    pub fn for_model_with_override(model: &str, override_tokens: Option<usize>) -> Self {
+        if let Some(v) = override_tokens {
             return Self { max_tokens: v.clamp(2_000, 900_000) };
         }
         let m = model.to_lowercase();
@@ -161,10 +166,18 @@ struct ProviderInfo {
 fn resolve_provider(config: &LlmConfig) -> ProviderInfo {
     let provider = config.provider.trim().to_lowercase();
 
-    // If user provided a custom base_url, use it directly (it already includes version path)
+    // If the user provided a custom base_url, VALIDATE it first (v8.0 P1-12a).
+    // This value arrives in the request body, and with permissive CORS v7.0
+    // would relay the user's API key to any address an attacker chose.
     if let Some(ref base_url) = config.base_url {
         let url = base_url.trim();
         if !url.is_empty() {
+            if let Err(e) = crate::ssrf::validate_llm_base_url(url) {
+                tracing::warn!("Rejected caller-supplied base_url: {}", e);
+                // Fall through to the provider default rather than failing the
+                // whole search; the user still gets an answer.
+                return default_provider_for(&provider);
+            }
             let format = if provider == "anthropic" {
                 ApiFormat::Anthropic
             } else {
@@ -178,9 +191,12 @@ fn resolve_provider(config: &LlmConfig) -> ProviderInfo {
         }
     }
 
-    // Default endpoints per provider — base_url includes the full version path
-    // The frontend presets also follow this pattern (e.g. "https://api.groq.com/openai/v1")
-    match provider.as_str() {
+    default_provider_for(&provider)
+}
+
+/// Built-in endpoint for a known provider name.
+fn default_provider_for(provider: &str) -> ProviderInfo {
+    match provider {
         "gemini" | "google" => ProviderInfo {
             // Use Google's OpenAI-compatible endpoint (same approach as Perplexica)
             format: ApiFormat::OpenAiCompatible,
@@ -437,13 +453,29 @@ fn build_request_body(
 fn extract_response_text(json: &serde_json::Value, format: &ApiFormat) -> Option<String> {
     match format {
         ApiFormat::OpenAiCompatible => {
-            // choices[0].message.content
-            json.get("choices")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("message"))
-                .and_then(|m| m.get("content"))
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string())
+            // v8.0: `content` may be a string, null, or an array of typed
+            // parts; reasoning models sometimes put the answer only in
+            // `reasoning_content`. v7.0 handled the string case alone and
+            // reported "empty_response" for everything else.
+            let msg = json.get("choices")?.get(0)?.get("message")?;
+            match msg.get("content") {
+                Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
+                Some(serde_json::Value::Array(parts)) => {
+                    let s: String = parts
+                        .iter()
+                        .filter(|p| {
+                            p.get("type").and_then(|t| t.as_str()).map_or(true, |t| t == "text")
+                        })
+                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                        .collect();
+                    (!s.trim().is_empty()).then_some(s)
+                }
+                _ => msg
+                    .get("reasoning_content")
+                    .and_then(|t| t.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string),
+            }
         }
         ApiFormat::Gemini => {
             // candidates[0].content.parts[0].text
@@ -457,12 +489,22 @@ fn extract_response_text(json: &serde_json::Value, format: &ApiFormat) -> Option
                 .map(|s| s.to_string())
         }
         ApiFormat::Anthropic => {
-            // content[0].text
-            json.get("content")
-                .and_then(|c| c.get(0))
-                .and_then(|b| b.get("text"))
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string())
+            // v8.0: scan for the first TEXT block instead of assuming index 0.
+            //
+            // With extended thinking enabled, content[0] is a
+            // {"type":"thinking", ...} block with no "text" field, so v7.0's
+            // `content[0].text` returned None and the whole call failed with
+            // "empty_response" — the answer was silently discarded.
+            let blocks = json.get("content")?.as_array()?;
+            let mut out = String::new();
+            for b in blocks {
+                if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                        out.push_str(t);
+                    }
+                }
+            }
+            (!out.trim().is_empty()).then_some(out)
         }
     }
 }
@@ -506,8 +548,8 @@ fn extract_error_message(json: &serde_json::Value, _format: &ApiFormat) -> Strin
 
     // Fallback: stringify the first 300 chars of the JSON
     let raw = json.to_string();
-    if raw.len() > 300 {
-        format!("{}...", &raw[..300])
+    if crate::util::char_len(&raw) > 300 {
+        format!("{}...", crate::util::truncate_chars(&raw, 300))
     } else {
         raw
     }
@@ -517,14 +559,62 @@ fn extract_error_message(json: &serde_json::Value, _format: &ApiFormat) -> Strin
 // Core LLM Call — Non-Streaming (replaces genai client.exec_chat)
 // =============================================================================
 
-pub(crate) fn build_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(120))
-        .pool_max_idle_per_host(5)
-        .tcp_nodelay(true)
-        .build()
-        .expect("LLM HTTP client error")
+/// ONE shared client. v7.0 called `build_http_client()` inside every
+/// `call_llm`, constructing a fresh TLS stack and connection pool per call —
+/// in research mode that is one client per batch.
+static LLM_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    LLM_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(300))
+            .pool_max_idle_per_host(8)
+            .tcp_nodelay(true)
+            .build()
+            .expect("LLM HTTP client error")
+    })
+}
+
+/// Retryable provider failures: rate limits and transient server errors.
+fn is_retryable(err: &str) -> bool {
+    err.starts_with("http_429")
+        || err.starts_with("http_500")
+        || err.starts_with("http_502")
+        || err.starts_with("http_503")
+        || err.starts_with("http_504")
+        || err.starts_with("http_529")
+        || err.contains("http_request_failed")
+        || err.contains("response_read_error")
+}
+
+/// `call_llm` with exponential backoff. v7.0 had NO retry at all: a single 429
+/// from a rate-limited provider failed the whole search.
+pub(crate) async fn call_llm_retrying(
+    config: &LlmConfig,
+    messages: &[ChatMessage],
+) -> Result<String, String> {
+    const ATTEMPTS: usize = 4;
+    let mut delay = Duration::from_millis(700);
+    let mut last = String::new();
+    for attempt in 1..=ATTEMPTS {
+        match call_llm(config, messages).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last = e;
+                if attempt == ATTEMPTS || !is_retryable(&last) {
+                    break;
+                }
+                tracing::warn!(
+                    "LLM attempt {}/{} failed ({}), retrying in {:?}",
+                    attempt, ATTEMPTS, last, delay
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(8));
+            }
+        }
+    }
+    Err(last)
 }
 
 /// Make a single non-streaming LLM call. Returns extracted text or error string.
@@ -543,9 +633,7 @@ pub(crate) async fn call_llm(
         url.split('?').next().unwrap_or(&url) // Don't log API key in Gemini URL params
     );
 
-    let client = build_http_client();
-
-    let resp = client
+    let resp = http_client()
         .post(&url)
         .headers(headers)
         .json(&body)
@@ -689,7 +777,9 @@ pub(crate) async fn call_llm_stream(
         // Process complete SSE lines from buffer
         while let Some(newline_pos) = buffer.find('\n') {
             let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
+            // v8.0: drain in place. v7.0 did `buffer = buffer[n+1..].to_string()`
+            // per line, which is O(n^2) reallocation across a long stream.
+            buffer.drain(..newline_pos + 1);
 
             if line.is_empty() {
                 continue;
@@ -776,9 +866,9 @@ pub async fn summarize_direct_with_intent(
     tracing::info!("LLM calling model={} provider={} intent={}", llm_config.model, llm_config.provider, intel.intent);
 
     let call_result = if timeout_ms == 0 {
-        call_llm(&llm_config, &messages).await
+        call_llm_retrying(&llm_config, &messages).await
     } else {
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm(&llm_config, &messages)).await {
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm_retrying(&llm_config, &messages)).await {
             Ok(result) => result,
             Err(_) => {
                 return LlmExecutionResult {
@@ -814,7 +904,7 @@ pub async fn summarize_direct_with_intent(
                 );
 
                 let retry_result = if timeout_ms == 0 {
-                    call_llm(&llm_config, &messages).await
+                    call_llm_retrying(&llm_config, &messages).await
                 } else {
                     match tokio::time::timeout(
                         Duration::from_millis(timeout_ms),
@@ -973,7 +1063,7 @@ pub async fn summarize_iterative(
 
         let call_result = match tokio::time::timeout(
             Duration::from_millis(timeout_ms),
-            call_llm(&llm_config, &messages),
+            call_llm_retrying(&llm_config, &messages),
         )
         .await
         {
@@ -1120,9 +1210,9 @@ pub async fn summarize_from_stream(
     ];
 
     let call_result = if timeout_ms == 0 {
-        call_llm(&llm_config, &messages).await
+        call_llm_retrying(&llm_config, &messages).await
     } else {
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm(&llm_config, &messages)).await {
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm_retrying(&llm_config, &messages)).await {
             Ok(result) => result,
             Err(_) => {
                 return LlmExecutionResult {
@@ -2327,10 +2417,9 @@ mod tests {
 
     #[test]
     fn context_budget_scales_with_the_model() {
-        std::env::remove_var("CONTEXT_MAX_TOKENS");
-        let gemini = ContextBudget::for_model("gemini-3-pro");
-        let haiku = ContextBudget::for_model("claude-haiku-4-5");
-        let unknown = ContextBudget::for_model("some-local-llama");
+        let gemini = ContextBudget::for_model_with_override("gemini-3-pro", None);
+        let haiku = ContextBudget::for_model_with_override("claude-haiku-4-5", None);
+        let unknown = ContextBudget::for_model_with_override("some-local-llama", None);
         assert!(gemini.max_context_chars() > haiku.max_context_chars());
         assert!(haiku.max_context_chars() > unknown.max_context_chars());
         // All of them must beat the v7.0 fixed 16,000.
@@ -2340,17 +2429,14 @@ mod tests {
 
     #[test]
     fn context_budget_env_override_is_clamped() {
-        std::env::set_var("CONTEXT_MAX_TOKENS", "999999999");
-        assert!(ContextBudget::for_model("x").max_tokens <= 900_000);
-        std::env::set_var("CONTEXT_MAX_TOKENS", "1");
-        assert!(ContextBudget::for_model("x").max_tokens >= 2_000);
-        std::env::remove_var("CONTEXT_MAX_TOKENS");
+        assert!(ContextBudget::for_model_with_override("x", Some(999_999_999)).max_tokens <= 900_000);
+        assert!(ContextBudget::for_model_with_override("x", Some(1)).max_tokens >= 2_000);
+        assert_eq!(ContextBudget::for_model_with_override("x", Some(50_000)).max_tokens, 50_000);
     }
 
     #[test]
     fn max_output_tokens_is_never_the_v7_truncating_4096_for_big_models() {
-        std::env::remove_var("CONTEXT_MAX_TOKENS");
-        let b = ContextBudget::for_model("claude-opus-5");
+        let b = ContextBudget::for_model_with_override("claude-opus-5", None);
         assert!(b.max_output_tokens() > 4096, "research reports were truncated at 4096");
     }
 

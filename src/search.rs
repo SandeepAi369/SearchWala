@@ -220,14 +220,53 @@ pub async fn execute_search(
         6_000
     });
 
-    let results = dispatch_engines(
+    // ONE dispatch covering every (engine x sub-query) pair, under ONE
+    // deadline. An earlier v8.0 draft dispatched sub-queries sequentially,
+    // which multiplied the deadline by the number of variations (measured:
+    // 18,004 ms for 3 sub-queries against a 6 s deadline). Results are tagged
+    // with their variation index so cross-query fusion can still group them.
+    let tagged = dispatch_engines(
         &engine_instances, &query_variations,
         &plain_fetcher, &stealth_fetcher,
         &stealth_engine_set, &stealth_mode,
         &proxy_pool, &engine_semaphore, jitter_min, jitter_max,
         engine_concurrency, engine_deadline,
     ).await;
-    all_results.extend(results);
+
+    if query_variations.len() <= 1 {
+        all_results.extend(tagged.into_iter().flat_map(|(_, v)| v));
+    } else {
+        // Regroup per sub-query and fuse, weighting the original query 2x
+        // (P1-9). v7.0 flat-extended every variation into one list, so a URL
+        // found only by a derived sub-query carried the same RRF weight as one
+        // found by the user's actual query — and `cross_query_fusion`, which
+        // exists to prevent exactly that, was dead code.
+        let mut grouped: Vec<Vec<RawSearchResult>> = vec![Vec::new(); query_variations.len()];
+        for (idx, batch) in tagged {
+            if let Some(slot) = grouped.get_mut(idx) {
+                slot.extend(batch);
+            }
+        }
+        let per_query: Vec<(String, Vec<RawSearchResult>)> = query_variations
+            .iter()
+            .cloned()
+            .zip(grouped)
+            .inspect(|(q, v)| {
+                tracing::info!(
+                    "Sub-query [{}]: {} results",
+                    crate::util::truncate_chars(q, 60),
+                    v.len()
+                );
+            })
+            .collect();
+        let fused = ranking::cross_query_fusion(&per_query, &effective_query);
+        tracing::info!(
+            "Cross-query fusion: {} sub-queries -> {} fused unique URLs",
+            per_query.len(),
+            fused.len()
+        );
+        all_results.extend(fused);
+    }
 
     let engine_dispatch_ms = stage_start.elapsed().as_millis();
     tracing::info!(
@@ -401,6 +440,23 @@ pub async fn execute_search(
             .unwrap_or_else(|| "unknown".to_string());
 
         join_set.spawn(async move {
+            // ── Page cache (P2-3) ──
+            // Article bodies are stable, so this is where the real latency
+            // win is: the measured scrape stage was 3.4-12.3 seconds.
+            if let Some(cached) = crate::cache_layer::get_page(&url).await {
+                return Some(SourceResult {
+                    url: url.clone(),
+                    title: cached.title.clone(),
+                    extracted_text: cached.text.clone(),
+                    char_count: crate::util::char_len(&cached.text),
+                    engine: engine_name,
+                    published: cached.published,
+                    language: cached.language.clone(),
+                    confidence: cached.confidence,
+                    extractor: cached.source,
+                });
+            }
+
             let _permit = sem.acquire().await.ok()?;
             match scrape_url(
                 &client,
@@ -414,6 +470,7 @@ pub async fn execute_search(
             {
                 Some(e) => {
                     let char_count = crate::util::char_len(&e.text);
+                    crate::cache_layer::put_page(&url, e.clone()).await;
                     Some(SourceResult {
                         url,
                         title: e.title,
@@ -431,17 +488,80 @@ pub async fn execute_search(
         });
     }
 
-    // Collect all scraped results
+    // ── Collect scraped results, with the same ceiling-not-floor discipline
+    //    applied to the engine stage ──
+    //
+    // The scrape stage sat at exactly SCRAPE_TIMEOUT (8,000 ms) on every
+    // query, because one slow URL out of forty holds the stage open even when
+    // the other thirty-nine finished in under a second. We now stop once we
+    // have enough *usable* text, and hard-stop at a stage deadline.
+    let scrape_deadline = tokio::time::Instant::now()
+        + Duration::from_secs(config::scrape_stage_deadline_secs());
+    let want_sources = config::scrape_min_sources().min(deduped_count.max(1));
+    let want_chars = config::scrape_min_chars();
+
     let mut raw_scraped_results: Vec<SourceResult> = Vec::new();
-    while let Some(join_result) = join_set.join_next().await {
-        match join_result {
-            Ok(Some(result)) => {
-                raw_scraped_results.push(result);
+    let mut scraped_chars = 0usize;
+    let mut scrape_tasks_done = 0usize;
+    let total_scrape_tasks = join_set.len();
+
+    loop {
+        if scrape_tasks_done >= total_scrape_tasks {
+            break;
+        }
+        // Enough evidence? Stop waiting on the tail.
+        if raw_scraped_results.len() >= want_sources && scraped_chars >= want_chars {
+            let remaining = join_set.len();
+            tracing::info!(
+                "Scrape early-exit: {} sources / {} chars ({}/{} tasks) — aborting {} straggler(s)",
+                raw_scraped_results.len(), scraped_chars,
+                scrape_tasks_done, total_scrape_tasks, remaining
+            );
+            join_set.abort_all();
+            break;
+        }
+
+        let next = tokio::select! {
+            res = join_set.join_next() => res,
+            _ = tokio::time::sleep_until(scrape_deadline) => {
+                let remaining = join_set.len();
+                if remaining > 0 {
+                    tracing::info!(
+                        "Scrape deadline reached: {} sources from {}/{} tasks, aborting {}",
+                        raw_scraped_results.len(), scrape_tasks_done, total_scrape_tasks, remaining
+                    );
+                    join_set.abort_all();
+                }
+                break;
             }
-            Ok(_) => {}
-            Err(err) => tracing::debug!("Scrape task join error: {}", err),
+        };
+
+        match next {
+            Some(Ok(Some(result))) => {
+                scraped_chars += result.char_count;
+                raw_scraped_results.push(result);
+                scrape_tasks_done += 1;
+            }
+            Some(Ok(None)) => scrape_tasks_done += 1,
+            Some(Err(err)) => {
+                if !err.is_cancelled() {
+                    tracing::debug!("Scrape task join error: {}", err);
+                }
+                scrape_tasks_done += 1;
+            }
+            None => break,
         }
     }
+
+    // Drain anything that completed between the abort and now. The running
+    // char total is no longer consulted here — the exit decision is already
+    // made — so it is deliberately not updated.
+    while let Some(join_result) = join_set.join_next().await {
+        if let Ok(Some(result)) = join_result {
+            raw_scraped_results.push(result);
+        }
+    }
+    let _ = scraped_chars;
 
     let scrape_ms = stage_start.elapsed().as_millis();
     // Extraction VOLUME is the metric that matters for answer quality — v7.0
@@ -461,8 +581,13 @@ pub async fn execute_search(
     // ── Rank and prepare LLM input ──
     // v6.1.0: Pass RRF scores into ranking for hybrid BM25+RRF scoring
     let scraped_count = raw_scraped_results.len();
+    // NOTE: ranking uses the ORIGINAL `query`, not `effective_query`.
+    // `effective_query` carries engine syntax — an injected year and any
+    // `site:reddit.com` operator — and v7.0 fed that to BM25, so "site" and
+    // "reddit.com" became scoring terms and skewed relevance toward chunks
+    // that merely mention Reddit.
     let mut results = if use_ranked_chunk_path {
-        ranking::rank_top_chunks_with_rrf(&effective_query, &raw_scraped_results, llm_top_k, Some(&rrf_scores))
+        ranking::rank_top_chunks_with_signals(query, &raw_scraped_results, llm_top_k, Some(&rrf_scores), Some(&intel))
     } else {
         raw_scraped_results
     };
@@ -625,11 +750,11 @@ async fn dispatch_engines(
     jitter_max: u64,
     engine_concurrency: usize,
     deadline: Duration,
-) -> Vec<RawSearchResult> {
+) -> Vec<(usize, Vec<RawSearchResult>)> {
     let mut join_set = JoinSet::new();
     let mut dispatch_index: u64 = 0;
 
-    for variation in query_variations {
+    for (variation_idx, variation) in query_variations.iter().enumerate() {
         for engine in engine_instances {
             // v8.0: clone the Arc instead of re-running get_engines() inside the
             // task. That call re-entered generic::spec_for(), which used
@@ -665,6 +790,19 @@ async fn dispatch_engines(
             dispatch_index += 1;
 
             join_set.spawn(async move {
+                // ── SERP cache (P2-3) ──
+                // Checked BEFORE the jitter sleep and the semaphore, so a warm
+                // query skips engine HTTP entirely. Without this the dispatch
+                // stage always consumed its full deadline waiting on slow
+                // engines, which made a repeated query exactly as slow as a
+                // cold one even with a warm page cache.
+                if let Some(cached) =
+                    crate::cache_layer::get_serp(&ename, &query_variant, 0).await
+                {
+                    tracing::debug!("SERP cache hit: {} ({} results)", ename, cached.len());
+                    return (variation_idx, cached);
+                }
+
                 // ── Sleep BEFORE acquiring the permit (v8.0 P0-9) ──
                 // v7.0 acquired the semaphore permit and *then* slept for
                 // jitter + spread (up to ~785ms). Each task therefore occupied
@@ -680,7 +818,7 @@ async fn dispatch_engines(
 
                 let _permit = match sem.acquire().await {
                     Ok(p) => p,
-                    Err(_) => return Vec::new(),
+                    Err(_) => return (variation_idx, Vec::new()),
                 };
 
                 // Per-engine proxy still needs its own client; keep it rare.
@@ -705,25 +843,65 @@ async fn dispatch_engines(
                         pool.mark_proxy_success(&proxy);
                     }
                 }
-                results
+
+                // Empty results are deliberately NOT cached — an empty result
+                // is usually a block or selector rot, and caching it would
+                // persist the failure for the whole TTL.
+                crate::cache_layer::put_serp(&ename, &query_variant, 0, results.clone()).await;
+
+                (variation_idx, results)
             });
         }
     }
 
     // ── Collect with a deadline-based early cancel ──
     let deadline_instant = tokio::time::Instant::now() + deadline;
-    let mut all: Vec<RawSearchResult> = Vec::new();
+    let mut all: Vec<(usize, Vec<RawSearchResult>)> = Vec::new();
     let mut tasks_completed = 0usize;
     let total_tasks = join_set.len();
 
+    // Early-exit thresholds. The deadline should be a CEILING, not a floor:
+    // in the measured run it was consumed in full on every query because four
+    // engines always fail and the collector waited for them, so a fully warm
+    // cache still cost 6,002 ms here.
+    let min_results_to_exit = config::early_exit_min_results();
+    let min_families_to_exit = config::early_exit_min_families();
+
     loop {
+        // Stop as soon as we have genuinely sufficient coverage. Additional
+        // results from a fifth-choice engine have sharply diminishing value,
+        // and waiting for known-failing engines has none.
+        if tasks_completed >= total_tasks {
+            break;
+        }
+        {
+            let flat_len: usize = all.iter().map(|(_, v)| v.len()).sum();
+            if flat_len >= min_results_to_exit {
+                let fams: std::collections::HashSet<&str> = all
+                    .iter()
+                    .flat_map(|(_, v)| v.iter())
+                    .map(|r| engines::engine_family(&r.engine))
+                    .collect();
+                if fams.len() >= min_families_to_exit {
+                    let remaining = join_set.len();
+                    tracing::info!(
+                        "Engine early-exit: {} results from {} independent families \
+                         ({}/{} tasks done) — aborting {} slower task(s)",
+                        flat_len, fams.len(), tasks_completed, total_tasks, remaining
+                    );
+                    join_set.abort_all();
+                    break;
+                }
+            }
+        }
+
         let result = tokio::select! {
             res = join_set.join_next() => res,
             _ = tokio::time::sleep_until(deadline_instant) => {
                 let remaining = join_set.len();
                 if remaining > 0 {
                     tracing::info!(
-                        "Engine deadline ({:?}) reached: {}/{} tasks done, aborting {} (have {} results)",
+                        "Engine deadline ({:?}) reached: {}/{} tasks done, aborting {} (have {} batches)",
                         deadline, tasks_completed, total_tasks, remaining, all.len()
                     );
                     join_set.abort_all();
@@ -733,8 +911,8 @@ async fn dispatch_engines(
         };
 
         match result {
-            Some(Ok(batch)) => {
-                all.extend(batch);
+            Some(Ok(tagged)) => {
+                all.push(tagged);
                 tasks_completed += 1;
             }
             Some(Err(err)) => {
@@ -743,27 +921,34 @@ async fn dispatch_engines(
                 }
                 tasks_completed += 1;
             }
-            None => break,
+            None => {
+                tracing::debug!(
+                    "Engine collect: set drained at {}/{} tasks",
+                    tasks_completed, total_tasks
+                );
+                break;
+            }
         }
     }
 
     // Drain anything that finished between the abort and now.
     while let Some(result) = join_set.join_next().await {
-        if let Ok(batch) = result {
-            all.extend(batch);
+        if let Ok(tagged) = result {
+            all.push(tagged);
         }
     }
 
     // v8.0: count DISTINCT engines that produced results, not tasks. v7.0
     // logged "engines completed" for engines x variations, which made a
     // single-engine run look like 33 engines succeeding.
+    let flat: Vec<&RawSearchResult> = all.iter().flat_map(|(_, v)| v.iter()).collect();
     let producing: std::collections::HashSet<&str> =
-        all.iter().map(|r| r.engine.as_str()).collect();
+        flat.iter().map(|r| r.engine.as_str()).collect();
     let families: std::collections::HashSet<&str> =
-        all.iter().map(|r| engines::engine_family(&r.engine)).collect();
+        flat.iter().map(|r| engines::engine_family(&r.engine)).collect();
     tracing::info!(
         "Engine dispatch: {}/{} tasks done | {} engines produced results | {} independent families | {} raw results",
-        tasks_completed, total_tasks, producing.len(), families.len(), all.len()
+        tasks_completed, total_tasks, producing.len(), families.len(), flat.len()
     );
     all
 }

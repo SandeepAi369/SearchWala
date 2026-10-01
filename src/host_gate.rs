@@ -61,11 +61,16 @@ pub fn host_key(url: &str) -> String {
 ///
 /// Returns the delay that was applied, for logging.
 pub async fn acquire(url: &str) -> Duration {
+    acquire_with(url, host_interval()).await
+}
+
+/// Testable core — the interval is a parameter so tests do not have to mutate
+/// process-global env, which races under the parallel harness.
+pub async fn acquire_with(url: &str, interval: Duration) -> Duration {
     let key = host_key(url);
     if key.is_empty() {
         return Duration::ZERO;
     }
-    let interval = host_interval();
     if interval.is_zero() {
         return Duration::ZERO;
     }
@@ -106,7 +111,7 @@ mod tests {
 
     #[test]
     fn host_key_collapses_subdomains_to_one_budget() {
-        // The whole point: these must share a budget.
+        // The whole point: these must share a rate budget.
         assert_eq!(host_key("https://search.brave.com/search?q=x"), "brave.com");
         assert_eq!(host_key("https://search.brave.com/news?q=x"), "brave.com");
         assert_eq!(host_key("https://www.bing.com/search?q=x"), "bing.com");
@@ -120,7 +125,7 @@ mod tests {
         assert_eq!(host_key("https://www.google.co.uk/search?q=x"), "google.co.uk");
         assert_eq!(host_key("https://www.google.co.in/search?q=x"), "google.co.in");
         assert_eq!(host_key("https://www.google.com.br/search?q=x"), "google.com.br");
-        // Distinct regional Googles must NOT share a budget with google.com.
+        // Distinct regional Googles must NOT share one budget with google.com.
         assert_ne!(host_key("https://www.google.co.uk/"), host_key("https://www.google.com/"));
     }
 
@@ -132,14 +137,12 @@ mod tests {
 
     #[tokio::test]
     async fn same_host_requests_are_spaced_apart() {
-        std::env::set_var("HOST_MIN_INTERVAL_MS", "150");
+        let iv = Duration::from_millis(150);
         let t0 = Instant::now();
-        // Three requests to the same registrable host.
-        acquire("https://spacing-test.example/a").await;
-        acquire("https://spacing-test.example/b").await;
-        acquire("https://spacing-test.example/c").await;
+        acquire_with("https://spacing-a.test/1", iv).await;
+        acquire_with("https://spacing-a.test/2", iv).await;
+        acquire_with("https://spacing-a.test/3", iv).await;
         let elapsed = t0.elapsed();
-        std::env::remove_var("HOST_MIN_INTERVAL_MS");
         assert!(
             elapsed >= Duration::from_millis(250),
             "3 same-host requests should take >=2 intervals, took {elapsed:?}"
@@ -148,13 +151,12 @@ mod tests {
 
     #[tokio::test]
     async fn different_hosts_are_not_delayed() {
-        std::env::set_var("HOST_MIN_INTERVAL_MS", "400");
+        let iv = Duration::from_millis(400);
         let t0 = Instant::now();
-        acquire("https://host-a-test.example/x").await;
-        acquire("https://host-b-test.example/x").await;
-        acquire("https://host-c-test.example/x").await;
+        acquire_with("https://par-a.test/x", iv).await;
+        acquire_with("https://par-b.test/x", iv).await;
+        acquire_with("https://par-c.test/x", iv).await;
         let elapsed = t0.elapsed();
-        std::env::remove_var("HOST_MIN_INTERVAL_MS");
         assert!(
             elapsed < Duration::from_millis(200),
             "distinct hosts must run in parallel, took {elapsed:?}"
@@ -163,26 +165,20 @@ mod tests {
 
     #[tokio::test]
     async fn zero_interval_disables_the_gate() {
-        std::env::set_var("HOST_MIN_INTERVAL_MS", "0");
         let t0 = Instant::now();
         for _ in 0..5 {
-            acquire("https://disabled-test.example/x").await;
+            acquire_with("https://disabled.test/x", Duration::ZERO).await;
         }
-        let elapsed = t0.elapsed();
-        std::env::remove_var("HOST_MIN_INTERVAL_MS");
-        assert!(elapsed < Duration::from_millis(100), "took {elapsed:?}");
+        assert!(t0.elapsed() < Duration::from_millis(100), "took {:?}", t0.elapsed());
     }
 
     #[test]
     fn prune_drops_expired_entries() {
-        std::env::set_var("HOST_MIN_INTERVAL_MS", "1");
         {
             let mut map = NEXT_ALLOWED.lock().unwrap();
-            map.insert("stale.test".into(), Instant::now() - Duration::from_secs(60));
+            map.insert("stale-prune.test".into(), Instant::now() - Duration::from_secs(60));
         }
         prune();
-        let map = NEXT_ALLOWED.lock().unwrap();
-        assert!(!map.contains_key("stale.test"));
-        std::env::remove_var("HOST_MIN_INTERVAL_MS");
+        assert!(!NEXT_ALLOWED.lock().unwrap().contains_key("stale-prune.test"));
     }
 }

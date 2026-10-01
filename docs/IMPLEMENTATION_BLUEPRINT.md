@@ -2213,3 +2213,71 @@ Two `verify_citations` tests failed initially because my fixture sources were
 under `build_ranked_context`'s 80-character minimum and were correctly skipped.
 The minimum is right — a sub-80-char "source" is not evidence — so the fixtures
 were lengthened rather than the threshold lowered.
+
+---
+
+## Phase 5 — COMPLETE (P1-9, P1-11, P1-12, P2-2, P2-3; P1-10 landed in Phase 4)
+
+Status: **gate PASSED.** 177 unit tests, zero warnings, stable across repeated runs.
+
+### Delivered
+| Item | Change |
+|---|---|
+| P1-12a | `src/ssrf.rs` — `base_url` is validated before use. v7.0 was an **open credentialed SSRF proxy**: with permissive CORS and a 0.0.0.0 bind, any page in the user's browser could POST a `base_url` of `http://169.254.169.254/...` and read cloud metadata. Metadata IPs are blocked unconditionally; loopback/private ranges need `ALLOW_LOCAL_LLM=1` (so Ollama/LM Studio still work). |
+| P1-12b | `LlmConfig`'s derived `Debug` replaced with a hand-written impl that redacts `api_key`. |
+| P1-12c | TTS: concurrency-capped to 2, temp file removed via a `Drop` guard on every path (v7.0 leaked one mp3 per failed request), and the hardcoded `/home/sandeep/.local/bin/edge-tts` path removed. |
+| P1-11a | Reasoning-model responses no longer discarded. Anthropic now scans for the first `type:"text"` block (v7.0 read `content[0].text`, which is a `thinking` block under extended thinking → `empty_response`). OpenAI-compatible handles string / array-of-parts / `reasoning_content`. |
+| P1-11b | `call_llm_retrying` with exponential backoff on 429/5xx — v7.0 had **no retry**, so one rate-limit failed the whole search. One shared `OnceLock` client replaces a fresh `reqwest::Client` per call. |
+| P0-12 | Temporal detection matches on **word boundaries**. v7.0's substring list made "New York population", "how do I know if…", "renewable energy" and "justice system" all time-sensitive, appending a spurious year to the query. |
+| P1-9 | Decomposition disciplined: no midpoint fragments, no bare single-word entities, capped at 3. `cross_query_fusion` is now **wired in** (it was dead code) with the original query weighted 2× and family-collapse applied. |
+| P2-2 | Freshness decay as a real ranking signal, gated on time-sensitivity so evergreen queries are not recency-biased. Half-lives: news 7d, person 180d, default 60d, floor 0.60. |
+| P2-3 | `src/cache_layer.rs` — two-tier `moka` cache (SERP 10 min, page 6 h) plus `/health/cache`. v7.0 had **no result cache at all**. Empty results are deliberately never cached, since an empty result is usually a block. |
+| — | Ranking now uses the **original** query, not `effective_query`. v7.0 fed BM25 the engine-syntax version, so `site` and `reddit.com` became scoring terms. |
+
+### A latency optimization I had to back out
+
+I first added an engine-dispatch early-exit ("stop once we have N results from
+M families"). It cut latency but **destroyed the consensus signal** — the thing
+Phases 2 and 4 exist to produce. Measured, same query, cold, `CACHE=off`:
+
+| threshold | latency | raw results | multi-family | engines |
+|---|---|---|---|---|
+| R=60 F=3 | 4.25 s | 64 | **2** | 5 |
+| R=120 F=4 | 5.26 s | 133 | 9 | 5 |
+| R=200 F=5 | 7.39 s | 161 | 9 | 9 |
+| **disabled** | 4.76 s | **165** | 7 | **9** |
+
+Exiting early cost ~60% of the raw results and most cross-family agreement to
+save about half a second, and disabling it was not even slower in practice.
+**Disabled by default**, with the table recorded in `config.rs` so the next
+person does not redo the experiment. `EARLY_EXIT_MIN_RESULTS` re-enables it.
+
+The actual latency win came from two different places:
+1. **Scrape-stage early-exit**, which gates on BOTH enough sources AND enough
+   extracted text — so it costs no quality. 8,000 ms → ~1,000 ms.
+2. **Nesting the timeouts.** The per-request timeout was 6,000 ms against a
+   6,000 ms dispatch deadline, so a single hanging engine (yacy) held the
+   collector open for the entire window on every query — 16 of 17 tasks long
+   since finished. Dropping the request timeout to 4,000 ms lets the straggler
+   fail, get recorded as a transport error, and the dispatch close.
+
+### Measured: v7.0 → Phase 5 (live, same query)
+
+| Metric | v7.0 | **Phase 5** |
+|---|---|---|
+| Cold query, end to end | 14.9 s | **5.42 s** |
+| Repeated query | 14.9 s | **4.37 s** (0.03 s with both caches warm) |
+| Engine stage | 6,001 ms (always) | **4,138 ms**, 0 ms on SERP-cache hit |
+| Scrape stage | 8,371 ms | **1,258 ms** cold, **1 ms** warm |
+| Rank stage | 3,011 ms | **13 ms** |
+| Raw results per query | 127 | **167–187** |
+| Sources found by >1 family | not computed | **13–14 of 40** |
+| SSRF via `base_url` | **exploitable** | blocked (400) |
+
+### Test-quality work
+Five of my own tests mutated process-global env vars (`ALLOW_LOCAL_LLM`,
+`WIKIPEDIA_LANGS`, `SEARXNG_BASE_URL`, `HOST_MIN_INTERVAL_MS`,
+`CONTEXT_MAX_TOKENS`) and raced under `cargo test`'s parallel harness — one
+failed intermittently. Each is now split into a parameterised core plus a thin
+env-reading wrapper, so the tests pass deterministically (verified over three
+consecutive runs).

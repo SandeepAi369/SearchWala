@@ -29,17 +29,23 @@ const MAX_SERP_BYTES: usize = 3_000_000;
 /// Hard per-request ceiling, independent of the client-level timeout.
 ///
 /// Discovered in testing: the Marginalia public API *hangs* on some queries —
-/// "cricket world cup" returned in 0.9s, "cricket world cup 2027" never
-/// returned and hit a 25s timeout. With the client timeout at 16s and the
-/// dispatch deadline at 2.5-6s, the task was aborted mid-flight, so the health
-/// registry recorded an attempt with NO outcome: invisible. A tight per-request
-/// timeout turns a hang into a recorded transport error.
+/// "cricket world cup" returned in 0.9 s, "cricket world cup 2027" never
+/// returned and hit a 25 s timeout. With the client timeout at 16 s and the
+/// dispatch deadline at 2.5–6 s, the task was aborted mid-flight, so the
+/// health registry recorded an attempt with NO outcome: invisible.
+///
+/// **This must stay meaningfully BELOW the dispatch deadline.** When it was
+/// 6,000 ms against a 6,000 ms auto-mode deadline, a single hanging engine
+/// (measured: yacy) held the collector open for the entire window — the stage
+/// cost 6,001 ms on every query, warm cache or not, with 16 of 17 tasks long
+/// since finished. At 4,000 ms the straggler fails, gets recorded as a
+/// transport error, and the dispatch closes as soon as the rest are in.
 fn request_timeout() -> Duration {
     Duration::from_millis(
         std::env::var("ENGINE_REQUEST_TIMEOUT_MS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(6_000),
+            .unwrap_or(4_000),
     )
 }
 
