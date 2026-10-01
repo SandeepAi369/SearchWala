@@ -141,6 +141,9 @@ pub fn validate_base_url_with(raw: &str, allow_local: bool) -> Result<Url, Strin
 /// Is this resolved IP safe to connect to?
 ///
 /// Guards against DNS rebinding: a public hostname can resolve to 127.0.0.1.
+/// Exposed for callers that resolve DNS themselves; `is_ip_allowed_with` is
+/// the testable core.
+#[allow(dead_code)]
 pub fn is_ip_allowed(ip: IpAddr) -> bool {
     is_ip_allowed_with(ip, allow_local_from_env())
 }

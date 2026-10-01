@@ -184,6 +184,8 @@ pub fn should_skip(url: &str) -> bool {
 }
 
 /// Legacy alias — `canonical_key` is the real implementation now.
+/// Kept as public API surface for callers outside this crate.
+#[allow(dead_code)]
 pub fn dedup_key(url: &str) -> String {
     canonical_key(url)
 }

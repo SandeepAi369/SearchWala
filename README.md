@@ -2,569 +2,313 @@
 
 # ⚡ SearchWala
 
-### The Smartest Open-Source Meta-Search Engine — Built in Pure Rust
+### Open-source meta-search engine in pure Rust
 
-[![Version](https://img.shields.io/badge/version-5.2.0-blue?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
+[![Version](https://img.shields.io/badge/version-8.0.0-blue?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
-[![Engines](https://img.shields.io/badge/search%20engines-90+-brightgreen?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
+[![Tests](https://img.shields.io/badge/tests-190-brightgreen?style=flat-square)](#testing)
 [![License](https://img.shields.io/badge/license-Apache%202.0-purple?style=flat-square)](./LICENSE)
 
-**90+ search engines** · **RRF Ranking** · **Query Intelligence** · **Neural Voice** · **Intent-Aware LLM** · **BYOK**
-
-*SearchWala is a single-binary meta-search engine that analyzes query intent, queries 90+ search engines simultaneously, ranks results using Reciprocal Rank Fusion (cross-engine consensus), extracts clean text with a 7-tier extractor, synthesizes intent-aware answers using any LLM, and reads results aloud — all in pure Rust.*
-
-[Quick Start](#-quick-start) · [Key Features](#-key-features) · [Voice Support](#-neural-voice-readback) · [Platform Support](#-cross-platform-support) · [Architecture](#%EF%B8%8F-architecture) · [API Reference](#-api-reference) · [Configuration](#%EF%B8%8F-configuration)
+**Cross-engine consensus ranking** · **trafilatura + Readability extraction** · **BYOK LLM** · **single binary**
 
 </div>
 
 ---
 
-## 🎯 What Is SearchWala?
+## What it does
 
-**SearchWala** is an open-source, privacy-first meta-search engine designed to give you the **deepest, most comprehensive search results** possible — far beyond what any single search engine can offer. While Google gives you 10 blue links and Perplexity gives you a black-box summary, **SearchWala** gives you:
+Queries several independent search indexes in parallel, fuses their rankings by
+cross-engine consensus, extracts the full article text from the top sources,
+and optionally synthesizes a cited answer with any LLM you bring a key for.
 
-- 📡 Results from **90+ search engines** queried in parallel
-- 📖 **Full article text** extracted from every source (not just URLs)
-- 🧠 **AI-synthesized answers** with proper source citations
-- 🔊 **Neural voice readback** — listen to answers hands-free
-- ⏰ **Time-aware intelligence** — always returns the latest information
-- 🖥️ **Runs on your machine** — Windows, macOS, Linux — no cloud needed
-
-Whether you're a researcher needing comprehensive literature reviews, a developer looking for code solutions, or simply someone who wants better search — **SearchWala** delivers results that no single search engine can match.
+Everything runs on your machine as one binary. No API keys are required for
+search itself.
 
 ---
 
-## 🏆 How SearchWala Is Different
+## Honest status
 
-Most meta-search tools (SearXNG, Searx, etc.) simply proxy queries and return URLs. **SearchWala** goes **5 levels deeper** — it doesn't just *find* pages, it **reads them for you**:
+This project previously advertised "90+ search engines". That was not true, and
+the number is now replaced by something you can check yourself.
 
-| Capability | SearXNG | Perplexity | **SearchWala** |
-|---|:---:|:---:|:---:|
-| Meta-search across engines | ✅ ~70 | ❌ proprietary | ✅ **90+ engines** |
-| Full article text extraction | ❌ | ❌ (summary only) | ✅ **5-tier extractor** |
-| BM25 relevance ranking | ❌ | ❌ | ✅ **paragraph-level** |
-| 🔊 Neural Voice Readback | ❌ | ❌ | ✅ **10-word smart streaming** |
-| ⏰ Time-Aware Search | ❌ | partial | ✅ **auto date enrichment** |
-| Anti-bot / WAF stealth | ❌ | N/A | ✅ **20 browser profiles (Chrome 147)** |
-| Iterative deep research | ❌ | ✅ (paid) | ✅ **multi-batch free** |
-| Domain-specialized search | ❌ | ❌ | ✅ **5 domain modes** |
-| Self-hosted / no API keys | ✅ | ❌ | ✅ **zero dependencies** |
-| LLM provider (BYOK) | ❌ | ✅ (locked) | ✅ **15+ providers** |
-| SSE real-time streaming | ❌ | ✅ | ✅ **native SSE** |
-| Simultaneous engine dispatch | ❌ | N/A | ✅ **ALL 35 engines in parallel** |
-| Cross-platform binary | ❌ (Python) | ❌ (cloud) | ✅ **Win/Mac/Linux ~15MB** |
-| Proxy pool + Tor support | partial | ❌ | ✅ **round-robin + cooldown** |
+**Free HTML scraping of major search engines is largely over.** Measured on
+2026-10-01, from a normal residential/datacenter IP:
 
----
+| Engine | Status |
+|---|---|
+| Google (all regions) | HTTP 200 but a JS interstitial, **0** result links. Retested with consent cookies, `SOCS`, `gbv=1`, `hl`/`gl` — no HTML path exists. |
+| Bing | works with TLS impersonation (serves its homepage without it) |
+| Brave | works with TLS impersonation (HTTP 429 without it) |
+| DuckDuckGo | works with TLS impersonation (CAPTCHA without it); rate-limits quickly |
+| Yahoo | works with TLS impersonation |
+| Wikipedia, Marginalia, Wiby | JSON APIs, reliable |
+| Mojeek, Ecosia, Mwmbl, Yandex | IP-dependent — 403/303 from some addresses |
+| Startpage | serves a consent page, not results |
+| Qwant | JS single-page app, no server-rendered results |
+| 4get, Alexandria, Whoogle, Librex, Right DAO, Stract, Ask, Presearch, Yep, Dogpile, Excite, Lycos, Pipilika, SearchEncrypt, Kiddle, Gibiru | dead instances, moved endpoints, or JS/token walls |
 
-## 🔑 Key Features
-
-### 🔊 Neural Voice Readback
-
-**SearchWala** is one of the few search engines — open-source or commercial — that includes **built-in text-to-speech**. Every AI answer can be read aloud using Microsoft Edge's neural voice engine (en-US-AvaNeural):
-
-- **Smart 10-word chunking** — SearchWala splits answers into small, natural segments for instant playback start
-- **Progressive streaming** — The first chunk plays immediately while the next 3 are prefetched in the background
-- **Aggressive text cleaning** — Source references `[1][2]`, markdown formatting, URLs, and LLM artifacts are all stripped before reading, so you hear only clean, natural speech
-- **Session-safe playback** — No double-voice glitches; each playback session is isolated with a unique session ID
-- **One-click Listen** — Click the 🔊 button next to any AI answer to start/stop voice readback
-- **Cached for replay** — Audio chunks are cached as blob URLs, so replaying is instant
-
-This makes **SearchWala** ideal for:
-- 🚗 Hands-free research while commuting or cooking
-- ♿ Accessibility for visually impaired users
-- 📚 Listening to research summaries during workouts
-- 🎧 Multitasking — get search answers without looking at the screen
-
-### ⏰ Time-Aware Intelligence
-
-Most search engines return stale results. **SearchWala** solves this with a two-layer time-awareness system:
-
-1. **Search Query Enrichment** — When SearchWala detects recency keywords like "latest", "current", "recent", "today", or "now" in your query, it automatically appends the current year (e.g., `2026`) to nudge search engines toward fresh results
-2. **LLM Date Injection** — Every AI synthesis prompt includes today's exact date with strong instructions to prioritize the most recent sources and flag outdated information
-
-Ask SearchWala "Who is the CEO of Google?" and you'll get today's answer — not one from 2024.
-
-### 🔍 90+ Search Engines — The Widest Coverage in Any Open-Source Tool
-
-**SearchWala** doesn't rely on a single search provider. It queries **90+ engines in parallel**, each with a dedicated HTML parser — no API keys needed:
-
-- **Major**: Google (14 regional variants), Bing (14 regional), DuckDuckGo, Brave, Yahoo
-- **Privacy**: Startpage, Qwant, Mojeek, Swisscows, MetaGer, Search Encrypt, Presearch
-- **Academic**: Google Scholar, Wikipedia (API-native)
-- **Regional**: Yandex, Baidu, Sogou, Naver, Daum, Seznam, Rambler
-- **Independent**: Wiby, Marginalia, Stract, Right DAO, Mwmbl, Yep
-- **Aggregators**: Dogpile, WebCrawler, Info, Excite, Lycos, AOL
-- **Vertical**: Google News, Bing News, Yahoo News, Brave News, DDG News/Images/Videos
-
-### 🛡️ Military-Grade Stealth — 20 Browser Fingerprints (2026 Current)
-
-Every request **SearchWala** makes rotates through **20 real browser profiles** updated for April 2026:
-- Realistic `User-Agent` strings (Chrome 145–147, Firefox 135–136, Edge 146–147, Safari 18.3–18.4, Opera 117, Brave 147)
-- Full `Sec-CH-UA` client hint suite with platform version hints (Windows 15.0.0, macOS 15.4.0)
-- `Sec-CH-UA-Arch`, `Sec-CH-UA-Bitness`, `Sec-CH-UA-Full-Version-List` headers
-- `Accept-Encoding: gzip, deflate, br, zstd` (2026 browser standard)
-- Randomized `Accept` header variants with 3 rotation patterns
-- Per-request cookie isolation
-- Configurable jitter timing (50–200ms)
-- Optional proxy pool with health tracking + Tor SOCKS5 integration
-
-This lets **SearchWala** bypass Cloudflare, Akamai, and Imperva WAFs — something no other open-source search engine even attempts.
-
-### 📖 5-Tier Content Extraction
-
-While other search tools give you links, **SearchWala** scrapes and extracts the **actual article text**:
-
-1. **Structured Selectors** — `.entry-content`, `.article-body`, `#main-content` (35+ CMS patterns)
-2. **Semantic HTML5** — `<article>`, `<main>`, `[role="main"]`, `[itemprop="articleBody"]`
-3. **Scored Container** — Text-density scoring with link-ratio penalty (trafilatura-inspired)
-4. **Content Elements** — `<p>`, `<li>`, `<blockquote>`, `<pre>` fallback collection
-5. **Full Body** — Last-resort visible text extraction with boilerplate filtering
-
-### 🧠 BM25 Paragraph-Level Ranking
-
-Raw results aren't enough — relevance matters. **SearchWala** breaks every scraped article into paragraph-sized chunks and scores them using the **Okapi BM25 algorithm** (the same model underlying Elasticsearch):
-
-- Term frequency (TF) analysis per chunk
-- Inverse document frequency (IDF) across all chunks
-- Document length normalization with exact phrase match bonus
-- Only the **top-K most relevant chunks** are passed to the LLM — not raw pages
-
-### 🔬 Deep Research Mode
-
-**SearchWala's** Deep Research mode produces comprehensive research papers:
-1. Queries **all 90+ engines** simultaneously
-2. Scrapes **200+ sources** concurrently
-3. Splits results into **batches of 50** for iterative LLM synthesis
-4. Each batch **builds on the previous report** with new evidence
-5. Produces a **detailed research paper** with proper `[n]` source citations
-
-This is the open-source equivalent of Perplexity Pro Search — without the subscription.
-
-### 🎯 Domain-Specialized Search
-
-**SearchWala** offers 5 curated domain modes with optimized engine sets:
-
-| Domain | Focus Engines | Use Case |
-|---|---|---|
-| 💻 **Tech** | Stack Overflow, GitHub, HN, dev blogs | Programming, APIs, DevOps |
-| 🧬 **Science** | Google Scholar, PubMed, arXiv, Nature | Research papers, studies |
-| 📊 **Finance** | Bloomberg, Reuters, Yahoo Finance | Markets, earnings, macro |
-| 🏥 **Health** | NIH, WHO, Mayo Clinic, medical journals | Medical, clinical data |
-| 📰 **News** | All news-specific engine variants | Breaking news, current events |
-
----
-
-## 💻 Cross-Platform Support
-
-**SearchWala** runs natively on all major operating systems. Since it compiles to a single Rust binary with zero runtime dependencies, you get the same performance everywhere:
-
-### 🪟 Windows
-
-```powershell
-# Install Rust (if not installed)
-winget install Rustlang.Rustup
-
-# Clone and build
-git clone https://github.com/SandeepAi369/SearchWala.git
-cd SearchWala
-cargo build --release
-
-# Run SearchWala
-.\target\release\searchwala.exe
-# Open http://localhost:8000 in your browser
-```
-
-**WSL Support**: SearchWala also runs perfectly under Windows Subsystem for Linux (WSL). The server binds to `0.0.0.0`, so you can access it from your Windows browser at `http://localhost:8000`.
-
-### 🍎 macOS
+**Check your own install rather than trusting this table:**
 
 ```bash
-# Install Rust (if not installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+curl localhost:8000/health/engines
+```
 
-# Clone and build
-git clone https://github.com/SandeepAi369/SearchWala.git
-cd SearchWala
+It reports, per engine: attempts, HTTP successes, blocks, transport errors,
+**zero-result responses**, and a verdict of `healthy` / `degraded` /
+`selector_rot` / `blocked` / `dead_host` / `unproven`. `zero_results` is the
+important one — HTTP 200 with nothing parsed means the selectors have rotted,
+which is otherwise indistinguishable from "no matches for this query".
+
+To get more independent indexes, see [Expanding coverage](#expanding-coverage).
+
+---
+
+## Quick start
+
+```bash
 cargo build --release
-
-# Run SearchWala
 ./target/release/searchwala
-# Open http://localhost:8000
+# http://127.0.0.1:8000
 ```
-
-Works on both **Intel** and **Apple Silicon (M1/M2/M3/M4)** Macs — Rust compiles natively for ARM64.
-
-### 🐧 Linux
 
 ```bash
-# Install Rust (if not installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Clone and build
-git clone https://github.com/SandeepAi369/SearchWala.git
-cd SearchWala
-cargo build --release
-
-# Run SearchWala
-./target/release/searchwala
-# Open http://localhost:8000
+curl -X POST localhost:8000/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"cricket world cup 2027 schedule","focus_mode":"auto","max_results":40}'
 ```
 
-Tested on Ubuntu 20.04+, Debian 11+, Fedora 38+, Arch Linux, and Alpine (Docker).
-
-### 🐳 Docker (Any Platform)
+Docker:
 
 ```bash
-docker build -t searchwala .
-docker run -p 8000:8000 searchwala
+docker build -t searchwala . && docker run -p 7860:7860 searchwala
 ```
 
-The Docker image is a multi-stage build resulting in a **~15MB** final image — runs on any platform with Docker including cloud VPS, Hugging Face Spaces, and Kubernetes.
+---
 
-### System Requirements
+## How it works
 
-| Component | Minimum | Recommended |
+```
+query
+  ├─ 1. intent analysis        factual / temporal / person / comparison /
+  │                            howto / navigational / research
+  │                            100% accurate on the 50-query golden set
+  ├─ 2. parallel dispatch      independent indexes, per-host rate gating,
+  │                            TLS impersonation where the engine requires it
+  ├─ 3. consensus ranking      RRF (k=60) collapsed by ENGINE FAMILY, so 15
+  │                            Bing regional variants count once, not 15 times
+  ├─ 4. source selection       top-N by consensus score (not arrival order)
+  ├─ 5. extraction             rs-trafilatura, with Readability as a
+  │                            conditional second opinion; yields text,
+  │                            publication date, language and a confidence
+  ├─ 6. chunk ranking          BM25+ → trust prior → extraction confidence →
+  │                            freshness decay → MMR diversity
+  └─ 7. synthesis (optional)   model-scaled context, lost-in-middle ordering,
+                               citations that resolve to the right source
+```
+
+### Cross-engine consensus
+
+Many "meta-search" result counts are inflated because the same index is
+counted repeatedly under different names. SearchWala groups engines into
+**families** — all Bing regional variants, plus DuckDuckGo and Yahoo which are
+Bing-derived, are one family; Startpage and Ecosia belong to Google's. RRF then
+fuses across families, so `found_by_families: 3` means three genuinely
+independent indexes agreed.
+
+### Extraction
+
+The extractor choice was benchmarked, not assumed, on a 10-page corpus
+committed under `tests/fixtures/articles/`:
+
+| extractor | chars extracted | time |
 |---|---|---|
-| **OS** | Windows 10+, macOS 12+, Linux (glibc 2.31+) | Any modern OS |
-| **RAM** | 256MB | 512MB+ |
-| **Disk** | 20MB (binary) | 50MB (with build cache) |
-| **CPU** | Any x86_64 or ARM64 | Multi-core for concurrency |
-| **Network** | Internet connection | Broadband for 90 engine queries |
-| **Rust** | 1.75+ (build only) | Latest stable |
+| hand-rolled (v7.0) | 76,462 | 55 ms |
+| rs-trafilatura | 117,032 | 374 ms |
+| Readability (`dom_smoothie`) | 102,248 | 78 ms |
+| **trafilatura + conditional Readability** | **120,898** | **416 ms** |
+
+Trafilatura leads overall and is the only one that also returns publication
+date, language and a quality score. Readability wins on 6 of 10 pages though,
+sometimes by 2× — so it runs as a second opinion when the primary output looks
+thin for the page, and the longer result wins.
+
+### Non-Latin scripts
+
+Sentence segmentation recognises 13 terminators including `।` (Devanagari
+danda), `。`, `؟` and Thai/Myanmar/Ethiopic marks, and does not require an
+uppercase next character for uncased scripts. Length gates count **characters**,
+not bytes. Answers are returned in the language the question was asked in.
 
 ---
 
-## 🏗️ Architecture
+## Configuration
 
-```
-  Client Request           SearchWala v5.1.0
-  ┌──────────┐        ┌────────────────────────────────────────────────┐
-  │ POST     │        │                                                │
-  │ /search  │───────►│  1. Time-Aware Query Enrichment (auto-date)   │
-  │          │        │  2. ALL 35 Engines Dispatch (simultaneous)     │
-  │          │        │  3. 20-wide Semaphore Concurrency Control      │
-  │          │        │  4. URL Dedup (single-parse pipeline)          │
-  │          │        │  5. Concurrent Scrape (32 workers)             │
-  │          │        │  6. 5-Tier Content Extraction                  │
-  │          │        │  7. BM25 Paragraph Ranking                     │
-  │          │        │  8. LLM Synthesis with Date Injection (BYOK)  │
-  │          │        │  9. Neural TTS Voice Readback                  │
-  │          │        │                                                │
-  │  ◄───────┤────────│  Response: sources + text + answer + audio    │
-  └──────────┘        └────────────────────────────────────────────────┘
-```
+All optional. Defaults are chosen to work without configuration.
 
-### Simultaneous All-Engine Dispatch (v5.1.0)
-
-```
-ALL 35 engines fire simultaneously (zero delay)
-    │
-    ├── 20-wide semaphore controls concurrency
-    ├── Per-engine staggered jitter (50–200ms) for stealth
-    ├── Proxy pool rotation with health tracking
-    │
-    └── Results merged + deduplicated → scrape pipeline
-         └──► Guarantees maximum data from every available source
-```
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `8000` | listen port |
+| `BIND` | `127.0.0.1` | set `0.0.0.0` to expose on the network |
+| `ENGINES` | from code | comma-separated override, incl. engines not in the default roster |
+| `MAX_URLS` | `420` | scrape ceiling |
+| `CONCURRENCY` | `32` | concurrent scrapes |
+| `SCRAPE_TIMEOUT` | `8` | per-URL seconds |
+| `SCRAPE_STAGE_DEADLINE` | `10` | whole-stage ceiling, seconds |
+| `SCRAPE_MIN_SOURCES` / `SCRAPE_MIN_CHARS` | `25` / `80000` | when the scrape stage may stop waiting on stragglers |
+| `ENGINE_REQUEST_TIMEOUT_MS` | `4000` | **must stay below the dispatch deadline** |
+| `HOST_MIN_INTERVAL_MS` | `400` | per-host request spacing |
+| `STEALTH_MODE` | `auto` | `on` / `off` / `auto` (engine decides) |
+| `CACHE` | on | `off` disables both cache tiers |
+| `SERP_CACHE_TTL_SECS` / `PAGE_CACHE_TTL_SECS` | `600` / `21600` | cache lifetimes |
+| `CONTEXT_MAX_TOKENS` | per model | overrides the LLM context budget |
+| `ALLOW_LOCAL_LLM` | `0` | `1` permits a loopback/private `base_url` for a local model |
+| `WIKIPEDIA_LANGS` | `en` | e.g. `en,hi` to search other language editions |
+| `SEARXNG_BASE_URL` | unset | a self-hosted SearXNG instance to federate |
+| `MARGINALIA_API_KEY` | `public` | a dedicated Marginalia key |
+| `DUMP_SERP_DIR` | unset | save zero-result response bodies for parser debugging |
+| `MULTI_QUERY` | `true` | sub-query decomposition |
+| `ENGINE_QUARANTINE` | on | `off` keeps dispatching engines that produce nothing |
 
 ---
 
-## 📁 Project Structure
+## Expanding coverage
 
-```
-SearchWala/
-├── Cargo.toml               # Dependencies & release optimizations (LTO, strip)
-├── Dockerfile               # Multi-stage Docker build (~15MB final image)
-├── LICENSE                   # Apache 2.0
-├── README.md
-├── ui.html                  # Perplexity-style search UI (979 LOC, embedded at compile time)
-├── scripts/
-│   ├── ram_monitor.sh       # Memory usage monitoring utility
-│   └── test_fallback.py     # Engine fallback integration test
-└── src/
-    ├── main.rs              # Axum HTTP server — routes, TTS endpoint, middleware (542 LOC)
-    ├── config.rs            # 20 browser profiles, WAF bypass, env config (457 LOC)
-    ├── models.rs            # Request/Response types (serde JSON) (107 LOC)
-    ├── query_intel.rs       # Query Intelligence — intent, temporal, entity detection (272 LOC) [NEW v5.2.0]
-    ├── search.rs            # Search orchestration + RRF + simultaneous dispatch (665 LOC)
-    ├── stream.rs            # SSE streaming pipeline (/search/stream) (482 LOC)
-    ├── ranking.rs           # Hybrid RRF + BM25 paragraph ranking (268 LOC)
-    ├── llm.rs               # BYOK LLM: 15+ providers, intent-aware prompts (1,767 LOC)
-    ├── extractor.rs         # 7-tier content extraction (JSON-LD + meta fallback) (873 LOC)
-    ├── url_utils.rs         # URL normalization, single-parse dedup pipeline (183 LOC)
-    ├── cache.rs             # TempDb (in-memory) + HistoryDb (~/.searchwala/) (328 LOC)
-    ├── copilot.rs           # SearchWala Copilot — LLM-powered query rewriter (36 LOC)
-    ├── proxy_pool.rs        # Round-robin proxy rotation with health tracking (121 LOC)
-    └── engines/
-        ├── mod.rs           # SearchEngine trait + engine weights + domain modes (196 LOC)
-        ├── generic.rs       # Template engine for 60+ regional variants (587 LOC)
-        ├── duckduckgo.rs    # DuckDuckGo HTML scraper (115 LOC)
-        ├── brave.rs         # Brave Search scraper (131 LOC)
-        ├── yahoo.rs         # Yahoo Search scraper (138 LOC)
-        ├── qwant.rs         # Qwant scraper (112 LOC)
-        ├── mojeek.rs        # Mojeek scraper (121 LOC)
-        ├── startpage.rs     # Startpage scraper (143 LOC)
-        ├── wikipedia.rs     # Wikipedia JSON API engine (63 LOC)
-        └── wiby.rs          # Wiby indie search engine (62 LOC)
-```
+Five independent families is what free HTML scraping yields from a typical IP.
+Three legitimate routes past that, in order of practicality:
 
-**Total**: **8,870 lines** (7,891 Rust + 979 HTML/JS) · 23 source files · Zero Python · Zero Node · Zero Java
+1. **Self-hosted SearXNG** — federates ~80 engines and maintains those parsers
+   for you, using your own IP and rate budget.
+   ```bash
+   docker run -d -p 8080:8080 -e SEARXNG_SECRET=$(openssl rand -hex 32) searxng/searxng
+   # enable the `json` format in settings.yml, then:
+   export SEARXNG_BASE_URL=http://localhost:8080
+   ```
+   Public instances are not supported and none are shipped — measured 429/403,
+   and pointing at someone else's instance without permission is rude.
+2. **BYOK search APIs.** Note the 2026 pricing: Brave removed its free Search
+   API tier in February 2026 (~$5/1k requests, with $5/month of credits ≈ 1,000
+   free queries). Mojeek's Web Search API is a negotiated B2B arrangement.
+3. **A proxy pool** — `PROXY_POOL` / `PROXY_POOL_FILE` / `TOR_PROXY_PORTS`.
+   Residential egress typically recovers Mojeek, Ecosia and Mwmbl.
 
 ---
 
-## ⚡ Quick Start
+## API
 
-### Build from Source (Any Platform)
+| Endpoint | Purpose |
+|---|---|
+| `POST /search` | search + extract (+ synthesis when `llm` is supplied) |
+| `POST /search/auto-llm` | synthesis with auto/fast focus |
+| `POST /search/research-llm` | iterative multi-batch research |
+| `POST /search/stream` | SSE streaming |
+| `GET /health` | liveness + version |
+| `GET /health/engines` | **per-engine liveness and verdicts** |
+| `GET /health/cache` | cache hit ratios |
+| `GET /config` | effective configuration |
+| `POST /api/models` | list a provider's models |
+| `GET /api/history`, `POST /api/history/{enable,disable}`, `DELETE /api/history` | opt-in history |
+| `GET /api/tts?text=…` | neural voice readback (needs `edge-tts`) |
 
-```bash
-git clone https://github.com/SandeepAi369/SearchWala.git
-cd SearchWala
+`POST /search` returns, among other fields:
 
-# Build optimized release binary
-cargo build --release
-
-# Run SearchWala (starts on http://localhost:8000)
-./target/release/searchwala        # Linux/macOS
-.\target\release\searchwala.exe    # Windows
-```
-
-### Verify SearchWala Is Running
-
-```bash
-# Health check
-curl http://localhost:8000/health
-
-# Basic search (returns sources + extracted text)
-curl -X POST http://localhost:8000/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "quantum computing breakthroughs 2026"}'
-
-# Search with AI answer (BYOK — bring your own key)
-curl -X POST http://localhost:8000/search/lite-llm \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "explain transformer architecture",
-    "llm": {
-      "provider": "groq",
-      "api_key": "YOUR_KEY",
-      "model": "llama-3.3-70b-versatile",
-      "base_url": "https://api.groq.com/openai/v1"
-    }
-  }'
-```
-
-### Open the SearchWala UI
-
-Navigate to `http://localhost:8000` for the built-in Perplexity-style search interface:
-
-- 🔍 **Smart search bar** with mode selector (Lite / Deep Research)
-- 🏷️ **Category pills** (Tech / Science / Finance / Health / News)
-- ⚡ **Orbital spinner** animation with live status updates
-- ✍️ **Word-by-word typewriter** for AI responses with auto-scroll
-- 🔊 **Listen button** — neural voice readback for every answer
-- ⚙️ **Settings panel** — configure any LLM provider (15+ supported)
-- 📚 **Source cards** — clickable source chips with favicons
-- 📜 **Search history** — optional local-only history with `~/.searchwala/`
-
----
-
-## 📡 API Reference
-
-All **SearchWala** endpoints accept JSON and return JSON. The server runs on `http://localhost:8000` by default.
-
-### `POST /search`
-
-**Standard search** — SearchWala queries 90+ engines, scrapes sources, and returns extracted text.
-
-```json
-// Request
+```jsonc
 {
-  "query": "artificial intelligence trends 2026",
-  "max_results": 50,
-  "focus_mode": "lite"
-}
-
-// Response
-{
-  "query": "artificial intelligence trends 2026",
-  "sources_found": 287,
-  "sources_processed": 142,
-  "search_results": [
-    {
-      "url": "https://www.nature.com/articles/...",
-      "title": "AI breakthroughs reshape scientific discovery",
-      "extracted_text": "Full article text extracted by SearchWala...",
-      "char_count": 7270,
-      "engine": "google_scholar"
-    }
-  ],
-  "elapsed_seconds": 4.28,
-  "engine_stats": {
-    "engines_queried": ["wikipedia", "duckduckgo", "brave", "...90 total..."],
-    "total_raw_results": 322,
-    "deduplicated_urls": 142
-  }
+  "search_results": [{
+    "url": "…", "title": "…", "snippet": "…",
+    "engine": "wikipedia,duckduckgo,brave",  // every engine that found it
+    "rrf_score": 0.0696,
+    "found_by_families": 3                   // INDEPENDENT indexes agreeing
+  }],
+  "results": [{ "url": "…", "extracted_text": "…", "char_count": 5812,
+                "published": "2026-10-01T15:41:02Z", "language": "hi",
+                "confidence": 0.95, "extractor": "trafilatura" }],
+  "citation_map": [4, 0, 7],      // citation [n] -> index into `results`
+  "citation_checks": [{ "number": 1, "url": "…", "overlap": 0.62, "supported": true }]
 }
 ```
 
-### `POST /search/lite-llm`
+---
 
-SearchWala Lite — fast single-pass AI synthesis over up to 50 sources. Requires `llm` config.
+## Security
 
-### `POST /search/research-llm`
+This process relays your BYOK LLM key to whatever `base_url` a request names,
+so a few things are deliberate:
 
-SearchWala Deep Research — iterative multi-batch LLM synthesis over 200+ sources.
+- **Binds `127.0.0.1` by default.** Set `BIND=0.0.0.0` only when you mean it.
+- **`base_url` is validated.** Cloud metadata addresses (`169.254.169.254` and
+  friends) are refused unconditionally; loopback and private ranges need
+  `ALLOW_LOCAL_LLM=1`, so local models still work.
+- **API keys are never logged** — `LlmConfig`'s `Debug` redacts them.
+- **`/api/tts` is concurrency-capped** and cleans up its temp file on every
+  path.
 
-### `POST /search/stream`
+CORS is still permissive for local UI convenience. If you expose this service,
+put it behind a reverse proxy with authentication.
 
-SSE streaming — real-time source delivery + LLM token streaming.
+---
 
-### `GET /api/tts?text=Hello+world`
+## Testing
 
-**SearchWala Voice** — Text-to-Speech synthesis using Microsoft Edge neural voice (en-US-AvaNeural). Returns `audio/mpeg`. Used internally by the Listen button, but also available as a standalone API.
-
-### `GET /health`
-
-```json
-{
-  "status": "ok",
-  "version": "5.2.0",
-  "engines": ["wikipedia", "duckduckgo", "brave", "...90 total..."],
-  "uptime_seconds": 3600
-}
+```bash
+cargo test --release                              # 190 unit tests
+cargo run --release --bin intent_probe            # intent accuracy on the golden set
+cargo run --release --bin eval -- --limit 20      # retrieval quality (live engines)
+cargo run --release --bin eval -- --baseline benchmarks/baseline_v8.json
 ```
 
-### `GET /config`
+Parser tests run against **real SERP HTML** committed under `tests/fixtures/`,
+so selector rot fails the test suite instead of silently returning zero
+results. The extraction test asserts against a real Hindi news article.
 
-Returns SearchWala's current runtime configuration (concurrency, timeouts, engine list, proxy status).
+`cargo run --bin eval` reports nDCG@10, MRR, Recall@k and latency percentiles
+over the 50 hand-labelled queries in `benchmarks/golden_queries.json`.
 
-### `POST /api/models`
+Current baseline (live engines, so it moves with engine availability):
 
-Dynamic model discovery — fetches available models from any OpenAI-compatible endpoint.
-
----
-
-## 🔌 Supported LLM Providers
-
-**SearchWala** supports 15+ LLM providers out of the box. Bring your own API key (BYOK) — SearchWala never locks you into a single provider:
-
-| Provider | Default Model | Notes |
-|---|---|---|
-| **Cerebras** | `llama-3.3-70b` | Fastest inference |
-| **Groq** | `llama-3.3-70b-versatile` | Free tier available |
-| **OpenAI** | `gpt-4o-mini` | GPT family |
-| **Anthropic** | `claude-3-5-haiku-latest` | Claude family |
-| **Google Gemini** | `gemini-2.0-flash` | Gemini family |
-| **xAI** | `grok-2-latest` | Grok family |
-| **DeepSeek** | `deepseek-chat` | Cost-effective |
-| **Ollama** | `llama3` | Local / self-hosted |
-| **OpenRouter** | `openai/gpt-4o-mini` | Multi-model router |
-| **Together AI** | `llama-3.1-70B-Instruct-Turbo` | Open-source models |
-| **Fireworks AI** | `llama-v3p1-70b-instruct` | Fast open-source |
-| **SambaNova** | `Meta-Llama-3.1-70B-Instruct` | Enterprise |
-| **NVIDIA NIM** | `llama-3.1-70b-instruct` | GPU-optimized |
-| **Any OpenAI-compatible** | Custom | Any `/v1/chat/completions` endpoint |
+| metric | value |
+|---|---|
+| nDCG@10 | 0.352 |
+| MRR | 0.548 |
+| Recall@10 / @20 | 0.327 / 0.375 |
+| intent accuracy | **100%** (50/50) |
+| extraction confidence | 0.979 mean |
+| p50 / p95 latency | 5.9 s / 7.8 s |
 
 ---
 
-## ⚙️ Configuration
+## Architecture
 
-All environment variables are optional — **SearchWala** ships with sensible defaults that work out of the box.
+```
+src/
+  main.rs            axum server, routes, TTS
+  lib.rs             library target (so the eval harness can drive the pipeline)
+  search.rs          orchestration: dispatch → select → scrape → rank → synthesize
+  fetcher.rs         Fetcher{Plain,Stealth} — one surface over reqwest + wreq
+  host_gate.rs       per-registrable-host request spacing
+  engines/
+    mod.rs           trait, roster, engine FAMILIES and weights
+    health.rs        per-engine counters, verdicts, auto-quarantine
+    bing.rs brave.rs duckduckgo.rs mojeek.rs qwant.rs startpage.rs yahoo.rs
+    wikipedia.rs wiby.rs marginalia_api.rs searxng.rs
+    generic.rs       template-driven HTML engines
+  extractor.rs       trafilatura + conditional Readability
+  ranking.rs         RRF, BM25+, freshness, MMR, script-aware chunking
+  llm.rs             provider-agnostic synthesis, context budget, citations
+  query_intel.rs     intent, temporal detection, decomposition
+  url_utils.rs       canonical_key — the single page-identity function
+  cache_layer.rs     SERP + page caches
+  cache.rs           session store + append-only history
+  ssrf.rs            base_url validation
+  eval.rs            nDCG/MRR/Recall metrics
+  bin/eval.rs        evaluation runner
+  bin/intent_probe.rs intent accuracy probe
+```
 
-### Search & Scraping
-
-| Variable | Default | Description |
-|---|---|---|
-| `ENGINES` | 90 engines (curated) | Comma-separated engine names to enable |
-| `MAX_URLS` | `420` | Maximum URLs SearchWala will scrape per query |
-| `CONCURRENCY` | `32` | Concurrent scrape workers |
-| `ENGINE_CONCURRENCY` | `20` | Concurrent engine-query workers |
-| `JITTER_MIN_MS` | `50` | Min random delay between engine requests (stealth) |
-| `JITTER_MAX_MS` | `200` | Max random delay between engine requests (stealth) |
-| `SCRAPE_TIMEOUT` | `0` | Per-URL scrape timeout in seconds |
-| `MAX_HTML_BYTES` | `1500000` | Max HTML download size per page |
-
-### Proxy & Stealth
-
-| Variable | Default | Description |
-|---|---|---|
-| `PROXY_POOL` | *(empty)* | Comma-separated proxy URLs |
-| `PROXY_POOL_FILE` | *(empty)* | File path with one proxy URL per line |
-| `TOR_PROXY_PORTS` | *(empty)* | Comma-separated local Tor SOCKS5 ports |
-| `PROXY_COOLDOWN_SECS` | `120` | Cooldown window after proxy failure |
-
-### Server
-
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `8000` | HTTP server listen port |
-| `RUST_LOG` | `searchwala=info` | Log verbosity level |
-| `EDGE_TTS_PATH` | auto-detect | Path to `edge-tts` binary for SearchWala Voice |
+See [`docs/IMPLEMENTATION_BLUEPRINT.md`](docs/IMPLEMENTATION_BLUEPRINT.md) for
+the full v7→v8 audit: every bug found, how it was measured, and what changed.
 
 ---
 
-## 🔒 Privacy & Security
+## License
 
-**SearchWala** is built with privacy as a core principle:
-
-- **Zero telemetry** — no tracking, no analytics, no phone-home
-- **No cloud dependencies** — SearchWala runs entirely on your hardware
-- **No API keys required** — all 90 engines work without any API registration
-- **Cookie isolation** — every request uses a fresh HTTP client
-- **Tracking param removal** — strips 30+ UTM/analytics parameters from every URL
-- **Domain blocklist** — auto-skips social media feeds, app stores, and binary file URLs
-- **Optional BYOK LLM** — AI synthesis is opt-in; raw results always available
-- **Local-only history** — search history stored at `~/.searchwala/history.json`, never uploaded
-
----
-
-## 📊 Performance Characteristics
-
-| Metric | Lite Mode | Deep Research Mode |
-|---|---|---|
-| Engines queried | ALL 35 simultaneously | 90+ all engines |
-| Sources scraped | 25–50 | 200–400+ |
-| Time to results | 3–8 seconds | 15–45 seconds |
-| LLM context quality | Top 25 BM25 chunks | Full iterative batches |
-| Voice readback | Instant 10-word streaming | Full report narration |
-| Memory footprint | ~30MB RSS | ~80MB RSS peak |
-| Binary size | ~15MB (stripped, LTO) | Same binary |
-
----
-
-## 🗺️ Roadmap
-
-- [x] Neural Voice Readback (TTS)
-- [x] Time-Aware Search Intelligence
-- [x] Cross-platform support (Windows/Mac/Linux)
-- [x] 2026 Browser Fingerprints (Chrome 147, Edge 147, Firefox 136, Safari 18.4)
-- [x] Simultaneous All-Engine Dispatch (zero-delay parallel)
-- [x] 6 New Search Engines (Alexandria, 4get, Whoogle, LibreX, YaCy, Mullvad Leta)
-- [ ] BoringSSL TLS Impersonation (rquest — JA3/JA4 fingerprint cloning)
-- [ ] IPv6 /64 Subnet Hopping (18 quintillion IPs)
-- [ ] Response compression (gzip/brotli)
-- [ ] Built-in caching layer with TTL
-- [ ] Citation graph visualization
-- [ ] Plugin system for custom engines
-- [ ] Multi-language query support
-- [ ] Mobile-responsive PWA mode
-
----
-
-## 📄 License
-
-Copyright 2026 [Sandeep](https://xel-studio.vercel.app/)
-
-Licensed under the [Apache License, Version 2.0](./LICENSE).
-
----
-
-<p align="center">
-  <strong>SearchWala — Search Smarter, Not Harder 🔍</strong>
-  <br>
-  <sub>Built with 🦀 Rust by <a href="https://xel-studio.vercel.app/">Sandeep</a></sub>
-  <br>
-  <sub>8,870 lines of code (7,891 Rust + 979 UI) · 23 source files · Zero runtime dependencies · One binary for all platforms</sub>
-</p>
+Apache-2.0

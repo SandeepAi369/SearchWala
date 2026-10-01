@@ -209,7 +209,31 @@
     .search-orbital .orbital-dot:nth-child(3){bottom:0;left:50%;transform:translateX(-50%);animation-delay:.75s}
     .search-orbital .orbital-dot:nth-child(4){top:50%;left:0;transform:translateY(-50%);animation-delay:1.125s}
     .search-btn-wrap{position:relative;flex-shrink:0}
-    </style>
+    
+    /* ── v8.0: clickable citations ── */
+    .cite{
+      display:inline-block; vertical-align:super; font-size:11px; line-height:1;
+      color:var(--accent); text-decoration:none; padding:1px 3px; border-radius:3px;
+      background:color-mix(in srgb, var(--accent) 12%, transparent);
+      transition:background .15s ease, transform .15s ease;
+    }
+    .cite:hover{ background:color-mix(in srgb, var(--accent) 28%, transparent); transform:translateY(-1px); }
+    .cite-dead{ color:var(--muted); background:none; cursor:default; }
+    .consensus{
+      color:#34d399; font-weight:600;
+      background:color-mix(in srgb, #34d399 14%, transparent);
+      padding:1px 6px; border-radius:999px; font-size:11px;
+    }
+    .src-snip{ color:var(--muted); font-size:12px; line-height:1.45; margin:6px 0 2px; }
+    #stopBtn{
+      display:none; margin-left:8px; padding:8px 14px; border-radius:10px; cursor:pointer;
+      background:color-mix(in srgb, #f87171 16%, transparent);
+      color:#f87171; border:1px solid color-mix(in srgb, #f87171 40%, transparent);
+      font-size:13px; font-weight:600;
+    }
+    #stopBtn:hover{ background:color-mix(in srgb, #f87171 26%, transparent); }
+    #stopBtn.visible{ display:inline-block; }
+  </style>
 </head>
 <body>
   <div id="dbModal" class="modal-overlay">
@@ -289,6 +313,8 @@
             </button>
             <div id="searchOrbital" class="search-orbital hidden"><div class="orbital-dot"></div><div class="orbital-dot"></div><div class="orbital-dot"></div><div class="orbital-dot"></div></div>
           </div>
+          <!-- v8.0: a search can now be stopped (Esc also works). -->
+          <button id="stopBtn" type="button" title="Stop this search (Esc)">Stop</button>
         </div>
         <!-- Status bar -->
         <div id="statusBar" class="status-bar hidden">
@@ -373,7 +399,7 @@
   <script>
     const $ = id => document.getElementById(id);
     const dom = {
-      queryInput:$('queryInput'), runBtn:$('runBtn'),
+      queryInput:$('queryInput'), runBtn:$('runBtn'), stopBtn:$('stopBtn'),
       homeView:$('homeView'), resultsArea:$('resultsArea'),
       sourcesStrip:$('sourcesStrip'),
       answerContent:$('answerContent'), llmError:$('llmError'),
@@ -438,6 +464,7 @@
     async function api(path,method='POST',body=null){
       const opts={method,headers:{'Content-Type':'application/json'}};
       if(body&&method!=='GET')opts.body=JSON.stringify(body);
+      if(inflight) opts.signal=inflight.signal;
       const res=await fetch(apiBase()+path,opts);
       return res.json();
     }
@@ -775,18 +802,65 @@
     function renderAllSources(items){
       if(!items?.length)return;
       dom.allSourcesCount.textContent=items.length;
-      dom.allSourcesGrid.innerHTML=items.map((s,i)=>`
+      dom.allSourcesGrid.innerHTML=items.map((s,i)=>{
+        // found_by_families is the honest "N engines agree" number: engine
+        // aliases and Bing-derived engines are collapsed into one family, so
+        // this cannot be inflated by 15 Bing variants the way v7.0's RRF was.
+        const fam=s.found_by_families||0;
+        const consensus = fam>1
+          ? `<span class="consensus" title="Found by ${fam} independent search indexes">${fam}× agree</span>`
+          : '';
+        const engines=(s.engine||'').split(',').filter(Boolean);
+        const engLabel=engines.length>2?`${engines.slice(0,2).join(', ')} +${engines.length-2}`:engines.join(', ');
+        const snip=s.snippet?`<div class="src-snip">${esc(s.snippet.slice(0,180))}</div>`:'';
+        return `
         <div class="all-src-card" style="animation:fadeUp .3s ease-out ${i*20}ms both">
           <a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title||s.url)}</a>
-          <div class="meta"><span>#${i+1}</span><span>${esc(s.engine)}</span><span>${esc(domain(s.url))}</span></div>
-        </div>
-      `).join('');
+          ${snip}
+          <div class="meta"><span>#${i+1}</span>${consensus}<span>${esc(engLabel)}</span><span>${esc(domain(s.url))}</span></div>
+        </div>`;
+      }).join('');
     }
     function toggleAllSources(){dom.allSourcesGrid.classList.toggle('hidden')}
+
+    // ═══ Request cancellation ═══
+    // v7.0 had no AbortController anywhere (grep -c returned 0), so a search
+    // taking 15-60s could not be stopped: starting a new query left the old
+    // one running, and the server kept scraping hundreds of URLs for a
+    // response nobody would read.
+    let inflight=null;
+
+    function beginRequest(){
+      if(inflight) inflight.abort();
+      inflight=new AbortController();
+      dom.stopBtn?.classList.add('visible');
+      return inflight;
+    }
+    function endRequest(){
+      inflight=null;
+      dom.stopBtn?.classList.remove('visible');
+    }
+    function cancelRequest(){
+      if(inflight){ inflight.abort(); }
+      typewriterAbort=true;
+      stopStatus();
+      endRequest();
+      dom.runBtn.disabled=false;
+      dom.queryInput.classList.remove('searching');
+      dom.runBtn.classList.remove('searching');
+      $('searchOrbital')?.classList.add('hidden');
+      dom.answerContent.innerHTML='<div style="color:var(--muted);padding:20px 0">Search cancelled.</div>';
+    }
 
     // ═══ Typewriter Engine ═══
     let typewriterAbort=false;
     let typewriterTimer=null;
+
+    // Citation number -> source, from the backend's citation_map. v7.0 rendered
+    // [n] as a non-clickable <sup> with cursor:default — decorative only — and
+    // the mapping was wrong anyway (numbers referred to the reordered context
+    // but were resolved against the unordered source list).
+    let citationSources=[];
 
     function formatMarkdownToHtml(text){
       return esc(text)
@@ -795,7 +869,13 @@
         .replace(/^### (.*$)/gm,'<h3>$1</h3>')
         .replace(/^- (.*$)/gm,'<li>$1</li>')
         .replace(/^\d+\. (.*$)/gm,'<li>$1</li>')
-        .replace(/\[(\d+)\]/g,'<sup style="color:var(--accent);font-size:11px;cursor:default">[$1]</sup>')
+        .replace(/\[(\d+)\]/g,(m,n)=>{
+          const s=citationSources[parseInt(n,10)-1];
+          if(!s||!s.url) return `<sup class="cite cite-dead">[${n}]</sup>`;
+          const t=(s.title||s.url).replace(/"/g,'&quot;');
+          return `<a class="cite" href="${esc(s.url)}" target="_blank" rel="noopener" `
+               + `title="${t}">[${n}]</a>`;
+        })
         .replace(/\n\n/g,'</p><p>')
         .replace(/\n/g,'<br>');
     }
@@ -928,6 +1008,7 @@
         payload.llm.timeout_ms=60000;
       }
 
+      beginRequest();
       try{
         if(effectiveFocus==='research'&&useLlm)updateStatus('Scraping 200+ sources for deep research...');
 
@@ -935,8 +1016,18 @@
         stopStatus();
 
         const sources=data.search_results||[];
+        // The source list is now RRF-ordered by the backend (v7.0 rendered it
+        // in whatever order engines happened to finish).
         renderSourceStrip(sources);
         renderAllSources(sources);
+
+        // Resolve [n] through the backend's citation_map when present, so a
+        // citation links to the source the model actually saw as [n].
+        if(Array.isArray(data.citation_map) && Array.isArray(data.results)){
+          citationSources=data.citation_map.map(i=>data.results[i]).filter(Boolean);
+        }else{
+          citationSources=sources;
+        }
 
         if(data.llm_answer){
           currentAnswer=cleanAnswer(data.llm_answer);
@@ -956,8 +1047,13 @@
 
       }catch(err){
         stopStatus();
+        if(err?.name==='AbortError'){
+          // Cancelled by the user — cancelRequest() already rendered a notice.
+          return;
+        }
         dom.answerContent.innerHTML=`<div style="color:#f87171;padding:20px 0">Error: ${esc(err.message)}</div>`;
       }finally{
+        endRequest();
         dom.runBtn.disabled=false;
         dom.queryInput.classList.remove('searching');
         dom.runBtn.classList.remove('searching');
@@ -967,6 +1063,9 @@
 
     // ═══ Events ═══
     dom.queryInput.addEventListener('keydown',e=>{if(e.key==='Enter')runSearch()});
+    dom.stopBtn?.addEventListener('click',cancelRequest);
+    // Escape cancels an in-flight search.
+    document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&inflight) cancelRequest(); });
 
     // ═══ Init ═══
     loadSettings();

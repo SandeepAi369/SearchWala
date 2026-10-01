@@ -1,10 +1,28 @@
 [package]
 name = "searchwala"
-version = "7.0.0"
+version = "8.0.0"
 edition = "2021"
 description = "High-performance meta-search engine aggregating 90+ search engines with stealth WAF bypass, BM25 ranking, 5-tier content extraction, and optional BYOK LLM synthesis — all in pure Rust"
 authors = ["Sandeep"]
 license = "Apache-2.0"
+
+[lib]
+name = "searchwala"
+path = "src/lib.rs"
+
+[[bin]]
+name = "searchwala"
+path = "src/main.rs"
+
+# Evaluation harness (P2-4). v7.0 shipped 474 lines of IR metrics in eval.rs
+# and a 50-query labelled golden set, both completely unreferenced.
+[[bin]]
+name = "eval"
+path = "src/bin/eval.rs"
+
+[[bin]]
+name = "intent_probe"
+path = "src/bin/intent_probe.rs"
 
 [dependencies]
 # Async runtime

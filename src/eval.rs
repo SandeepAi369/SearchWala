@@ -261,7 +261,7 @@ pub struct PipelineLatency {
 // =============================================================================
 
 /// Per-engine success/failure tracking for pruning dead-weight engines.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct EngineHealth {
     pub total_queries: u64,
     pub successful_queries: u64,
@@ -294,7 +294,7 @@ impl EngineHealth {
 // =============================================================================
 
 /// Cache hit/miss tracking for the 3-tier cache system.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CacheMetrics {
     pub engine_cache_hits: u64,
     pub engine_cache_misses: u64,
@@ -326,7 +326,7 @@ impl CacheMetrics {
 // =============================================================================
 
 /// Complete evaluation report capturing all quality and performance metrics.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvalReport {
     /// Timestamp of evaluation run
     pub timestamp: String,

@@ -122,6 +122,10 @@ pub struct LlmExecutionResult {
     pub llm_answer: Option<String>,
     pub llm_error: Option<String>,
     pub batches_processed: usize,
+    /// citation number (1-based) -> index into the sources slice.
+    pub citation_map: Vec<usize>,
+    /// Support check per citation.
+    pub citation_checks: Vec<CitationCheck>,
 }
 
 // =============================================================================
@@ -832,6 +836,7 @@ pub async fn summarize_direct_with_intent(
             llm_answer: None,
             llm_error: Some("llm_skipped: no scraped content available".to_string()),
             batches_processed: 0,
+                    ..Default::default()
         };
     }
 
@@ -843,6 +848,7 @@ pub async fn summarize_direct_with_intent(
             llm_answer: None,
             llm_error: Some("llm_skipped: no usable source text".to_string()),
             batches_processed: 0,
+                    ..Default::default()
         };
     }
 
@@ -875,6 +881,7 @@ pub async fn summarize_direct_with_intent(
                     llm_answer: None,
                     llm_error: Some(format!("llm_timeout: exceeded {}ms", timeout_ms)),
                     batches_processed: 0,
+                    ..Default::default()
                 };
             }
         }
@@ -889,12 +896,15 @@ pub async fn summarize_direct_with_intent(
             if unsupported > 0 {
                 tracing::info!("{} unsupported citation(s) in answer", unsupported);
             }
+            let citation_map = context.citation_map.clone();
+            let citation_checks = checks;
             if answer.is_empty() {
                 LlmExecutionResult {
                     llm_answer: None,
                     llm_error: Some("llm_empty_response".to_string()),
                     batches_processed: 1,
-                }
+                            ..Default::default()
+        }
             } else if answer_quality_insufficient(&answer) {
                 // v6.1.0: Quality-gated retry — one retry max
                 tracing::info!(
@@ -917,6 +927,8 @@ pub async fn summarize_direct_with_intent(
                                 llm_answer: Some(answer),
                                 llm_error: None,
                                 batches_processed: 1,
+                                citation_map: citation_map.clone(),
+                                citation_checks: citation_checks.clone(),
                             };
                         }
                     }
@@ -939,6 +951,8 @@ pub async fn summarize_direct_with_intent(
                             llm_answer: Some(final_answer),
                             llm_error: None,
                             batches_processed: 2,
+                            citation_map: citation_map.clone(),
+                            citation_checks: citation_checks.clone(),
                         }
                     }
                     Err(_) => {
@@ -947,7 +961,9 @@ pub async fn summarize_direct_with_intent(
                             llm_answer: Some(answer),
                             llm_error: None,
                             batches_processed: 1,
-                        }
+                            citation_map: citation_map.clone(),
+                            citation_checks: citation_checks.clone(),
+        }
                     }
                 }
             } else {
@@ -956,7 +972,9 @@ pub async fn summarize_direct_with_intent(
                     llm_answer: Some(answer),
                     llm_error: None,
                     batches_processed: 1,
-                }
+                    citation_map: citation_map.clone(),
+                    citation_checks: citation_checks.clone(),
+        }
             }
         }
         Err(err) => {
@@ -965,6 +983,7 @@ pub async fn summarize_direct_with_intent(
                 llm_answer: None,
                 llm_error: Some(format!("llm_error: {err}")),
                 batches_processed: 0,
+                ..Default::default()
             }
         }
     }
@@ -992,6 +1011,7 @@ pub async fn summarize_iterative(
             llm_answer: None,
             llm_error: Some("llm_skipped: no scraped content available".to_string()),
             batches_processed: 0,
+                    ..Default::default()
         };
     }
 
@@ -1080,12 +1100,14 @@ pub async fn summarize_iterative(
                             batch_num, total_batches, batch_idx
                         )),
                         batches_processed: batch_idx,
+                        ..Default::default()
                     };
                 }
                 return LlmExecutionResult {
                     llm_answer: None,
                     llm_error: Some(format!("llm_timeout: batch {}/{} exceeded {}ms", batch_num, total_batches, timeout_ms)),
                     batches_processed: batch_idx,
+                    ..Default::default()
                 };
             }
         };
@@ -1119,12 +1141,14 @@ pub async fn summarize_iterative(
                             batch_num, total_batches, err
                         )),
                         batches_processed: batch_idx,
+                        ..Default::default()
                     };
                 }
                 return LlmExecutionResult {
                     llm_answer: None,
                     llm_error: Some(format!("llm_error: {err}")),
                     batches_processed: batch_idx,
+                    ..Default::default()
                 };
             }
         }
@@ -1137,6 +1161,7 @@ pub async fn summarize_iterative(
             llm_answer: None,
             llm_error: Some("llm_empty_response: all batches returned empty".to_string()),
             batches_processed: total_batches,
+                    ..Default::default()
         }
     } else {
         tracing::info!(
@@ -1148,6 +1173,7 @@ pub async fn summarize_iterative(
             llm_answer: Some(accumulated_report),
             llm_error: None,
             batches_processed: total_batches,
+                    ..Default::default()
         }
     }
 }
@@ -1155,99 +1181,6 @@ pub async fn summarize_iterative(
 // =============================================================================
 // CHANNEL-BASED SYNTHESIS — Used by stream.rs (SSE streaming path)
 // =============================================================================
-
-pub async fn summarize_from_stream(
-    query: &str,
-    llm_config: LlmConfig,
-    mut rx: mpsc::Receiver<SourceResult>,
-    research_mode: bool,
-) -> LlmExecutionResult {
-    let max_chunks = if research_mode { BATCH_SIZE_RESEARCH } else { MAX_CONTEXT_CHUNKS_LITE };
-
-    let first = match tokio::time::timeout(Duration::from_millis(FIRST_BATCH_WAIT_MS), rx.recv()).await {
-        Ok(Some(source)) => source,
-        Ok(None) => {
-            return LlmExecutionResult {
-                llm_answer: None,
-                llm_error: Some("llm_skipped: no scraped content available".to_string()),
-                batches_processed: 0,
-            };
-        }
-        Err(_) => {
-            return LlmExecutionResult {
-                llm_answer: None,
-                llm_error: Some("llm_timeout: waiting for first scraped batch".to_string()),
-                batches_processed: 0,
-            };
-        }
-    };
-
-    let mut batch = vec![first];
-    let collect_deadline = tokio::time::Instant::now() + Duration::from_millis(PIPELINE_ACCUMULATION_MS);
-    while batch.len() < max_chunks {
-        match tokio::time::timeout_at(collect_deadline, rx.recv()).await {
-            Ok(Some(source)) => batch.push(source),
-            Ok(None) | Err(_) => break,
-        }
-    }
-
-    let context = build_ranked_context(&batch, 12_000).text;
-    if context.is_empty() {
-        return LlmExecutionResult {
-            llm_answer: None,
-            llm_error: Some("llm_skipped: relevance filter produced empty context".to_string()),
-            batches_processed: 0,
-        };
-    }
-
-    let timeout_ms = llm_config.timeout_ms.unwrap_or(DEFAULT_LLM_TIMEOUT_MS);
-
-    let (system_prompt, user_prompt) = build_lite_prompts(query, &context);
-
-    let messages = vec![
-        ChatMessage::system(system_prompt),
-        ChatMessage::user(user_prompt),
-    ];
-
-    let call_result = if timeout_ms == 0 {
-        call_llm_retrying(&llm_config, &messages).await
-    } else {
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm_retrying(&llm_config, &messages)).await {
-            Ok(result) => result,
-            Err(_) => {
-                return LlmExecutionResult {
-                    llm_answer: None,
-                    llm_error: Some(format!("llm_timeout: exceeded {}ms", timeout_ms)),
-                    batches_processed: 0,
-                };
-            }
-        }
-    };
-
-    match call_result {
-        Ok(answer) => {
-            let answer = answer.trim().to_string();
-            if answer.is_empty() {
-                LlmExecutionResult {
-                    llm_answer: None,
-                    llm_error: Some("llm_empty_response".to_string()),
-                    batches_processed: 1,
-                }
-            } else {
-                LlmExecutionResult {
-                    llm_answer: Some(answer),
-                    llm_error: None,
-                    batches_processed: 1,
-                }
-            }
-        }
-        Err(err) => LlmExecutionResult {
-            llm_answer: None,
-            llm_error: Some(format!("llm_error: {err}")),
-            batches_processed: 0,
-        },
-    }
-}
 
 // =============================================================================
 // Context Building
@@ -1280,8 +1213,10 @@ impl BuiltContext {
 /// diversity -> lost-in-middle) and then threw that ordering away here,
 /// re-sorting by:
 ///
-///     if src.title.to_lowercase().contains(kw) { score += 3.0 }
-///     if text_lower.contains(kw)               { score += 1.0 }
+/// ```text
+/// if src.title.to_lowercase().contains(kw) { score += 3.0 }
+/// if text_lower.contains(kw)               { score += 1.0 }
+/// ```
 ///
 /// Substring containment. No IDF, no term frequency, no length normalization —
 /// a strictly worse ranker, applied last, so it won. The entire BM25+/MMR/

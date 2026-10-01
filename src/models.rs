@@ -58,6 +58,17 @@ pub struct SearchResponse {
     pub copilot_query: Option<String>,
     pub llm_answer: Option<String>,
     pub llm_error: Option<String>,
+    /// Maps citation number n (1-based) to an index into `results`.
+    ///
+    /// Without this the UI cannot turn `[n]` into a link: the numbers refer to
+    /// positions in the lost-in-middle REORDERED context, not to `results`
+    /// order. v7.0 had neither the map nor clickable citations, and its own
+    /// internal resolution was wrong for every index from [2] onward.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub citation_map: Vec<usize>,
+    /// Per-citation support check (token overlap with the cited source).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub citation_checks: Vec<crate::llm::CitationCheck>,
     pub elapsed_seconds: f64,
     pub engine_stats: EngineStats,
 }

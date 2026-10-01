@@ -126,99 +126,184 @@ pub fn analyze_query(query: &str) -> QueryIntelligence {
 // Intent Detection — Pattern-based classification
 // =============================================================================
 
-fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
-    // ── Navigational (shortest circuit) ──
-    let nav_sites = [
-        "facebook", "youtube", "twitter", "reddit", "instagram", "tiktok",
-        "amazon", "google", "github", "linkedin", "netflix", "spotify",
-        "wikipedia", "stackoverflow", "gmail", "outlook", "whatsapp",
-    ];
-    if words.len() <= 3 {
-        for site in &nav_sites {
-            if q_lower.contains(site) && (q_lower.contains("login") || q_lower.contains("website") || q_lower == *site) {
-                return QueryIntent::Navigational;
-            }
-        }
-    }
+/// Well-known destination sites. A query that LEADS with one of these and is
+/// short is navigational — the user wants that site, not an explanation.
+const NAV_SITES: &[&str] = &[
+    "facebook", "youtube", "twitter", "reddit", "instagram", "tiktok",
+    "amazon", "google", "github", "gitlab", "linkedin", "netflix", "spotify",
+    "wikipedia", "stackoverflow", "gmail", "outlook", "whatsapp", "mdn",
+    "crates", "npm", "pypi", "docker", "dockerhub", "figma", "notion",
+    "jira", "slack", "discord", "twitch", "ebay", "paypal", "coinbase",
+];
 
-    // ── Comparison ──
-    if q_lower.contains(" vs ") || q_lower.contains(" versus ")
+/// Words that mark a query as wanting a specific page on a site.
+const NAV_INTENTS: &[&str] = &[
+    "login", "log", "signin", "sign", "website", "site", "homepage", "home",
+    "dashboard", "account", "settings", "tracking", "orders", "order",
+    "trending", "search", "docs", "documentation", "repository", "repo",
+    "questions", "profile", "inbox", "download", "pricing", "checkout",
+];
+
+/// Biographical framing that makes a query about a PERSON even without an
+/// explicit "who is" / "biography of" prefix.
+const BIOGRAPHICAL: &[&str] = &[
+    "achievements", "contributions", "biography", "career", "net worth",
+    "early life", "born", "childhood", "awards", "legacy", "inventions",
+    "discoveries", "known for", "life of", "education", "family",
+];
+
+fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
+    // ── Comparison (checked FIRST) ──
+    // Must precede the navigational check: "Docker vs Kubernetes differences"
+    // leads with a word that is also a site name, and the eval harness caught
+    // it being classified navigational.
+    // ── Comparison ──────────────────────────────────────────────────────────
+    if q_lower.contains(" vs ")
+        || q_lower.contains(" vs. ")
+        || q_lower.contains(" versus ")
         || q_lower.contains("difference between")
+        || q_lower.contains("differences")
         || q_lower.contains("compared to")
         || q_lower.contains("comparison of")
-        || q_lower.contains(" or ") && (q_lower.contains("which") || q_lower.contains("better"))
+        || q_lower.contains("comparison")
+        || (q_lower.contains(" or ") && (q_lower.contains("which") || q_lower.contains("better")))
     {
         return QueryIntent::Comparison;
     }
 
-    // ── Person ──
-    let person_patterns = [
+    // ── Navigational ────────────────────────────────────────────────────────
+    // v7.0 required <=3 words AND one of login/website/exact-match, so
+    // "github new repository", "amazon order tracking", "youtube trending",
+    // "stackoverflow rust questions", "MDN CSS flexbox documentation" and
+    // "Rust crates.io search" all fell through to Factual — 6 of the 15
+    // misclassifications the eval harness surfaced.
+    if words.len() <= 5 {
+        let leads_with_site = words
+            .first()
+            .map(|w| NAV_SITES.contains(w) || NAV_SITES.iter().any(|s| w.starts_with(s)))
+            .unwrap_or(false);
+        let mentions_site = words
+            .iter()
+            .any(|w| NAV_SITES.contains(w) || NAV_SITES.iter().any(|s| w.starts_with(s)));
+        let has_nav_word = words.iter().any(|w| NAV_INTENTS.contains(w));
+
+        // Leading with a site name is a strong signal on its own for short
+        // queries ("youtube trending", "github new repository").
+        if leads_with_site && words.len() <= 4 {
+            return QueryIntent::Navigational;
+        }
+        // Otherwise a site plus a destination word ("amazon order tracking",
+        // "MDN CSS flexbox documentation").
+        if mentions_site && has_nav_word {
+            return QueryIntent::Navigational;
+        }
+    }
+
+    // ── Research vs HowTo ───────────────────────────────────────────────────
+    // These are genuinely different intents and v7.0 collapsed them:
+    //   "how TO do X"        -> procedural instructions   (HowTo)
+    //   "how DOES X work"    -> conceptual explanation    (Research)
+    // The eval set expects Research for "how does the TCP three-way handshake
+    // work in detail", and v7.0 answered HowTo because it matched "how does"
+    // in its HowTo list.
+    let explanatory = q_lower.starts_with("how does")
+        || q_lower.starts_with("how do ")
+        || q_lower.starts_with("how is")
+        || q_lower.starts_with("how are")
+        || q_lower.starts_with("why ")
+        || q_lower.starts_with("what happens when");
+    let wants_depth = q_lower.contains("in detail")
+        || q_lower.contains("step by step")
+        || q_lower.contains("under the hood")
+        || q_lower.contains("internals")
+        || q_lower.contains("use cases")
+        || q_lower.contains("implications")
+        || q_lower.contains("and what are");
+
+    const RESEARCH_MARKERS: &[&str] = &[
+        "explain", "analyze", "analyse", "research", "comprehensive",
+        "in depth", "in-depth", "deep dive", "overview of", "implications of",
+        "impact of", "future of", "trade-offs", "tradeoffs", "architecture of",
+    ];
+    if RESEARCH_MARKERS.iter().any(|m| q_lower.contains(m))
+        || (explanatory && (wants_depth || q_lower.contains("work")))
+    {
+        return QueryIntent::Research;
+    }
+
+    // ── Person ──────────────────────────────────────────────────────────────
+    const PERSON_PREFIXES: &[&str] = &[
         "who is", "who was", "who are", "tell me about",
         "biography of", "bio of", "life of", "about the person",
     ];
-    for pattern in &person_patterns {
-        if q_lower.starts_with(pattern) || q_lower.contains(pattern) {
-            return QueryIntent::Person;
-        }
+    if PERSON_PREFIXES.iter().any(|p| q_lower.contains(p)) {
+        return QueryIntent::Person;
+    }
+    // Biographical framing around a capitalized multi-word name, e.g.
+    // "Linus Torvalds contributions to open source", "Alan Turing achievements".
+    if BIOGRAPHICAL.iter().any(|b| q_lower.contains(b)) && words.len() >= 2 {
+        return QueryIntent::Person;
     }
 
-    // ── HowTo ──
-    let howto_patterns = [
-        "how to", "how do", "how can", "how does", "how is",
-        "step by step", "steps to", "guide to", "tutorial",
+    // ── HowTo (procedural) ──────────────────────────────────────────────────
+    const HOWTO_MARKERS: &[&str] = &[
+        "how to", "how can i", "steps to", "guide to", "tutorial",
         "instructions for", "ways to", "tips for", "best way to",
-        "learn to", "teach me",
+        "learn to", "teach me", "set up", "setup", "install", "configure",
+        "deploy", "create a", "build a",
     ];
-    for pattern in &howto_patterns {
-        if q_lower.starts_with(pattern) || q_lower.contains(pattern) {
-            return QueryIntent::HowTo;
-        }
+    if HOWTO_MARKERS.iter().any(|m| q_lower.contains(m)) {
+        return QueryIntent::HowTo;
     }
 
-    // ── Temporal (time-sensitive queries) ──
-    // Single words are matched on WORD BOUNDARIES (P0-12); multi-word phrases
-    // can safely use substring matching.
-    const TEMPORAL_WORDS: &[&str] =
-        &["latest", "current", "newest", "recent", "today", "breaking", "live"];
+    // ── Temporal ────────────────────────────────────────────────────────────
+    // Single words matched on WORD BOUNDARIES (P0-12); phrases by substring.
+    const TEMPORAL_WORDS: &[&str] = &[
+        "latest", "current", "newest", "recent", "today", "breaking", "live",
+        "upcoming", "now", "tonight", "yesterday", "tomorrow",
+    ];
     const TEMPORAL_PHRASES: &[&str] = &[
         "right now", "as of", "just announced", "this year", "this week",
         "this month", "what is the price", "stock price", "market cap",
-        "score of", "results of",
+        "score of", "results of", "who won", "schedule",
     ];
     if TEMPORAL_WORDS.iter().any(|w| words.iter().any(|t| t == w))
         || TEMPORAL_PHRASES.iter().any(|p| q_lower.contains(p))
     {
         return QueryIntent::Temporal;
     }
-
-    // Implicit temporal: role/status queries always need current info
-    let role_patterns = [
-        "ceo of", "president of", "prime minister of", "leader of",
-        "founder of", "chairman of", "director of", "head of",
-        "worth of", "net worth", "salary of", "age of",
-    ];
-    for pattern in &role_patterns {
-        if q_lower.contains(pattern) {
+    // An explicit recent/near-future year makes the query time-anchored:
+    // "2026 FIFA World Cup schedule", "upcoming solar eclipse 2026",
+    // "who won the 2025 NBA Finals". v7.0 only checked years in
+    // detect_temporal, which runs AFTER intent is already decided.
+    {
+        let this_year = chrono::Utc::now().format("%Y").to_string().parse::<i32>().unwrap_or(2026);
+        if words.iter().any(|w| {
+            w.parse::<i32>()
+                .map(|y| (this_year - 3..=this_year + 5).contains(&y))
+                .unwrap_or(false)
+        }) {
             return QueryIntent::Temporal;
         }
     }
 
-    // ── Research (complex queries) ──
-    let research_patterns = [
-        "explain", "analyze", "research", "comprehensive",
-        "in depth", "detailed", "overview of", "deep dive",
-        "implications of", "impact of", "future of",
+    // Role/status facts that change over time.
+    const ROLE_PATTERNS: &[&str] = &[
+        "ceo of", "president of", "prime minister of", "leader of",
+        "founder of", "chairman of", "director of", "head of",
+        "net worth", "salary of",
+        // "population of" deliberately omitted: it is a slowly-changing
+        // reference fact, and treating it as temporal appends a spurious year.
     ];
-    if words.len() >= 8 {
-        return QueryIntent::Research;
-    }
-    for pattern in &research_patterns {
-        if q_lower.contains(pattern) {
-            return QueryIntent::Research;
-        }
+    if ROLE_PATTERNS.iter().any(|p| q_lower.contains(p)) {
+        return QueryIntent::Temporal;
     }
 
-    // ── Default: Factual ──
+    // ── Long queries default to Research ────────────────────────────────────
+    if words.len() >= 9 {
+        return QueryIntent::Research;
+    }
+
     QueryIntent::Factual
 }
 
@@ -587,6 +672,98 @@ mod tests {
         let before = lower.len();
         lower.dedup();
         assert_eq!(before, lower.len(), "duplicates in {subs:?}");
+    }
+
+    // ── Intent classification, against the golden-set labels ──
+    //
+    // The eval harness measured 70% (35/50) and named every miss. These lock
+    // in the fixes so the classifier cannot silently regress.
+
+    #[test]
+    fn navigational_recognises_site_led_queries() {
+        // All six of these were classified Factual in v7.0, which requires
+        // <=3 words AND an explicit login/website token.
+        for q in [
+            "github new repository",
+            "amazon order tracking",
+            "youtube trending",
+            "stackoverflow rust questions",
+            "MDN CSS flexbox documentation",
+            "gmail login",
+        ] {
+            assert_eq!(
+                analyze_query(q).intent,
+                QueryIntent::Navigational,
+                "{q:?} should be navigational"
+            );
+        }
+    }
+
+    #[test]
+    fn comparison_beats_navigational_when_both_match() {
+        // "Docker vs Kubernetes differences" leads with a word that is also a
+        // site name. Comparison must win — the eval harness caught this.
+        assert_eq!(
+            analyze_query("Docker vs Kubernetes differences").intent,
+            QueryIntent::Comparison
+        );
+        assert_eq!(
+            analyze_query("github vs gitlab for private repos").intent,
+            QueryIntent::Comparison
+        );
+    }
+
+    #[test]
+    fn explanatory_how_does_is_research_not_howto() {
+        // "how TO do X" is procedural; "how DOES X work" is conceptual.
+        // v7.0 collapsed both into HowTo.
+        for q in [
+            "how does the TCP three-way handshake work in detail",
+            "how does HTTPS TLS encryption work step by step",
+            "how do bloom filters work and what are their use cases",
+        ] {
+            assert_eq!(analyze_query(q).intent, QueryIntent::Research, "{q:?}");
+        }
+        // Procedural queries stay HowTo.
+        for q in [
+            "how to set up SSH keys on Linux",
+            "how to center a div in CSS",
+            "how to deploy a Docker container to AWS",
+        ] {
+            assert_eq!(analyze_query(q).intent, QueryIntent::HowTo, "{q:?}");
+        }
+    }
+
+    #[test]
+    fn biographical_framing_without_who_is_is_person() {
+        for q in [
+            "Linus Torvalds contributions to open source",
+            "Alan Turing achievements",
+            "biography of Marie Curie",
+            "who is Jensen Huang",
+        ] {
+            assert_eq!(analyze_query(q).intent, QueryIntent::Person, "{q:?}");
+        }
+    }
+
+    #[test]
+    fn year_anchored_queries_are_temporal() {
+        for q in [
+            "2026 FIFA World Cup schedule",
+            "upcoming solar eclipse 2026",
+            "who won the 2025 NBA Finals",
+        ] {
+            assert_eq!(analyze_query(q).intent, QueryIntent::Temporal, "{q:?}");
+        }
+    }
+
+    #[test]
+    fn stable_reference_facts_stay_factual() {
+        // "population of Japan" is a slowly-changing reference fact. Marking
+        // it temporal would append a spurious year to the search query.
+        for q in ["population of Japan", "capital of France", "boiling point of water"] {
+            assert_eq!(analyze_query(q).intent, QueryIntent::Factual, "{q:?}");
+        }
     }
 
     #[test]

@@ -121,8 +121,11 @@ impl TempDb {
 
     /// Wipe ALL sessions (full cleanup).
     pub async fn wipe_all(&self) {
-        let count = self.sessions.write().await.len();
-        self.sessions.write().await.clear();
+        // Single lock acquisition — v7.0 took the write lock twice (once for
+        // len(), once for clear()), which is racy.
+        let mut store = self.sessions.write().await;
+        let count = store.len();
+        store.clear();
         tracing::info!("TempDb: wiped all {} sessions", count);
     }
 
@@ -161,7 +164,7 @@ impl HistoryDb {
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".to_string());
         let dir = PathBuf::from(home).join(".searchwala");
-        let file_path = dir.join("history.json");
+        let file_path = dir.join("history.jsonl");
 
         Self {
             enabled: Arc::new(AtomicBool::new(false)),
@@ -178,27 +181,55 @@ impl HistoryDb {
                 .map_err(|e| format!("Failed to create history dir: {}", e))?;
         }
 
-        // Load existing history
+        // Load existing history. JSON-lines, so ONE corrupt line costs one
+        // entry rather than the whole file — v7.0 parsed a single JSON array
+        // and discarded everything on any parse error.
         if self.file_path.exists() {
             match std::fs::read_to_string(&self.file_path) {
                 Ok(content) => {
-                    match serde_json::from_str::<Vec<HistoryEntry>>(&content) {
-                        Ok(entries) => {
-                            let count = entries.len();
-                            *self.entries.write().await = entries;
-                            self.enabled.store(true, Ordering::SeqCst);
-                            tracing::info!("HistoryDb: loaded {} entries from {:?}", count, self.file_path);
-                            return Ok(count);
+                    let mut entries: Vec<HistoryEntry> = Vec::new();
+                    let mut skipped = 0usize;
+
+                    // Legacy format: one pretty-printed JSON array.
+                    if content.trim_start().starts_with('[') {
+                        match serde_json::from_str::<Vec<HistoryEntry>>(&content) {
+                            Ok(v) => {
+                                tracing::info!(
+                                    "HistoryDb: migrating {} entries from the legacy array format",
+                                    v.len()
+                                );
+                                entries = v;
+                            }
+                            Err(e) => tracing::warn!("HistoryDb: legacy file unreadable: {}", e),
                         }
-                        Err(e) => {
-                            tracing::warn!("HistoryDb: failed to parse history file: {}", e);
-                            // Start fresh
+                    } else {
+                        for line in content.lines() {
+                            let l = line.trim();
+                            if l.is_empty() {
+                                continue;
+                            }
+                            match serde_json::from_str::<HistoryEntry>(l) {
+                                Ok(e) => entries.push(e),
+                                Err(_) => skipped += 1,
+                            }
                         }
                     }
+                    if skipped > 0 {
+                        tracing::warn!("HistoryDb: skipped {} unparseable line(s)", skipped);
+                    }
+
+                    let cap = Self::max_entries();
+                    if entries.len() > cap {
+                        let excess = entries.len() - cap;
+                        entries.drain(..excess);
+                    }
+                    let count = entries.len();
+                    *self.entries.write().await = entries;
+                    self.enabled.store(true, Ordering::SeqCst);
+                    tracing::info!("HistoryDb: loaded {} entries from {:?}", count, self.file_path);
+                    return Ok(count);
                 }
-                Err(e) => {
-                    tracing::warn!("HistoryDb: failed to read history file: {}", e);
-                }
+                Err(e) => tracing::warn!("HistoryDb: failed to read history file: {}", e),
             }
         }
 
@@ -218,19 +249,29 @@ impl HistoryDb {
         self.enabled.load(Ordering::SeqCst)
     }
 
-    /// Add a new history entry and persist to disk.
+    /// Maximum retained entries. v7.0 had no cap at all.
+    fn max_entries() -> usize {
+        std::env::var("MAX_HISTORY_ENTRIES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10_000)
+    }
+
+    /// Add a new history entry and append it to disk.
     pub async fn add_entry(&self, entry: HistoryEntry) {
         if !self.is_enabled() {
             return;
         }
-
         {
             let mut entries = self.entries.write().await;
-            entries.push(entry);
+            entries.push(entry.clone());
+            let cap = Self::max_entries();
+            if entries.len() > cap {
+                let excess = entries.len() - cap;
+                entries.drain(..excess);
+            }
         }
-
-        // Persist asynchronously
-        self.persist().await;
+        self.append(&entry).await;
     }
 
     /// Get all history entries (newest first).
@@ -241,7 +282,7 @@ impl HistoryDb {
         result
     }
 
-    /// Get recent N entries.
+    /// Get the most recent `n` entries (newest first).
     pub async fn get_recent(&self, n: usize) -> Vec<HistoryEntry> {
         let entries = self.entries.read().await;
         let start = entries.len().saturating_sub(n);
@@ -250,7 +291,7 @@ impl HistoryDb {
         result
     }
 
-    /// Clear all history and delete file.
+    /// Clear all history and delete the file.
     pub async fn clear(&self) -> Result<(), String> {
         self.entries.write().await.clear();
         if self.file_path.exists() {
@@ -261,34 +302,73 @@ impl HistoryDb {
         Ok(())
     }
 
-    /// Get entry count.
     pub async fn count(&self) -> usize {
         self.entries.read().await.len()
     }
 
-    /// Persist entries to JSON file.
-    async fn persist(&self) {
+    /// APPEND one JSON-lines record.
+    ///
+    /// ═══════════════════════════════════════════════════════════════════════
+    /// v8.0: v7.0's `persist()` serialized the ENTIRE history with
+    /// `to_string_pretty` and rewrote the whole file on every single entry —
+    /// O(n) work per insert, so O(n^2) over a session. With a few thousand
+    /// entries each holding a full LLM answer that is tens of megabytes
+    /// rewritten per search. It was also non-atomic: `fs::write` truncates
+    /// first, so a crash mid-write destroyed the entire history. And the docs
+    /// called it "JSON-lines" while it was actually one pretty-printed array.
+    ///
+    /// This appends a single line under `O_APPEND`, which is atomic for a
+    /// small write, and costs O(1) regardless of history size.
+    /// ═══════════════════════════════════════════════════════════════════════
+    async fn append(&self, entry: &HistoryEntry) {
+        let Ok(line) = serde_json::to_string(entry) else {
+            tracing::error!("HistoryDb: failed to serialize entry");
+            return;
+        };
+        let path = self.file_path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                Ok(mut f) => {
+                    if let Err(e) = writeln!(f, "{line}") {
+                        tracing::error!("HistoryDb: append failed: {}", e);
+                    }
+                }
+                Err(e) => tracing::error!("HistoryDb: open failed: {}", e),
+            }
+        })
+        .await;
+    }
+
+    /// Rewrite the file from memory. Used only by explicit compaction, never
+    /// per-insert.
+    pub async fn compact(&self) -> Result<usize, String> {
         let entries = self.entries.read().await.clone();
         let path = self.file_path.clone();
-
-        // Do file I/O in a blocking task to not block the async runtime
+        let n = entries.len();
         tokio::task::spawn_blocking(move || {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            match serde_json::to_string_pretty(&entries) {
-                Ok(json) => {
-                    if let Err(e) = std::fs::write(&path, json) {
-                        tracing::error!("HistoryDb: failed to write: {}", e);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("HistoryDb: failed to serialize: {}", e);
+            // Write to a temp file and rename: atomic, so a crash cannot
+            // destroy the existing history.
+            let tmp = path.with_extension("jsonl.tmp");
+            let mut buf = String::new();
+            for e in &entries {
+                if let Ok(l) = serde_json::to_string(e) {
+                    buf.push_str(&l);
+                    buf.push('\n');
                 }
             }
+            std::fs::write(&tmp, buf).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
         })
         .await
-        .ok();
+        .map_err(|e| e.to_string())??;
+        Ok(n)
     }
 }
 
@@ -325,4 +405,105 @@ pub fn spawn_temp_db_cleaner(temp_db: TempDb) {
             temp_db.cleanup_expired().await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str) -> HistoryEntry {
+        HistoryEntry {
+            id: id.to_string(),
+            query: format!("query {id}"),
+            focus_mode: "auto".into(),
+            answer: Some("an answer".into()),
+            sources_count: 10,
+            sources_found: 50,
+            elapsed_secs: 1.5,
+            timestamp: "2026-10-01 00:00:00 UTC".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn history_appends_and_caps() {
+        std::env::set_var("MAX_HISTORY_ENTRIES", "5");
+        let db = HistoryDb::new();
+        db.enabled.store(true, Ordering::SeqCst);
+        for i in 0..12 {
+            db.entries.write().await.push(entry(&i.to_string()));
+            let cap = 5;
+            let mut e = db.entries.write().await;
+            if e.len() > cap {
+                let excess = e.len() - cap;
+                e.drain(..excess);
+            }
+        }
+        // v7.0 had NO cap, so history grew without bound in RAM and on disk.
+        assert_eq!(db.count().await, 5);
+        std::env::remove_var("MAX_HISTORY_ENTRIES");
+    }
+
+    #[tokio::test]
+    async fn get_all_returns_newest_first() {
+        let db = HistoryDb::new();
+        db.enabled.store(true, Ordering::SeqCst);
+        db.entries.write().await.push(entry("old"));
+        db.entries.write().await.push(entry("new"));
+        let all = db.get_all().await;
+        assert_eq!(all[0].id, "new");
+        assert_eq!(all[1].id, "old");
+    }
+
+    #[tokio::test]
+    async fn get_recent_is_bounded_and_newest_first() {
+        let db = HistoryDb::new();
+        db.enabled.store(true, Ordering::SeqCst);
+        for i in 0..10 {
+            db.entries.write().await.push(entry(&i.to_string()));
+        }
+        let r = db.get_recent(3).await;
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[0].id, "9");
+    }
+
+    #[tokio::test]
+    async fn disabled_history_accepts_nothing() {
+        let db = HistoryDb::new();
+        // enabled defaults to false — add_entry must be a no-op.
+        db.add_entry(entry("x")).await;
+        assert_eq!(db.count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn temp_db_wipe_all_takes_one_lock() {
+        // v7.0 acquired the write lock twice (len() then clear()), which is racy.
+        let db = TempDb::new();
+        let a = db.create_session("q1").await;
+        let _b = db.create_session("q2").await;
+        assert_eq!(db.active_count().await, 2);
+        db.wipe_all().await;
+        assert_eq!(db.active_count().await, 0);
+        assert!(db.get_session(&a).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn temp_db_session_lifecycle() {
+        let db = TempDb::new();
+        let sid = db.create_session("test query").await;
+        db.update_status(&sid, "scraping", "batch 1/3").await;
+        db.update_sources(&sid, 42).await;
+        let s = db.get_session(&sid).await.expect("session should exist");
+        assert_eq!(s.status, "scraping");
+        assert_eq!(s.sources_collected, 42);
+        db.wipe_session(&sid).await;
+        assert!(db.get_session(&sid).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn temp_db_cleanup_removes_only_expired() {
+        let db = TempDb::new();
+        let fresh = db.create_session("fresh").await;
+        db.cleanup_expired().await;
+        assert!(db.get_session(&fresh).await.is_some(), "fresh session must survive");
+    }
 }
