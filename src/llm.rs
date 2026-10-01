@@ -19,6 +19,7 @@
 //   - Research: Multi-batch iterative, 50/batch, 64K total → detailed report
 // ============================================================================
 
+use std::collections::HashSet;
 use std::fmt::Write;
 use std::time::Duration;
 
@@ -37,9 +38,74 @@ use crate::query_intel::{QueryIntelligence, QueryIntent};
 /// case is Hindi news, that is a product defect, not a nicety.
 const LANGUAGE_RULE: &str = " LANGUAGE: Answer in the SAME language the user      asked in. If the question is in Hindi, answer in Hindi; if in Spanish,      answer in Spanish. When the sources are in a different language from the      question, translate the facts into the question's language — never switch      the answer's language to match the sources.";
 
+/// How much context the model may receive.
+///
+/// v7.0 hardcoded `MAX_CONTEXT_CHARS_LITE = 16_000`. The pipeline scraped up
+/// to 420 pages and then handed the LLM 16 KB. After Phase 3 raised extraction
+/// to 374k-680k chars per search, that cap was discarding >97% of the evidence
+/// it had just gathered. 2026 models have 200K-2M token windows.
+///
+/// Defaults are deliberately conservative — overshooting costs the user money —
+/// and `CONTEXT_MAX_TOKENS` overrides everything.
+pub struct ContextBudget {
+    pub max_tokens: usize,
+}
+
+impl ContextBudget {
+    pub fn for_model(model: &str) -> Self {
+        if let Some(v) = std::env::var("CONTEXT_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            return Self { max_tokens: v.clamp(2_000, 900_000) };
+        }
+        let m = model.to_lowercase();
+        let max_tokens = if m.contains("gemini") && m.contains("pro") {
+            400_000
+        } else if m.contains("gemini") {
+            200_000
+        } else if m.contains("opus") || m.contains("sonnet") || m.contains("fable") {
+            150_000
+        } else if m.contains("gpt-5") || m.contains("o4") || m.contains("gpt-4.1") {
+            120_000
+        } else if m.contains("haiku") || m.contains("mini") || m.contains("flash") {
+            60_000
+        } else {
+            // Unknown model: stay close to the old behaviour rather than risk
+            // a context-length error on someone's self-hosted 8k model.
+            24_000
+        };
+        Self { max_tokens }
+    }
+
+    /// Characters of source text we may pack, leaving headroom for the prompt
+    /// scaffolding and the answer itself.
+    pub fn max_context_chars(&self) -> usize {
+        // ~3.3 chars/token is a safe average across Latin and Indic scripts
+        // (Devanagari is far denser per token than English).
+        let usable = (self.max_tokens as f64 * 0.70) as usize;
+        usable.saturating_mul(33) / 10
+    }
+
+    pub fn max_output_tokens(&self) -> usize {
+        (self.max_tokens / 8).clamp(2_048, 32_000)
+    }
+}
+
+/// Rough token estimate that accounts for script density.
+pub fn est_tokens(s: &str) -> usize {
+    let mut units = 0usize;
+    for c in s.chars() {
+        units += if c.is_ascii() { 1 } else { 3 };
+    }
+    units / 4 + 1
+}
+
 const MAX_CONTEXT_CHUNKS_LITE: usize = 30;    // v5.2.0: increased from 25 for richer context
 const BATCH_SIZE_RESEARCH: usize = 50;
-const MAX_CONTEXT_CHARS_LITE: usize = 16_000;  // v5.2.0: increased from 10,000 — modern LLMs handle more
+// MAX_CONTEXT_CHARS_LITE (16_000) REMOVED in v8.0 — superseded by
+// ContextBudget::for_model, which scales with the model instead of discarding
+// >97% of the evidence the pipeline gathered.
 const MAX_CONTEXT_CHARS_RESEARCH_BATCH: usize = 12_000;
 const DEFAULT_LLM_TIMEOUT_MS: u64 = 45_000;
 const RESEARCH_BATCH_TIMEOUT_MS: u64 = 60_000;
@@ -248,6 +314,7 @@ fn build_request_body(
     model: &str,
     info: &ProviderInfo,
     stream: bool,
+    max_output_tokens: usize,
 ) -> serde_json::Value {
     match info.format {
         ApiFormat::OpenAiCompatible => {
@@ -261,6 +328,13 @@ fn build_request_body(
             let mut body = serde_json::json!({
                 "model": model,
                 "messages": msgs,
+                // v8.0: both were ABSENT in v7.0. Without max_tokens the
+                // provider applies its own default, which truncates long
+                // research reports; without temperature, synthesis was at the
+                // provider default (often 1.0) for a task that wants
+                // determinism.
+                "max_tokens": max_output_tokens,
+                "temperature": 0.2,
             });
 
             if stream {
@@ -341,7 +415,9 @@ fn build_request_body(
             let mut body = serde_json::json!({
                 "model": model,
                 "messages": msgs,
-                "max_tokens": 4096,
+                // v7.0 hardcoded 4096, which truncated every research report.
+                "max_tokens": max_output_tokens.max(8192),
+                "temperature": 0.2,
             });
 
             if !system_text.is_empty() {
@@ -459,7 +535,7 @@ pub(crate) async fn call_llm(
     let info = resolve_provider(config);
     let url = build_chat_url(&info, &config.model, false);
     let headers = build_auth_headers(config, &info);
-    let body = build_request_body(messages, &config.model, &info, false);
+    let body = build_request_body(messages, &config.model, &info, false, ContextBudget::for_model(&config.model).max_output_tokens());
 
     tracing::info!(
         "LLM call: provider={} model={} format={:?} url={}",
@@ -562,7 +638,7 @@ pub(crate) async fn call_llm_stream(
     let info = resolve_provider(config);
     let url = build_chat_url(&info, &config.model, true);
     let headers = build_auth_headers(config, &info);
-    let body = build_request_body(messages, &config.model, &info, true);
+    let body = build_request_body(messages, &config.model, &info, true, ContextBudget::for_model(&config.model).max_output_tokens());
 
     tracing::info!(
         "LLM stream: provider={} model={} format={:?}",
@@ -651,90 +727,6 @@ pub(crate) async fn call_llm_stream(
 // DIRECT SYNTHESIS — Single-call for lite mode
 // =============================================================================
 
-pub async fn summarize_direct(
-    query: &str,
-    llm_config: LlmConfig,
-    sources: &[SourceResult],
-    _research_mode: bool,
-) -> LlmExecutionResult {
-    if sources.is_empty() {
-        return LlmExecutionResult {
-            llm_answer: None,
-            llm_error: Some("llm_skipped: no scraped content available".to_string()),
-            batches_processed: 0,
-        };
-    }
-
-    let context = build_ranked_context(query, sources, false);
-    if context.is_empty() {
-        return LlmExecutionResult {
-            llm_answer: None,
-            llm_error: Some("llm_skipped: relevance filter produced empty context".to_string()),
-            batches_processed: 0,
-        };
-    }
-
-    tracing::info!(
-        "LLM direct synthesis: {} sources, context_len={}, mode=lite",
-        sources.len(),
-        context.len(),
-    );
-
-    let timeout_ms = llm_config.timeout_ms.unwrap_or(DEFAULT_LLM_TIMEOUT_MS);
-
-    let (system_prompt, user_prompt) = build_lite_prompts(query, &context);
-
-    let messages = vec![
-        ChatMessage::system(system_prompt),
-        ChatMessage::user(user_prompt),
-    ];
-
-    tracing::info!("LLM calling model={} provider={} timeout={}ms", llm_config.model, llm_config.provider, timeout_ms);
-
-    let call_result = if timeout_ms == 0 {
-        call_llm(&llm_config, &messages).await
-    } else {
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm(&llm_config, &messages)).await {
-            Ok(result) => result,
-            Err(_) => {
-                return LlmExecutionResult {
-                    llm_answer: None,
-                    llm_error: Some(format!("llm_timeout: exceeded {}ms", timeout_ms)),
-                    batches_processed: 0,
-                };
-            }
-        }
-    };
-
-    match call_result {
-        Ok(answer) => {
-            let answer = post_process_answer(&answer, query);
-            if answer.is_empty() {
-                LlmExecutionResult {
-                    llm_answer: None,
-                    llm_error: Some("llm_empty_response".to_string()),
-                    batches_processed: 1,
-                }
-            } else {
-                tracing::info!("LLM lite synthesis complete: {} chars", answer.len());
-                LlmExecutionResult {
-                    llm_answer: Some(answer),
-                    llm_error: None,
-                    batches_processed: 1,
-                }
-            }
-        }
-        Err(err) => {
-            tracing::error!("LLM call failed: {}", err);
-            LlmExecutionResult {
-                llm_answer: None,
-                llm_error: Some(format!("llm_error: {err}")),
-                batches_processed: 0,
-            }
-        }
-    }
-}
-
 // =============================================================================
 // v5.2.0: INTENT-AWARE SYNTHESIS — Selects optimal prompt per query intent
 // =============================================================================
@@ -753,22 +745,28 @@ pub async fn summarize_direct_with_intent(
         };
     }
 
-    let context = build_ranked_context(query, sources, false);
+    // v8.0 P1-10: the budget follows the model, not a fixed 16 KB.
+    let budget = ContextBudget::for_model(&llm_config.model);
+    let context = build_ranked_context(sources, budget.max_context_chars());
     if context.is_empty() {
         return LlmExecutionResult {
             llm_answer: None,
-            llm_error: Some("llm_skipped: relevance filter produced empty context".to_string()),
+            llm_error: Some("llm_skipped: no usable source text".to_string()),
             batches_processed: 0,
         };
     }
 
     tracing::info!(
-        "LLM intent-aware synthesis: intent={} sources={} context_len={}",
-        intel.intent, sources.len(), context.len(),
+        "LLM intent-aware synthesis: intent={} sources={} cited={} context_chars={} budget={}",
+        intel.intent,
+        sources.len(),
+        context.citation_map.len(),
+        crate::util::char_len(&context.text),
+        budget.max_context_chars(),
     );
 
     let timeout_ms = llm_config.timeout_ms.unwrap_or(DEFAULT_LLM_TIMEOUT_MS);
-    let (system_prompt, user_prompt) = build_intent_prompts(query, &context, intel);
+    let (system_prompt, user_prompt) = build_intent_prompts(query, &context.text, intel);
 
     let messages = vec![
         ChatMessage::system(system_prompt),
@@ -796,7 +794,11 @@ pub async fn summarize_direct_with_intent(
         Ok(answer) => {
             let answer = post_process_answer(&answer, query);
             // v6.1.0: Citation faithfulness check — flag unsupported citations
-            let answer = verify_citations(&answer, sources);
+            let checks = verify_citations(&answer, sources, &context.citation_map);
+            let unsupported = checks.iter().filter(|c| !c.supported).count();
+            if unsupported > 0 {
+                tracing::info!("{} unsupported citation(s) in answer", unsupported);
+            }
             if answer.is_empty() {
                 LlmExecutionResult {
                     llm_answer: None,
@@ -833,7 +835,7 @@ pub async fn summarize_direct_with_intent(
                 match retry_result {
                     Ok(retry_answer) => {
                         let retry_answer = post_process_answer(&retry_answer, query);
-                        let retry_answer = verify_citations(&retry_answer, sources);
+                        let _ = verify_citations(&retry_answer, sources, &context.citation_map);
                         // Pick the better answer (longer + has citations)
                         let final_answer = if retry_answer.len() > answer.len()
                             || (retry_answer.contains('[') && !answer.contains('['))
@@ -1099,7 +1101,7 @@ pub async fn summarize_from_stream(
         }
     }
 
-    let context = build_ranked_context(query, &batch, research_mode);
+    let context = build_ranked_context(&batch, 12_000).text;
     if context.is_empty() {
         return LlmExecutionResult {
             llm_answer: None,
@@ -1161,126 +1163,131 @@ pub async fn summarize_from_stream(
 // Context Building
 // =============================================================================
 
-fn build_ranked_context(query: &str, sources: &[SourceResult], research_mode: bool) -> String {
+/// Context block plus the mapping needed to resolve `[n]` back to a source.
+pub struct BuiltContext {
+    pub text: String,
+    /// citation number (1-based) -> index into the `sources` slice passed in.
+    pub citation_map: Vec<usize>,
+}
+
+impl BuiltContext {
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+    /// Resolve a `[n]` citation to its source.
+    pub fn resolve<'a>(&self, n: usize, sources: &'a [SourceResult]) -> Option<&'a SourceResult> {
+        let idx = *self.citation_map.get(n.checked_sub(1)?)?;
+        sources.get(idx)
+    }
+}
+
+/// Assemble the LLM context from an ALREADY-RANKED source list.
+///
+/// ═══════════════════════════════════════════════════════════════════════════
+/// v8.0 P1-6: this function no longer re-ranks.
+///
+/// v7.0 ran `ranking::rank_top_chunks_with_rrf` (BM25+ -> RRF boost -> MMR
+/// diversity -> lost-in-middle) and then threw that ordering away here,
+/// re-sorting by:
+///
+///     if src.title.to_lowercase().contains(kw) { score += 3.0 }
+///     if text_lower.contains(kw)               { score += 1.0 }
+///
+/// Substring containment. No IDF, no term frequency, no length normalization —
+/// a strictly worse ranker, applied last, so it won. The entire BM25+/MMR/
+/// lost-in-middle stack was decorative.
+///
+/// v8.0 P0-11: it also returns a citation map.
+///
+/// v7.0 numbered the sources `[1]`, `[2]`, ... by their position in the
+/// REORDERED list, then `verify_citations` resolved `[n]` against
+/// `sources[n-1]` — the original, unreordered slice. Index 0 coincides under
+/// the sandwich reorder, but every index from 1 onward pointed at the wrong
+/// source. Citations were systematically misattributed.
+/// ═══════════════════════════════════════════════════════════════════════════
+fn build_ranked_context(sources: &[SourceResult], budget_chars: usize) -> BuiltContext {
     if sources.is_empty() {
-        return String::new();
+        return BuiltContext { text: String::new(), citation_map: Vec::new() };
     }
 
-    let max_chunks = if research_mode { BATCH_SIZE_RESEARCH } else { MAX_CONTEXT_CHUNKS_LITE };
-    let max_chars = if research_mode { MAX_CONTEXT_CHARS_RESEARCH_BATCH } else { MAX_CONTEXT_CHARS_LITE };
+    // Respect the incoming order; only decide WHERE each source sits.
+    let order = lost_in_middle_order(sources.len());
 
-    // Extract query keywords for relevance scoring
-    let query_lower = query.to_lowercase();
-    let stop_words: std::collections::HashSet<&str> = [
-        "what","is","the","a","an","of","in","to","for","and","or","how",
-        "does","do","can","about","with","from","that","this","are","was",
-        "were","be","been","being","have","has","had","will","would","it",
-        "its","on","at","by","but","not","so","if","than","then","my","me",
-        "we","you","your","who","which","when","where","why","all","each",
-    ].iter().cloned().collect();
+    let mut text = String::with_capacity(budget_chars.min(64 * 1024));
+    let mut citation_map: Vec<usize> = Vec::new();
+    let mut used = 0usize;
 
-    let keywords: Vec<String> = query_lower
-        .split_whitespace()
-        .filter(|w| w.len() > 2 && !stop_words.contains(w))
-        .map(|w| w.to_string())
-        .collect();
-
-    // Score each source by keyword relevance
-    let mut scored: Vec<(usize, f32)> = sources.iter().enumerate().map(|(idx, src)| {
-        let text_lower = format!("{} {}", src.title, src.extracted_text).to_lowercase();
-        if keywords.is_empty() {
-            return (idx, 1.0);
+    for idx in order {
+        let src = &sources[idx];
+        let body_raw = src.extracted_text.trim();
+        if body_raw.is_empty() {
+            continue;
         }
-        let mut score: f32 = 0.0;
-        for kw in &keywords {
-            // Title match = 3x weight
-            if src.title.to_lowercase().contains(kw.as_str()) {
-                score += 3.0;
-            }
-            // Body match = 1x weight
-            if text_lower.contains(kw.as_str()) {
-                score += 1.0;
-            }
-        }
-        // Normalize by keyword count
-        let relevance = score / (keywords.len() as f32 * 4.0);
-        (idx, relevance)
-    }).collect();
 
-    // Sort by relevance descending
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Filter out sources with zero relevance (completely off-topic)
-    let min_relevance = if research_mode { 0.0 } else { 0.05 };
-    let filtered: Vec<(usize, f32)> = scored
-        .into_iter()
-        .filter(|(_, rel)| *rel >= min_relevance)
-        .take(max_chunks)
-        .collect();
-
-    // =========================================================================
-    // v6.1.0: Lost-in-Middle Ordering (Liu et al., arXiv 2307.03172, TACL 2024)
-    //
-    // Models exhibit a U-shaped accuracy curve: they use information best at
-    // the START and END of the context, losing the middle. We reorder into a
-    // "sandwich": most relevant → first and last positions.
-    //
-    // Pattern for N items ranked by relevance [1..N]:
-    //   Position: 1, 3, 5, ..., 6, 4, 2
-    //   i.e., odd-ranked items go to the front, even-ranked to the back (reversed)
-    // =========================================================================
-    let reordered = lost_in_middle_reorder(&filtered);
-
-    // v5.0: Pre-allocate buffer + use write!() to eliminate intermediate String allocs
-    let mut context = String::with_capacity(max_chars.min(16_384));
-    for (source_num, (idx, _relevance)) in reordered.into_iter().enumerate() {
-        let source = &sources[idx];
-        let trimmed_text = source.extracted_text.trim();
-        let cred = credibility_tag(&source.url);
-
-        // Estimate block size to check capacity before writing
-        let est_len = 10 + cred.len() + source.title.len() + source.url.len() + trimmed_text.len();
-        if context.len() + est_len > max_chars {
+        let remaining = budget_chars.saturating_sub(used);
+        // Reserve room for the header line.
+        if remaining < 400 {
             break;
         }
+        let header_budget = 220;
+        let body_budget = remaining.saturating_sub(header_budget);
 
+        // v7.0 BUG: it computed an estimated block size and `break`-ed on the
+        // first source that did not fit. A single long source at position 3
+        // therefore TRUNCATED the whole context to two sources. Truncate the
+        // body and continue instead.
+        let body = crate::util::truncate_chars(body_raw, body_budget);
+        if crate::util::char_len(body) < 80 {
+            continue;
+        }
+
+        let n = citation_map.len() + 1;
+        let cred = credibility_tag(&src.url);
+        let date = src
+            .published
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "undated".to_string());
+
+        // The date is now IN the context. v7.0 told the model to "prefer the
+        // most recent sources" while giving it no dates to compare.
         let _ = write!(
-            context,
-            "[{}] {} {} ({})\n{}\n\n",
-            source_num + 1, cred, source.title, source.url, trimmed_text
+            text,
+            "[{}] {} {} — published {} ({})\n{}\n\n",
+            n, cred, src.title, date, src.url, body
         );
+        used = crate::util::char_len(&text);
+        citation_map.push(idx);
     }
 
-    context
+    BuiltContext { text, citation_map }
+}
+
+/// Lost-in-Middle ordering (Liu et al., TACL 2024, arXiv 2307.03172).
+///
+/// Models show a U-shaped accuracy curve over context position, so the most
+/// relevant items go first and last and the least relevant in the middle.
+/// Returns indices into a relevance-descending list.
+fn lost_in_middle_order(len: usize) -> Vec<usize> {
+    if len <= 2 {
+        return (0..len).collect();
+    }
+    let mut front = Vec::with_capacity(len);
+    let mut back = Vec::with_capacity(len);
+    for i in 0..len {
+        if i % 2 == 0 {
+            front.push(i);
+        } else {
+            back.push(i);
+        }
+    }
+    back.reverse();
+    front.extend(back);
+    front
 }
 
 /// Lost-in-Middle reordering: place most relevant items at start and end,
 /// least relevant in the middle. This maximizes LLM attention on the best sources.
 ///
-/// Input: items sorted by relevance descending [best, 2nd, 3rd, ..., worst]
-/// Output: [best, 3rd, 5th, ..., 6th, 4th, 2nd] (sandwich pattern)
-fn lost_in_middle_reorder(items: &[(usize, f32)]) -> Vec<(usize, f32)> {
-    if items.len() <= 2 {
-        return items.to_vec();
-    }
-
-    let mut front: Vec<(usize, f32)> = Vec::new();
-    let mut back: Vec<(usize, f32)> = Vec::new();
-
-    for (i, item) in items.iter().enumerate() {
-        if i % 2 == 0 {
-            front.push(*item);  // Odd-ranked (0, 2, 4, ...) → front
-        } else {
-            back.push(*item);   // Even-ranked (1, 3, 5, ...) → back (reversed)
-        }
-    }
-
-    // Reverse the back portion so the 2nd-best item is at the very end
-    back.reverse();
-
-    front.extend(back);
-    front
-}
 
 /// Build context for a research batch using global source IDs.
 fn build_research_batch_context(
@@ -1577,108 +1584,136 @@ fn post_process_answer(raw: &str, _query: &str) -> String {
 ///
 /// This is the main defense against confident-but-hallucinated attributions.
 /// Returns the answer with unsupported citations flagged.
-pub fn verify_citations(answer: &str, sources: &[SourceResult]) -> String {
-    if sources.is_empty() || answer.is_empty() {
-        return answer.to_string();
+/// Outcome of checking one `[n]` citation against the source it points at.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CitationCheck {
+    /// The number as it appears in the answer.
+    pub number: usize,
+    pub url: String,
+    pub title: String,
+    /// Fraction of the claim's content words that appear in the source.
+    pub overlap: f64,
+    pub supported: bool,
+}
+
+/// Citation faithfulness check.
+///
+/// ═══════════════════════════════════════════════════════════════════════════
+/// v8.0 fixes two things.
+///
+/// 1. It RESOLVES CORRECTLY. v7.0 mapped `[n]` to `sources[n-1]`, but the
+///    numbers in the answer refer to positions in the lost-in-middle REORDERED
+///    context. Index 0 coincides; everything from `[2]` onward pointed at the
+///    wrong source. Now it goes through the `citation_map` that built the
+///    context.
+///
+/// 2. It RETURNS SOMETHING. v7.0's body ended with `result` — the unmodified
+///    input — so despite its doc comment ("Returns the answer with unsupported
+///    citations flagged") it only wrote log lines. It was a no-op that cost a
+///    full substring scan per citation, called twice per answer.
+/// ═══════════════════════════════════════════════════════════════════════════
+pub fn verify_citations(
+    answer: &str,
+    sources: &[SourceResult],
+    citation_map: &[usize],
+) -> Vec<CitationCheck> {
+    if sources.is_empty() || answer.is_empty() || citation_map.is_empty() {
+        return Vec::new();
     }
 
-    let result = answer.to_string();
-    let mut flagged_count = 0;
+    let mut out: Vec<CitationCheck> = Vec::new();
+    let mut seen_numbers: HashSet<usize> = HashSet::new();
 
-    // Find all citation patterns [N] where N is a number
-    // IMPORTANT: Use char_indices to get byte positions, not char positions
-    let mut i = 0;
-    let chars: Vec<(usize, char)> = answer.char_indices().collect(); // (byte_offset, char)
-    let mut citations_found: Vec<(usize, String)> = Vec::new(); // (source_index, citation_text)
-
-    while i < chars.len() {
-        if chars[i].1 == '[' {
-            let bracket_byte_start = chars[i].0; // byte offset of '['
-            i += 1;
-            let mut num_str = String::new();
-            while i < chars.len() && chars[i].1.is_ascii_digit() {
-                num_str.push(chars[i].1);
-                i += 1;
-            }
-            if i < chars.len() && chars[i].1 == ']' && !num_str.is_empty() {
-                if let Ok(n) = num_str.parse::<usize>() {
-                    if n >= 1 && n <= sources.len() {
-                        // Find the sentence containing this citation (byte-safe)
-                        let sentence_start = answer[..bracket_byte_start]
-                            .rfind(". ")
-                            .map(|p| p + 2)
-                            .unwrap_or(0);
-                        let after_bracket = chars[i].0 + chars[i].1.len_utf8();
-                        let sentence_end = if after_bracket < answer.len() {
-                            answer[after_bracket..]
-                                .find(". ")
-                                .map(|p| after_bracket + p + 1)
-                                .unwrap_or(answer.len().min(after_bracket + 200))
-                        } else {
-                            answer.len()
-                        };
-                        // Guard: ensure both indices are valid char boundaries
-                        let safe_start = if answer.is_char_boundary(sentence_start) { sentence_start } else { 0 };
-                        let safe_end = if answer.is_char_boundary(sentence_end) { sentence_end } else { answer.len() };
-                        let safe_end = safe_end.min(answer.len());
-                        if safe_start <= safe_end {
-                            let sentence = &answer[safe_start..safe_end];
-                            citations_found.push((n - 1, sentence.to_string()));
-                        }
-                    }
-                }
-            }
+    for (n, sentence) in extract_citation_contexts(answer) {
+        if !seen_numbers.insert(n) {
+            continue; // report each citation number once
         }
-        i += 1;
-    }
+        // n is 1-based into the CONTEXT, not into `sources`.
+        let Some(&src_idx) = citation_map.get(n.wrapping_sub(1)) else { continue };
+        let Some(src) = sources.get(src_idx) else { continue };
 
-    // Verify each citation has token overlap with its source
-    for (source_idx, sentence) in &citations_found {
-        if *source_idx >= sources.len() {
-            continue;
-        }
-        let source = &sources[*source_idx];
-        let source_text = format!("{} {}", source.title, source.extracted_text).to_lowercase();
-        let sentence_lower = sentence.to_lowercase();
-
-        // Tokenize the claim sentence (remove stopwords)
-        let claim_tokens: std::collections::HashSet<&str> = sentence_lower
+        let source_text = format!("{} {}", src.title, src.extracted_text).to_lowercase();
+        let claim = sentence.to_lowercase();
+        let claim_tokens: HashSet<&str> = claim
             .split(|c: char| !c.is_alphanumeric())
-            .filter(|t| t.len() > 3)
+            .filter(|t| crate::util::char_len(t) > 3)
             .collect();
-
         if claim_tokens.is_empty() {
             continue;
         }
+        let hits = claim_tokens.iter().filter(|t| source_text.contains(**t)).count();
+        let overlap = hits as f64 / claim_tokens.len() as f64;
 
-        // Count how many claim tokens appear in the source
-        let overlap = claim_tokens.iter()
-            .filter(|t| source_text.contains(**t))
-            .count();
-
-        let overlap_ratio = overlap as f64 / claim_tokens.len() as f64;
-
-        // If less than 25% token overlap, the citation is likely unsupported
-        if overlap_ratio < 0.25 {
-            flagged_count += 1;
-            tracing::warn!(
-                "Citation [{}] may be unsupported: {:.0}% token overlap with source '{}'",
-                source_idx + 1,
-                overlap_ratio * 100.0,
-                source.title.chars().take(60).collect::<String>()
-            );
-        }
+        out.push(CitationCheck {
+            number: n,
+            url: src.url.clone(),
+            title: src.title.clone(),
+            overlap,
+            supported: overlap >= 0.25,
+        });
     }
 
-    if flagged_count > 0 {
-        tracing::info!(
-            "Citation verification: {} of {} citations flagged as potentially unsupported",
-            flagged_count,
-            citations_found.len()
+    let unsupported = out.iter().filter(|c| !c.supported).count();
+    if unsupported > 0 {
+        tracing::warn!(
+            "Citation check: {} of {} citations have <25% token overlap with their source",
+            unsupported,
+            out.len()
         );
     }
+    out
+}
 
-    result
+/// Find every `[n]` in the answer and the sentence containing it.
+/// Byte-boundary-safe throughout.
+fn extract_citation_contexts(answer: &str) -> Vec<(usize, String)> {
+    let chars: Vec<(usize, char)> = answer.char_indices().collect();
+    let mut found = Vec::new();
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        if chars[i].1 != '[' {
+            i += 1;
+            continue;
+        }
+        let bracket_byte = chars[i].0;
+        let mut j = i + 1;
+        let mut num = String::new();
+        while j < chars.len() && chars[j].1.is_ascii_digit() {
+            num.push(chars[j].1);
+            j += 1;
+        }
+        if j >= chars.len() || chars[j].1 != ']' || num.is_empty() {
+            i += 1;
+            continue;
+        }
+        if let Ok(n) = num.parse::<usize>() {
+            let after = chars[j].0 + chars[j].1.len_utf8();
+            // Sentence bounds, snapped to char boundaries.
+            let start = answer[..bracket_byte].rfind(". ").map(|p| p + 2).unwrap_or(0);
+            let end = answer
+                .get(after..)
+                .and_then(|rest| rest.find(". ").map(|p| after + p + 1))
+                .unwrap_or(answer.len());
+            let (s, e) = (snap(answer, start), snap(answer, end.min(answer.len())));
+            if s < e {
+                found.push((n, answer[s..e].to_string()));
+            }
+        }
+        i = j + 1;
+    }
+    found
+}
+
+/// Snap a byte offset down to the nearest char boundary.
+fn snap(s: &str, mut idx: usize) -> usize {
+    if idx > s.len() {
+        return s.len();
+    }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
 }
 
 /// v6.1.0: Quality gate — check if an LLM answer is worth retrying.
@@ -1955,7 +1990,7 @@ pub async fn summarize_from_stream_sse(
         }
     }
 
-    let context = build_ranked_context(&query, &batch, research_mode);
+    let context = build_ranked_context(&batch, if research_mode { 12_000 } else { 48_000 }).text;
     if context.is_empty() {
         let json = serde_json::json!({"type": "llm_error", "text": "llm_skipped: relevance filter produced empty context"}).to_string();
         let _ = tx_sse.send(Ok(Event::default().data(json))).await;
@@ -2090,4 +2125,248 @@ pub async fn fetch_provider_models(
     models.sort();
     tracing::info!("Fetched {} models from {}", models.len(), base_url);
     Ok(models)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::SourceResult;
+
+    fn src(url: &str, title: &str, text: &str) -> SourceResult {
+        SourceResult {
+            url: url.into(),
+            title: title.into(),
+            extracted_text: text.into(),
+            char_count: crate::util::char_len(text),
+            engine: "test".into(),
+            confidence: 1.0,
+            ..Default::default()
+        }
+    }
+
+    // ── P0-11: the citation index bug ──
+
+    #[test]
+    fn citation_map_round_trips_through_lost_in_middle_reorder() {
+        // Five distinct sources; the context reorders them into a sandwich.
+        // Every [n] in the answer must resolve to the source the MODEL saw as
+        // [n] — v7.0 resolved against the unreordered slice, so [2] onward
+        // pointed at the wrong source.
+        let sources: Vec<SourceResult> = (0..5)
+            .map(|i| {
+                src(
+                    &format!("https://s{i}.test/a"),
+                    &format!("Title {i}"),
+                    &format!("Body of source number {i}. {}", "filler words here. ".repeat(20)),
+                )
+            })
+            .collect();
+
+        let ctx = build_ranked_context(&sources, 100_000);
+        assert_eq!(ctx.citation_map.len(), 5, "all five should fit the budget");
+
+        for n in 1..=5 {
+            let resolved = ctx.resolve(n, &sources).expect("must resolve");
+            // The context block labelled [n] must contain THIS source's url.
+            let marker = format!("[{n}] ");
+            let pos = ctx.text.find(&marker).expect("label present");
+            let block_end = ctx.text[pos + marker.len()..]
+                .find("\n\n")
+                .map(|e| pos + marker.len() + e)
+                .unwrap_or(ctx.text.len());
+            let block = &ctx.text[pos..block_end];
+            assert!(
+                block.contains(&resolved.url),
+                "citation [{n}] resolves to {} but its context block is {:?}",
+                resolved.url,
+                block.chars().take(90).collect::<String>()
+            );
+        }
+    }
+
+    #[test]
+    fn lost_in_middle_puts_best_first_and_second_best_last() {
+        let order = lost_in_middle_order(5);
+        assert_eq!(order.first(), Some(&0), "most relevant must lead");
+        assert_eq!(order.last(), Some(&1), "second most relevant must close");
+        // Every index present exactly once.
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn lost_in_middle_handles_tiny_inputs() {
+        assert_eq!(lost_in_middle_order(0), Vec::<usize>::new());
+        assert_eq!(lost_in_middle_order(1), vec![0]);
+        assert_eq!(lost_in_middle_order(2), vec![0, 1]);
+    }
+
+    // ── P1-6: one long source must not truncate the whole context ──
+
+    #[test]
+    fn a_long_source_is_truncated_not_allowed_to_end_the_context() {
+        // v7.0 estimated the block size and `break`-ed on the first source
+        // that did not fit, so one long source at position 3 cut the context
+        // to two sources.
+        let mut sources = vec![
+            src("https://a.test/1", "Short A", &"alpha words. ".repeat(40)),
+            src("https://b.test/2", "HUGE", &"beta ".repeat(50_000)), // ~250k chars
+        ];
+        sources.push(src("https://c.test/3", "Short C", &"gamma words. ".repeat(40)));
+        sources.push(src("https://d.test/4", "Short D", &"delta words. ".repeat(40)));
+
+        let ctx = build_ranked_context(&sources, 20_000);
+        assert!(
+            ctx.citation_map.len() >= 3,
+            "oversized source truncated the context to {} sources",
+            ctx.citation_map.len()
+        );
+        assert!(crate::util::char_len(&ctx.text) <= 20_500, "budget overrun");
+    }
+
+    #[test]
+    fn context_includes_publication_dates() {
+        // v7.0 told the model to "prefer the most recent sources" while
+        // giving it no dates to compare.
+        let mut s = src("https://a.test/1", "Dated", &"content words. ".repeat(40));
+        s.published = chrono::DateTime::parse_from_rfc3339("2026-10-01T12:00:00Z")
+            .ok()
+            .map(|d| d.with_timezone(&chrono::Utc));
+        let ctx = build_ranked_context(&[s], 50_000);
+        assert!(ctx.text.contains("2026-10-01"), "date missing from context");
+        let undated = src("https://b.test/2", "Undated", &"content words. ".repeat(40));
+        let ctx2 = build_ranked_context(&[undated], 50_000);
+        assert!(ctx2.text.contains("undated"));
+    }
+
+    // ── verify_citations now actually verifies ──
+
+    #[test]
+    fn verify_citations_flags_unsupported_claims() {
+        // Sources must clear build_ranked_context's 80-char minimum — a
+        // sub-80-char "source" is not evidence and is correctly skipped.
+        let sources = vec![
+            src(
+                "https://a.test/1",
+                "Cricket Schedule",
+                "The tournament begins in October 2027 across nine venues in India. \
+                 Matches will be played in Mumbai, Delhi, Chennai and Kolkata, with \
+                 the final scheduled at Ahmedabad in November.",
+            ),
+            src(
+                "https://b.test/2",
+                "Unrelated Page",
+                "This page discusses marine biology and coral reef conservation \
+                 efforts across the Pacific. Researchers monitor bleaching events \
+                 and document species recovery after warming periods.",
+            ),
+        ];
+        let ctx = build_ranked_context(&sources, 50_000);
+        // [1] makes a claim the first source supports; [2] does not.
+        let answer = "The tournament begins in October 2027 across nine venues [1]. \
+                      The tournament also features robotic umpires and orbital stadiums [2].";
+        let checks = verify_citations(answer, &sources, &ctx.citation_map);
+        assert_eq!(checks.len(), 2, "both citations should be checked: {checks:?}");
+        let c2 = checks.iter().find(|c| c.number == 2).unwrap();
+        assert!(!c2.supported, "fabricated claim should be unsupported (overlap {})", c2.overlap);
+    }
+
+    #[test]
+    fn verify_citations_returns_data_not_the_input_string() {
+        // v7.0's body ended with `result` — the unmodified input — so despite
+        // its doc comment it only wrote log lines.
+        let sources = vec![src(
+            "https://a.test/1",
+            "Topic",
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu \
+             nu xi omicron pi rho sigma tau upsilon phi chi psi omega",
+        )];
+        let ctx = build_ranked_context(&sources, 50_000);
+        assert_eq!(ctx.citation_map.len(), 1, "source should have been included");
+        let checks = verify_citations("Some claim about alpha beta gamma [1].", &sources, &ctx.citation_map);
+        assert!(!checks.is_empty());
+        assert_eq!(checks[0].url, "https://a.test/1");
+    }
+
+    #[test]
+    fn verify_citations_is_utf8_safe_on_hindi_answers() {
+        let sources = vec![src(
+            "https://amarujala.test/1",
+            "विश्व कप",
+            "भारत और पाकिस्तान के बीच मुकाबला दस अक्टूबर को खेला जाएगा। टूर्नामेंट भारत में होगा।",
+        )];
+        let ctx = build_ranked_context(&sources, 50_000);
+        let answer = "भारत और पाकिस्तान के बीच मुकाबला दस अक्टूबर को होगा [1]। यह टूर्नामेंट भारत में है [1]।";
+        let checks = verify_citations(answer, &sources, &ctx.citation_map);
+        assert!(!checks.is_empty(), "should find the Hindi citation");
+    }
+
+    #[test]
+    fn extract_citation_contexts_ignores_non_citations() {
+        let found = extract_citation_contexts("See [abc] and [12x] but [3] counts.");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, 3);
+    }
+
+    #[test]
+    fn out_of_range_citations_are_dropped_not_panics() {
+        let sources = vec![src(
+            "https://a.test/1",
+            "Topic",
+            "some body text here for the source that is comfortably longer than \
+             the eighty character minimum the context builder enforces",
+        )];
+        let ctx = build_ranked_context(&sources, 50_000);
+        // [9] has no mapping.
+        let checks = verify_citations("Claim [9].", &sources, &ctx.citation_map);
+        assert!(checks.is_empty());
+    }
+
+    // ── P1-10: context budget ──
+
+    #[test]
+    fn context_budget_scales_with_the_model() {
+        std::env::remove_var("CONTEXT_MAX_TOKENS");
+        let gemini = ContextBudget::for_model("gemini-3-pro");
+        let haiku = ContextBudget::for_model("claude-haiku-4-5");
+        let unknown = ContextBudget::for_model("some-local-llama");
+        assert!(gemini.max_context_chars() > haiku.max_context_chars());
+        assert!(haiku.max_context_chars() > unknown.max_context_chars());
+        // All of them must beat the v7.0 fixed 16,000.
+        assert!(unknown.max_context_chars() > 16_000, "even the conservative default should beat v7.0");
+        assert!(gemini.max_context_chars() > 500_000);
+    }
+
+    #[test]
+    fn context_budget_env_override_is_clamped() {
+        std::env::set_var("CONTEXT_MAX_TOKENS", "999999999");
+        assert!(ContextBudget::for_model("x").max_tokens <= 900_000);
+        std::env::set_var("CONTEXT_MAX_TOKENS", "1");
+        assert!(ContextBudget::for_model("x").max_tokens >= 2_000);
+        std::env::remove_var("CONTEXT_MAX_TOKENS");
+    }
+
+    #[test]
+    fn max_output_tokens_is_never_the_v7_truncating_4096_for_big_models() {
+        std::env::remove_var("CONTEXT_MAX_TOKENS");
+        let b = ContextBudget::for_model("claude-opus-5");
+        assert!(b.max_output_tokens() > 4096, "research reports were truncated at 4096");
+    }
+
+    #[test]
+    fn est_tokens_accounts_for_script_density() {
+        // Devanagari costs more tokens per character than ASCII.
+        let ascii = "a".repeat(100);
+        let hindi = "क".repeat(100);
+        assert!(est_tokens(&hindi) > est_tokens(&ascii));
+    }
+
+    #[test]
+    fn trust_score_is_actually_wired_and_ranks_authorities_higher() {
+        // It was pub-but-never-called in v7.0.
+        assert!(trust_score("https://www.nih.gov/x") > trust_score("https://random-blog.test/x"));
+        assert!(trust_score("https://en.wikipedia.org/wiki/X") > trust_score("https://random-blog.test/x"));
+        assert!(trust_score("https://docs.rust-lang.org/std/") > trust_score("https://random-blog.test/x"));
+    }
 }

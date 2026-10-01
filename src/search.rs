@@ -13,7 +13,7 @@
 //   - TempDb session tracking + HistoryDb persistence
 // ============================================================================
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -246,30 +246,119 @@ pub async fn execute_search(
 
     let total_raw = all_results.len();
 
-    let raw_urls: Vec<String> = all_results.iter().map(|r| r.url.clone()).collect();
-    let unique_urls = url_utils::deduplicate(raw_urls, max_urls, normalized_focus.as_deref());
-    let deduped_count = unique_urls.len();
+    // ═══════════════════════════════════════════════════════════════════════
+    // v8.0 P1-3: SELECT SOURCES BY RRF CONSENSUS, NOT ARRIVAL ORDER
+    //
+    // v7.0 computed RRF for every URL and then threw the ordering away:
+    //
+    //     let raw_urls = all_results.iter().map(|r| r.url.clone()).collect();
+    //     let unique_urls = url_utils::deduplicate(raw_urls, max_urls, focus);
+    //
+    // `deduplicate` walks `all_results` in the order engines happened to
+    // FINISH and takes the first `max_urls`. In the measured baseline that
+    // meant 85 URLs were scored and the 20 that got scraped were all
+    // `bing_news` — simply because bing_news returned first. Brave's 44
+    // results and Yahoo's 56 were discovered, scored, and silently dropped.
+    //
+    // The same arrival order also built `search_results`, which is what the UI
+    // renders. So both "what we read" and "what we show" were decided by
+    // network race conditions rather than by the consensus ranking.
+    // ═══════════════════════════════════════════════════════════════════════
 
-    let mut engine_by_url: HashMap<String, String> = HashMap::new();
-    let mut seen = HashSet::new();
-    let mut search_results: Vec<SearchHit> = Vec::new();
+    struct Candidate {
+        url: String,
+        title: String,
+        snippet: String,
+        engines: Vec<String>,
+        families: Vec<&'static str>,
+        rrf: f64,
+    }
 
+    let mut by_url: HashMap<String, Candidate> = HashMap::new();
     for item in &all_results {
-        let normalized = url_utils::normalize_url(&item.url).unwrap_or_else(|| item.url.clone());
-
-        engine_by_url
-            .entry(normalized.clone())
-            .or_insert_with(|| item.engine.clone());
-
-        if seen.insert(normalized) && search_results.len() < max_urls {
-            search_results.push(SearchHit {
-                url: item.url.clone(),
-                title: item.title.clone(),
-                snippet: item.snippet.clone(),
-                engine: item.engine.clone(),
-            });
+        let key = url_utils::canonical_key(&item.url);
+        let entry = by_url.entry(key).or_insert_with(|| Candidate {
+            url: item.url.clone(),
+            title: item.title.clone(),
+            snippet: item.snippet.clone(),
+            engines: Vec::new(),
+            families: Vec::new(),
+            rrf: 0.0,
+        });
+        // Keep the best metadata across engines: v7.0 took whichever arrived
+        // first, which for link-scraper engines was an empty snippet.
+        if entry.snippet.is_empty() && !item.snippet.is_empty() {
+            entry.snippet = item.snippet.clone();
+        }
+        if entry.title.is_empty() && !item.title.is_empty() {
+            entry.title = item.title.clone();
+        }
+        if !entry.engines.contains(&item.engine) {
+            entry.engines.push(item.engine.clone());
+        }
+        let fam = engines::engine_family(&item.engine);
+        if !entry.families.contains(&fam) {
+            entry.families.push(fam);
         }
     }
+
+    // Attach consensus scores and drop blocked/binary URLs.
+    let mut ranked: Vec<Candidate> = by_url
+        .into_iter()
+        .filter_map(|(key, mut c)| {
+            let bypass = match normalized_focus.as_deref() {
+                Some("reddit") => c.url.contains("reddit.com"),
+                Some("youtube") => c.url.contains("youtube.com") || c.url.contains("youtu.be"),
+                _ => false,
+            };
+            if !bypass && url_utils::should_skip(&c.url) {
+                return None;
+            }
+            c.rrf = rrf_scores.get(&key).copied().unwrap_or(0.0);
+            Some(c)
+        })
+        .collect();
+
+    // Highest cross-family consensus first.
+    ranked.sort_by(|a, b| {
+        b.rrf
+            .partial_cmp(&a.rrf)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            // Tie-break on how many INDEPENDENT families found it.
+            .then_with(|| b.families.len().cmp(&a.families.len()))
+    });
+
+    let total_candidates = ranked.len();
+    ranked.truncate(max_urls);
+    let deduped_count = ranked.len();
+
+    tracing::info!(
+        "Source selection: {} candidates -> top {} by RRF consensus (top score {:.4}, {} found by >1 family)",
+        total_candidates,
+        deduped_count,
+        ranked.first().map(|c| c.rrf).unwrap_or(0.0),
+        ranked.iter().filter(|c| c.families.len() > 1).count()
+    );
+
+    let unique_urls: Vec<String> = ranked.iter().map(|c| c.url.clone()).collect();
+
+    let mut engine_by_url: HashMap<String, String> = HashMap::new();
+    for c in &ranked {
+        engine_by_url.insert(c.url.clone(), c.engines.join(","));
+    }
+
+    // The UI list is now the SAME ranked set, in the same order.
+    let search_results: Vec<SearchHit> = ranked
+        .iter()
+        .map(|c| SearchHit {
+            url: c.url.clone(),
+            title: c.title.clone(),
+            snippet: c.snippet.clone(),
+            engine: c.engines.join(","),
+            rrf_score: c.rrf,
+            found_by_families: c.families.len(),
+        })
+        .collect();
 
     let concurrency = config::concurrency().min(40);
     let semaphore = Arc::new(Semaphore::new(concurrency));

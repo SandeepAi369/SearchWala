@@ -74,7 +74,16 @@ pub struct SearchHit {
     pub url: String,
     pub title: String,
     pub snippet: String,
+    /// Comma-separated list of every engine that surfaced this URL.
     pub engine: String,
+    /// Cross-family RRF consensus score. The UI can now show WHY a result
+    /// ranks where it does; v7.0 rendered this list in arrival order with no
+    /// score at all.
+    #[serde(default)]
+    pub rrf_score: f64,
+    /// How many INDEPENDENT engine families found it (see engines::engine_family).
+    #[serde(default)]
+    pub found_by_families: usize,
 }
 
 #[derive(Debug, Serialize, Default)]

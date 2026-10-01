@@ -174,6 +174,8 @@ pub fn execute_stream_search(
             engine_by_url.entry(normalized.clone()).or_insert_with(|| item.engine.clone());
             if seen.insert(normalized) && search_hits.len() < max_urls {
                 search_hits.push(SearchHit {
+                    rrf_score: 0.0,
+                    found_by_families: 0,
                     url: item.url.clone(),
                     title: item.title.clone(),
                     snippet: item.snippet.clone(),
