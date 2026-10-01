@@ -169,14 +169,6 @@ pub fn family_agreement(results: &[RawSearchResult]) -> HashMap<String, Vec<&'st
     map
 }
 
-/// Sort URLs by RRF score (descending). Returns ordered list of (url, rrf_score).
-pub fn rrf_ranked_urls(results: &[RawSearchResult]) -> Vec<(String, f64)> {
-    let scores = compute_rrf_scores(results);
-    let mut ranked: Vec<(String, f64)> = scores.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked
-}
-
 // =============================================================================
 // Stage B: BM25+ Paragraph-Level Chunk Ranking
 // Lv & Zhai, "Lower-Bounding Term Frequency Normalization" (CIKM 2011)

@@ -2281,3 +2281,96 @@ Five of my own tests mutated process-global env vars (`ALLOW_LOCAL_LLM`,
 failed intermittently. Each is now split into a parameterised core plus a thin
 env-reading wrapper, so the tests pass deterministically (verified over three
 consecutive runs).
+
+---
+
+## Phase 6 — COMPLETE (P2-4, P2-6, P2-7, P2-8)
+
+Status: **gate PASSED.** 193 unit tests, zero warnings, stable over 10
+consecutive runs.
+
+### P2-4: the eval harness is alive, and it immediately found a real bug
+
+`src/eval.rs` (474 lines of nDCG/MRR/Recall) and the 50-query labelled golden
+set were both completely unreferenced in v7.0. Wiring them up required adding a
+`[lib]` target, since a bin-only crate has nothing to import from — which is
+part of why they were never used.
+
+**The first run found that intent classification was only 70% accurate**, and
+named every miss. Six distinct, fixable causes:
+
+| Expected | Got | Example | Cause |
+|---|---|---|---|
+| navigational | factual | `github new repository` | v7.0 required ≤3 words **and** an explicit `login`/`website` token |
+| temporal | factual | `2026 FIFA World Cup schedule` | years were only checked *after* intent was decided |
+| person | factual | `Alan Turing achievements` | no `who is`/`biography of` prefix |
+| research | howto | `how does the TCP handshake work in detail` | "how **to** do X" (procedural) and "how **does** X work" (explanatory) were collapsed |
+| factual | temporal | `population of Japan` | treated as a live fact, so a year was appended |
+| comparison | navigational | `Docker vs Kubernetes differences` | leads with a word that is also a site name; comparison must be checked first |
+
+After fixing all six: **70% → 100% (50/50)**, locked in by six unit tests.
+
+| metric | baseline | after intent fix |
+|---|---|---|
+| nDCG@10 | 0.3407 | **0.3524** |
+| MRR | 0.5389 | **0.5483** |
+| Recall@10 / @20 | 0.3250 / 0.3650 | 0.3267 / **0.3750** |
+| intent accuracy | **70%** | **100%** |
+
+`.github/workflows/ci.yml` now gates: build with `-D warnings`, all 193 tests,
+intent accuracy at 100% (deterministic, hard gate), and retrieval nDCG against
+`benchmarks/baseline_v8.json` (informational, since it hits live engines that
+rate-limit and go down).
+
+### P2-6: UI
+- **Citations are links.** v7.0 rendered `[n]` as a `<sup>` with
+  `cursor:default` — decorative, and mis-mapped anyway. They now resolve
+  through `citation_map` to the source the model actually saw as `[n]`.
+- **Searches can be cancelled.** `grep -c AbortController ui.html` returned
+  **0** in v7.0; a 15–60 s search could not be stopped and the server kept
+  scraping for a response nobody would read. Stop button + Escape.
+- **Consensus is visible**: `3× agree` badges from `found_by_families`, plus
+  snippets and multi-engine attribution, in RRF order.
+
+### P2-8: correctness
+- **`HistoryDb` was O(n²).** `persist()` serialized the entire history with
+  `to_string_pretty` and rewrote the whole file **on every entry** — tens of MB
+  per search at a few thousand entries — non-atomically, so a crash mid-write
+  destroyed everything. Now append-only JSON-lines under `O_APPEND` (O(1)),
+  with a `MAX_HISTORY_ENTRIES` cap (v7.0 had none), atomic `compact()`, legacy
+  array migration, and per-line error tolerance.
+- `TempDb::wipe_all` took the write lock twice.
+- Dockerfile: current toolchain, non-root user, `HEALTHCHECK`, and the
+  defaults no longer silently override the documented ones (v7.0 set
+  `ENGINES` to five names and `MAX_URLS=15` while claiming 90+ engines).
+- README rewritten from measurement. The "90+ engines" claim is replaced by a
+  per-engine status table **and a pointer to `/health/engines` so readers can
+  check their own install instead of trusting the table.**
+
+### A third attempt at the leak test
+
+The thread-local allocator is the version that actually works. For the record:
+
+1. `/proc/self/status` RSS — process-wide; the extractor suite loading an
+   890 KB fixture showed up as a 15 MB "leak" in the generic-engine test.
+2. A process-wide live-bytes counter — better (it decreases when a neighbour
+   frees) but still shared, so it failed intermittently.
+3. **Thread-local counters** — `spec_for` is synchronous and runs entirely on
+   the measuring thread, so nothing else can pollute it. 10 consecutive clean
+   runs.
+
+### Final end-to-end state
+
+| | result |
+|---|---|
+| English query | HTTP 200, 6.80 s, **19,956 chars/source**, 25/25 dated |
+| Hindi query | HTTP 200, 5.54 s, **7,521 chars/source**, 37/40 dated, languages `hi`/`hi-in`/`anp` |
+| `/health`, `/health/engines`, `/health/cache`, `/` | all 200 |
+| SSRF to `169.254.169.254` | **400** |
+| Scrape stage | 1,098 ms / 1,137 ms |
+
+**Caveat on the final consensus numbers.** By the end of this session a day of
+testing had rate-limited this IP: Brave 3/3 blocked, Yahoo 3/3, DuckDuckGo 2/5.
+So the last run shows `multi_family=0` where an earlier run showed 13–14. That
+is IP state, not a code regression — and `/health/engines` showing exactly
+which engines are blocked, with counts, is the feature working as intended.

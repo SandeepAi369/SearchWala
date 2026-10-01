@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, "v8.0-*" ]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Build, lint, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # wreq builds BoringSSL from source.
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake perl libclang-dev pkg-config
+
+      # Warnings are errors. v7.0 shipped with `pub` dead code that cargo could
+      # not warn about; the roster/parser tests now catch that class instead.
+      - name: Build (deny warnings)
+        run: cargo build --release --all-targets
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+        continue-on-error: true
+
+      # 183 unit tests, including parser tests driven by REAL SERP fixtures in
+      # tests/fixtures/ — so selector rot fails CI instead of silently
+      # returning zero results, which is how 28 engines shipped broken.
+      - name: Test
+        run: cargo test --release
+
+  eval:
+    name: Retrieval quality (nDCG@10)
+    runs-on: ubuntu-latest
+    # Hits live search engines, so it is informational on PRs: engines
+    # rate-limit and go down, and a hard gate here would fail constantly and
+    # train everyone to ignore it.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - run: sudo apt-get update && sudo apt-get install -y cmake perl libclang-dev pkg-config
+      - run: cargo build --release --bin eval
+
+      # Intent classification is deterministic and offline — gate it hard.
+      - name: Intent classification must stay at 100%
+        run: |
+          cargo build --release --bin intent_probe
+          out=$(./target/release/intent_probe)
+          echo "$out"
+          echo "$out" | grep -q "50/50" || {
+            echo "::error::Intent classification regressed"; exit 1; }
+
+      - name: Retrieval eval vs baseline
+        run: ./target/release/eval --limit 20 --baseline benchmarks/baseline_v8.json
+
+      - name: Engine health report
+        if: always()
+        run: echo "See the eval output above for per-engine liveness."

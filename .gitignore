@@ -3,3 +3,6 @@
 *.swo
 .env
 test.sh
+*.log
+/tmp/
+benchmarks/baseline_local*.json

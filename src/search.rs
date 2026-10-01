@@ -627,6 +627,7 @@ pub async fn execute_search(
                 llm_answer: None,
                 llm_error: Some("llm_skipped: no scraped content available".to_string()),
                 batches_processed: 0,
+                ..Default::default()
             }
         } else if is_research_mode {
             // ── ITERATIVE DEEP RESEARCH: multi-batch 50-source processing ──
@@ -705,6 +706,8 @@ pub async fn execute_search(
         copilot_query: copilot_out,
         llm_answer: llm_result.llm_answer,
         llm_error: llm_result.llm_error,
+        citation_map: llm_result.citation_map,
+        citation_checks: llm_result.citation_checks,
         elapsed_seconds: elapsed,
         engine_stats: EngineStats {
             engines_queried: engine_list,

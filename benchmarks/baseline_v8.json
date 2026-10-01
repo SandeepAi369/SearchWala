@@ -1,0 +1,159 @@
+{
+  "timestamp": "2026-10-01T21:12:09.551347596+00:00",
+  "version": "8.0.0",
+  "queries_evaluated": 50,
+  "mean_ndcg_at_10": 0.34071415725320114,
+  "mrr": 0.5388759495759495,
+  "mean_recall_at_10": 0.325,
+  "mean_recall_at_20": 0.365,
+  "latency_p50_ms": 5994.009471,
+  "latency_p95_ms": 7687.526283,
+  "latency_p99_ms": 8700.973213,
+  "engine_health": {
+    "bing_de": {
+      "total_queries": 75,
+      "successful_queries": 69,
+      "failed_queries": 0,
+      "total_results_returned": 438,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "yandex": {
+      "total_queries": 150,
+      "successful_queries": 150,
+      "failed_queries": 0,
+      "total_results_returned": 443,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "mwmbl": {
+      "total_queries": 8,
+      "successful_queries": 0,
+      "failed_queries": 8,
+      "total_results_returned": 0,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "bing_uk": {
+      "total_queries": 75,
+      "successful_queries": 72,
+      "failed_queries": 0,
+      "total_results_returned": 691,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "bing_in": {
+      "total_queries": 75,
+      "successful_queries": 71,
+      "failed_queries": 0,
+      "total_results_returned": 697,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "yacy": {
+      "total_queries": 8,
+      "successful_queries": 1,
+      "failed_queries": 7,
+      "total_results_returned": 0,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "ecosia": {
+      "total_queries": 8,
+      "successful_queries": 0,
+      "failed_queries": 8,
+      "total_results_returned": 0,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "duckduckgo": {
+      "total_queries": 128,
+      "successful_queries": 102,
+      "failed_queries": 26,
+      "total_results_returned": 1009,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "brave_news": {
+      "total_queries": 89,
+      "successful_queries": 21,
+      "failed_queries": 68,
+      "total_results_returned": 146,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "wikipedia": {
+      "total_queries": 75,
+      "successful_queries": 75,
+      "failed_queries": 0,
+      "total_results_returned": 1407,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "yahoo": {
+      "total_queries": 194,
+      "successful_queries": 183,
+      "failed_queries": 11,
+      "total_results_returned": 1506,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "wiby": {
+      "total_queries": 75,
+      "successful_queries": 75,
+      "failed_queries": 0,
+      "total_results_returned": 704,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "marginalia_api": {
+      "total_queries": 75,
+      "successful_queries": 25,
+      "failed_queries": 50,
+      "total_results_returned": 500,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "brave": {
+      "total_queries": 8,
+      "successful_queries": 0,
+      "failed_queries": 8,
+      "total_results_returned": 0,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "mojeek": {
+      "total_queries": 8,
+      "successful_queries": 0,
+      "failed_queries": 8,
+      "total_results_returned": 0,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "bing_news": {
+      "total_queries": 120,
+      "successful_queries": 100,
+      "failed_queries": 0,
+      "total_results_returned": 248,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    },
+    "bing": {
+      "total_queries": 187,
+      "successful_queries": 153,
+      "failed_queries": 0,
+      "total_results_returned": 1322,
+      "avg_response_ms": 0.0,
+      "results_in_final_answer": 0
+    }
+  },
+  "cache_metrics": {
+    "engine_cache_hits": 0,
+    "engine_cache_misses": 940,
+    "scrape_cache_hits": 28,
+    "scrape_cache_misses": 2096,
+    "answer_cache_hits": 0,
+    "answer_cache_misses": 0
+  },
+  "avg_extraction_confidence": 0.978127340823971
+}

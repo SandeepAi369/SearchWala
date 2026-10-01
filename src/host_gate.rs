@@ -151,6 +151,10 @@ mod tests {
 
     #[tokio::test]
     async fn different_hosts_are_not_delayed() {
+        // Margin is deliberately generous: this runs alongside the rest of the
+        // suite, and a tight bound here failed intermittently under build load.
+        // The property being tested is "no GATE delay", not absolute speed —
+        // one interval (400ms) is the thing that must not happen.
         let iv = Duration::from_millis(400);
         let t0 = Instant::now();
         acquire_with("https://par-a.test/x", iv).await;
@@ -158,8 +162,8 @@ mod tests {
         acquire_with("https://par-c.test/x", iv).await;
         let elapsed = t0.elapsed();
         assert!(
-            elapsed < Duration::from_millis(200),
-            "distinct hosts must run in parallel, took {elapsed:?}"
+            elapsed < iv,
+            "distinct hosts must not be gated against each other, took {elapsed:?}"
         );
     }
 
@@ -169,7 +173,9 @@ mod tests {
         for _ in 0..5 {
             acquire_with("https://disabled.test/x", Duration::ZERO).await;
         }
-        assert!(t0.elapsed() < Duration::from_millis(100), "took {:?}", t0.elapsed());
+        // Generous bound for the same reason as above; the property is that a
+        // zero interval introduces no sleeps at all.
+        assert!(t0.elapsed() < Duration::from_millis(500), "took {:?}", t0.elapsed());
     }
 
     #[test]

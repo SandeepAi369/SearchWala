@@ -176,12 +176,14 @@ pub fn extract(html: &str, url: &str) -> Extracted {
 }
 
 /// Back-compat shim for call sites that only need (title, text).
+#[allow(dead_code)]
 pub fn extract_title_and_text(html: &str) -> (String, String) {
     let e = extract(html, "https://example.invalid/");
     (e.title, e.text)
 }
 
 /// Back-compat shim.
+#[allow(dead_code)]
 pub fn extract_article_text(html: &str) -> String {
     extract(html, "https://example.invalid/").text
 }
