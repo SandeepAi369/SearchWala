@@ -1,5 +1,5 @@
 // ============================================================================
-// SearchWala v5.2.0 - Query Intelligence Engine
+// SearchWala v7.0.0 - Query Intelligence Engine
 //
 // Analyzes user queries BEFORE engine dispatch to determine:
 // - Intent type (factual, temporal, person, comparison, howto, etc.)
@@ -369,4 +369,126 @@ impl std::fmt::Display for QueryComplexity {
             QueryComplexity::Complex => write!(f, "complex"),
         }
     }
+}
+
+
+// =============================================================================
+// v7.0: Multi-Query Decomposition
+// Instead of searching one query, decompose into multiple targeted sub-queries
+// for more comprehensive and relevant results.
+// =============================================================================
+
+/// Configuration for multi-query behavior
+pub fn multi_query_enabled() -> bool {
+    std::env::var("MULTI_QUERY")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase() == "true"
+}
+
+pub fn max_sub_queries() -> usize {
+    std::env::var("MAX_SUB_QUERIES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5)
+        .min(8)
+        .max(1)
+}
+
+/// Decomposes a user query into multiple targeted sub-queries
+/// for more comprehensive search coverage.
+/// Rule-based (zero latency, zero dependencies) — uses intent + entity analysis.
+pub fn decompose_query(query: &str, intel: &QueryIntelligence) -> Vec<String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return vec![];
+    }
+
+    let max = max_sub_queries();
+
+    // Always include the original query
+    let mut queries = vec![q.to_string()];
+
+    // Strategy 1: Add temporal context for time-sensitive queries
+    if intel.is_time_sensitive {
+        let year = chrono::Utc::now().format("%Y");
+        queries.push(format!("{} {}", q, year));
+    }
+
+    // Strategy 2: Entity-focused sub-queries
+    // Extract key entities and create targeted lookups
+    for entity in &intel.key_entities {
+        if entity.len() > 2 && queries.len() < max {
+            queries.push(entity.clone());
+        }
+    }
+
+    // Strategy 3: Intent-specific expansion
+    match intel.intent {
+        QueryIntent::Factual => {
+            if queries.len() < max {
+                queries.push(format!("{} definition", q));
+            }
+        }
+        QueryIntent::Temporal => {
+            if queries.len() < max {
+                queries.push(format!("{} latest news", q));
+            }
+            if queries.len() < max {
+                queries.push(format!("{} recent updates", q));
+            }
+        }
+        QueryIntent::Comparison => {
+            // Split "X vs Y" into individual searches
+            let parts: Vec<&str> = q.splitn(2, " vs ").collect();
+            if parts.len() == 2 {
+                if queries.len() < max {
+                    queries.push(parts[0].trim().to_string());
+                }
+                if queries.len() < max {
+                    queries.push(parts[1].trim().to_string());
+                }
+            }
+        }
+        QueryIntent::HowTo => {
+            if queries.len() < max {
+                queries.push(format!("{} tutorial guide", q));
+            }
+        }
+        QueryIntent::Research => {
+            if queries.len() < max {
+                queries.push(format!("{} explained", q));
+            }
+            if queries.len() < max {
+                queries.push(format!("{} research", q));
+            }
+        }
+        QueryIntent::Person => {
+            if queries.len() < max {
+                queries.push(format!("{} biography", q));
+            }
+        }
+        QueryIntent::Navigational => {
+            // Don't decompose navigational queries — user wants a specific site
+        }
+    }
+
+    // Strategy 4: For complex queries (9+ words), split into halves
+    let words: Vec<&str> = q.split_whitespace().collect();
+    if words.len() >= 6 && queries.len() < max {
+        let half = words.len() / 2;
+        let first_half = words[..half].join(" ");
+        if first_half.len() > 3 {
+            queries.push(first_half);
+        }
+    }
+
+    // Dedup (case-insensitive) and cap at max
+    let mut seen = std::collections::HashSet::new();
+    queries.retain(|q| {
+        let lower = q.to_lowercase();
+        seen.insert(lower)
+    });
+    queries.truncate(max);
+
+    queries
 }

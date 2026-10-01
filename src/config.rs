@@ -517,6 +517,22 @@ pub const TRACKING_PARAMS: &[&str] = &[
 ];
 
 
+
+// =============================================================================
+// Multi-Query Intelligence Configuration
+// =============================================================================
+
+/// Whether multi-query decomposition is enabled (default: true)
+/// Set MULTI_QUERY=false to disable and use single query mode
+pub fn multi_query_max_sub_queries() -> usize {
+    std::env::var("MAX_SUB_QUERIES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5)
+        .min(8)
+        .max(1)
+}
+
 // =============================================================================
 // Stealth HTTP Client — wreq with BoringSSL TLS impersonation
 // =============================================================================

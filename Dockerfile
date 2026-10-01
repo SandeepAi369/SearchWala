@@ -1,14 +1,17 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# SearchWala v7.0.0 — Multi-stage Docker Build
+# SearchWala v7.0.0 — Dockerfile — Multi-stage Docker Build
 # Final image: ~15MB, runs on 512MB VPS or HF Spaces
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM rust:1.94-slim AS builder
+FROM rust:1.82-slim AS builder
 
 WORKDIR /app
 
 # Copy manifests first for layer caching
+# wreq/BoringSSL build deps
+RUN apt-get update && apt-get install -y cmake perl libclang-dev pkg-config && rm -rf /var/lib/apt/lists/*
+
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
 
