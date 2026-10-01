@@ -566,23 +566,6 @@ fn unique_tokens_filtered(text: &str) -> Vec<String> {
     out
 }
 
-// ── Legacy API compatibility (used by extractor and other modules) ──
-
-fn unique_tokens(text: &str) -> Vec<String> {
-    unique_tokens_filtered(text)
-}
-
-fn tokenize(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter_map(|raw| {
-            let t = raw.trim().to_lowercase();
-            if t.len() < 2 {
-                return None;
-            }
-            Some(t)
-        })
-        .collect()
-}
 
 
 // =============================================================================

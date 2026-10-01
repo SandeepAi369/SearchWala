@@ -20,6 +20,8 @@ pub mod cache;
 pub mod config;
 pub mod copilot;
 pub mod engines;
+pub mod fetcher;
+pub mod host_gate;
 pub mod eval;
 pub mod extractor;
 pub mod llm;
@@ -30,6 +32,7 @@ pub mod search;
 pub mod url_utils;
 pub mod stream;
 pub mod proxy_pool;
+pub mod util;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -333,6 +336,24 @@ async fn models_handler(
     }
 }
 
+/// GET /health/engines — per-engine liveness, the metric v7.0 lacked.
+///
+/// `zero_results` is the important one: HTTP 200 with nothing parsed means our
+/// selectors have rotted, which is otherwise indistinguishable from "no
+/// results for this query". That blind spot is why 28 of 35 engines shipped
+/// broken in v7.0.
+async fn engine_health_handler() -> impl IntoResponse {
+    let snap = engines::health::snapshot();
+    let mut by_verdict: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for r in &snap {
+        *by_verdict.entry(r.verdict).or_insert(0) += 1;
+    }
+    Json(serde_json::json!({
+        "summary": by_verdict,
+        "engines": snap,
+    }))
+}
+
 /// GET /about - Service metadata
 async fn about_handler() -> impl IntoResponse {
     Json(serde_json::json!({
@@ -374,20 +395,36 @@ struct TtsQuery {
 }
 
 /// GET /api/tts?text=Hello+world → audio/mpeg
+/// Removes a temp file when dropped, on every return path.
+struct TempFileGuard(std::path::PathBuf);
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Cap concurrent `edge-tts` subprocesses. v7.0 spawned one process per
+/// unauthenticated GET with no limit — a trivial fork bomb given that the
+/// server binds 0.0.0.0 with permissive CORS.
+static TTS_GATE: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(2));
+
 async fn tts_handler(
     Query(params): Query<TtsQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let _permit = TTS_GATE
+        .try_acquire()
+        .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "TTS busy, retry shortly".to_string()))?;
+
     let text = params.text.trim().to_string();
     if text.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "Missing 'text' parameter".into()));
     }
 
-    // Cap at 5000 chars (same as XeL Studio)
-    let capped = if text.len() > 5000 {
-        text.chars().take(5000).collect::<String>()
-    } else {
-        text.clone()
-    };
+    // Cap at 5000 CHARACTERS. v7.0 gated on text.len() (bytes) then took 5000
+    // chars, so Devanagari/CJK input was measured in one unit and cut in
+    // another.
+    let capped = crate::util::truncate_chars(&text, 5000).to_string();
 
     // Aggressive TTS cleaning — strip ALL non-speech artifacts
     let cleaned: String = capped
@@ -425,22 +462,26 @@ async fn tts_handler(
         .collect::<Vec<&str>>()
         .join(" ");
 
-    // Use unique temp file per request (PID + random) to prevent race conditions
-    let tmp_path = format!("/tmp/searchwala_tts_{}_{}.mp3", std::process::id(), rand::random::<u32>());
+    // Use the OS temp dir (not a hardcoded /tmp) and guarantee cleanup even on
+    // the error paths — v7.0 returned early on a non-zero exit status BEFORE
+    // remove_file, leaking an mp3 per failed request.
+    let tmp_path = std::env::temp_dir().join(format!(
+        "searchwala_tts_{}_{}.mp3",
+        std::process::id(),
+        rand::random::<u32>()
+    ));
+    let _tmp_guard = TempFileGuard(tmp_path.clone());
 
-    let edge_tts_path = std::env::var("EDGE_TTS_PATH")
-        .unwrap_or_else(|_| {
-            for path in &[
-                "/home/sandeep/.local/bin/edge-tts",
-                "/usr/local/bin/edge-tts",
-                "/usr/bin/edge-tts",
-            ] {
-                if std::path::Path::new(path).exists() {
-                    return path.to_string();
-                }
+    // v7.0 hardcoded /home/sandeep/.local/bin/edge-tts, which exists for
+    // exactly one user. Resolve from env or $PATH only.
+    let edge_tts_path = std::env::var("EDGE_TTS_PATH").unwrap_or_else(|_| {
+        for path in &["/usr/local/bin/edge-tts", "/usr/bin/edge-tts"] {
+            if std::path::Path::new(path).exists() {
+                return path.to_string();
             }
-            "edge-tts".to_string()
-        });
+        }
+        "edge-tts".to_string()
+    });
 
     let output = tokio::process::Command::new(&edge_tts_path)
         .arg("--text")
@@ -462,8 +503,7 @@ async fn tts_handler(
 
     let audio_bytes = tokio::fs::read(&tmp_path).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read error: {e}")))?;
-
-    let _ = tokio::fs::remove_file(&tmp_path).await;
+    // cleanup handled by _tmp_guard on drop
 
     Ok((
         StatusCode::OK,
@@ -534,10 +574,21 @@ async fn main() {
         .route("/api/history/disable", post(history_disable_handler))
         .route("/api/history/status", get(history_status_handler))
         .route("/api/tts", get(tts_handler))
+        .route("/health/engines", get(engine_health_handler))
+        // v8.0: a handler panic used to abort the task with no response, so the
+        // client saw a bare connection reset. The UTF-8 byte-slice bugs in
+        // search.rs/llm.rs did exactly that on Hindi queries.
+        .layer(tower_http::catch_panic::CatchPanicLayer::new())
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(256 * 1024))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{}", port);
+    // v8.0: default to loopback. This process relays the user's BYOK LLM API
+    // key to a caller-supplied base_url and runs an unauthenticated
+    // subprocess endpoint; binding every interface by default made both
+    // reachable from the local network. Set BIND=0.0.0.0 to expose it.
+    let bind_host = std::env::var("BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let addr = format!("{}:{}", bind_host, port);
     tracing::info!("Listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr)

@@ -1,7 +1,56 @@
+// ══════════════════════════════════════════════════════════════════════════════
+// Wikipedia — full-text search API
+//
+// v8.0 FIX: v7.0 used `action=opensearch`, which is a TITLE-PREFIX AUTOCOMPLETE
+// endpoint, not a search endpoint. Measured 2026-10-01:
+//
+//   query                              opensearch   query&list=search
+//   "cricket world cup 2027 schedule"       0              20
+//   "who is the ceo of google"              0              20
+//
+// Wikipedia was therefore returning zero results for essentially every
+// natural-language query — silently, since zero results looks identical to
+// "nothing matched". It only worked for queries that happened to be an exact
+// article-title prefix.
+//
+// `action=query&list=search` is the real full-text index. It also gives us a
+// snippet and the page timestamp, which opensearch does not.
+//
+// WIKIPEDIA_LANGS (default "en") can fan out to other language editions, e.g.
+// "en,hi" to cover Hindi queries.
+// ══════════════════════════════════════════════════════════════════════════════
+
+use crate::fetcher::Fetcher;
 use crate::models::RawSearchResult;
-use reqwest::Client;
 
 pub struct Wikipedia;
+
+fn languages() -> Vec<String> {
+    std::env::var("WIKIPEDIA_LANGS")
+        .unwrap_or_else(|_| "en".to_string())
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        // Guard against injection into the hostname.
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .take(4)
+        .collect()
+}
+
+/// Strip the `<span class="searchmatch">` highlighting Wikipedia wraps around
+/// matched terms in snippets.
+fn strip_search_highlight(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
 #[async_trait::async_trait]
 impl super::SearchEngine for Wikipedia {
@@ -9,54 +58,105 @@ impl super::SearchEngine for Wikipedia {
         "wikipedia"
     }
 
-    async fn search(&self, client: &Client, query: &str) -> Vec<RawSearchResult> {
+    async fn search(&self, f: &Fetcher, query: &str) -> Vec<RawSearchResult> {
         let encoded = urlencoding::encode(query);
-        let url = format!(
-            "https://en.wikipedia.org/w/api.php?action=opensearch&search={}&limit=20&namespace=0&format=json",
-            encoded
-        );
-
-        let req = crate::config::apply_browser_headers(client.get(&url), &url)
-            .header("Accept", "application/json,text/plain,*/*");
-
-        let resp = match req.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!("Wikipedia request failed: {}", e);
-                return Vec::new();
-            }
-        };
-
-        let json: serde_json::Value = match resp.json().await {
-            Ok(v) => v,
-            Err(_) => return Vec::new(),
-        };
-
-        let titles = json.get(1).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let snippets = json.get(2).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let links = json.get(3).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-
         let mut out = Vec::new();
-        let max_len = titles.len().min(snippets.len()).min(links.len());
 
-        for i in 0..max_len {
-            let title = titles[i].as_str().unwrap_or("").trim().to_string();
-            let snippet = snippets[i].as_str().unwrap_or("").trim().to_string();
-            let link = links[i].as_str().unwrap_or("").trim().to_string();
+        for lang in languages() {
+            let url = format!(
+                "https://{lang}.wikipedia.org/w/api.php?action=query&list=search\
+                 &srsearch={encoded}&srlimit=20&srprop=snippet|timestamp&format=json&formatversion=2"
+            );
+            super::health::record_attempt("wikipedia");
 
-            if title.is_empty() || link.is_empty() {
+            let (status, json) = match f.get_json(&url).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::debug!("Wikipedia({}) error: {}", lang, e);
+                    super::health::record_transport_err("wikipedia");
+                    continue;
+                }
+            };
+            if status != 200 {
+                super::health::record_block("wikipedia", status);
                 continue;
             }
 
-            out.push(RawSearchResult {
-                url: link,
-                title,
-                snippet,
-                engine: "wikipedia".to_string(),
-                rank_position: out.len() + 1,
-            });
+            let before = out.len();
+            let hits = json
+                .get("query")
+                .and_then(|q| q.get("search"))
+                .and_then(|s| s.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            for hit in hits {
+                let title = hit.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if title.is_empty() {
+                    continue;
+                }
+                let snippet = hit
+                    .get("snippet")
+                    .and_then(|v| v.as_str())
+                    .map(strip_search_highlight)
+                    .unwrap_or_default();
+                let published = hit
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.with_timezone(&chrono::Utc));
+
+                // Build the canonical article URL from the title.
+                let url = format!(
+                    "https://{lang}.wikipedia.org/wiki/{}",
+                    urlencoding::encode(&title.replace(' ', "_"))
+                );
+
+                out.push(RawSearchResult {
+                    url,
+                    title: title.to_string(),
+                    snippet,
+                    engine: "wikipedia".to_string(),
+                    rank_position: out.len() + 1,
+                    published,
+                });
+            }
+            super::health::record_parsed("wikipedia", out.len() - before);
         }
 
+        tracing::info!("Wikipedia: {} results", out.len());
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_searchmatch_highlighting() {
+        let raw = r#"The 2027 <span class="searchmatch">Cricket</span> World Cup will be held"#;
+        assert_eq!(
+            strip_search_highlight(raw),
+            "The 2027 Cricket World Cup will be held"
+        );
+    }
+
+    #[test]
+    fn language_list_rejects_injection() {
+        // Only alphanumeric + '-' survive, so a crafted value cannot escape
+        // into the hostname.
+        std::env::set_var("WIKIPEDIA_LANGS", "en,hi,../../evil,bad host,xx");
+        let langs = languages();
+        std::env::remove_var("WIKIPEDIA_LANGS");
+        assert!(langs.contains(&"en".to_string()));
+        assert!(langs.contains(&"hi".to_string()));
+        assert!(!langs.iter().any(|l| l.contains('/') || l.contains(' ')));
+    }
+
+    #[test]
+    fn default_language_is_en() {
+        std::env::remove_var("WIKIPEDIA_LANGS");
+        assert_eq!(languages(), vec!["en".to_string()]);
     }
 }

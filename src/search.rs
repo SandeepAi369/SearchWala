@@ -23,6 +23,7 @@ use tokio::task::JoinSet;
 
 use crate::config;
 use crate::engines;
+use crate::fetcher::{self, Fetcher};
 use crate::extractor;
 use crate::llm;
 use crate::models::*;
@@ -132,7 +133,7 @@ pub async fn execute_search(
         tracing::info!(
             "Multi-query: decomposed into {} sub-queries: {:?}",
             sub_queries.len(),
-            sub_queries.iter().map(|q| &q[..q.len().min(50)]).collect::<Vec<_>>()
+            sub_queries.iter().map(|q| crate::util::truncate_chars(q, 50)).collect::<Vec<_>>()
         );
         sub_queries
     } else {
@@ -144,7 +145,7 @@ pub async fn execute_search(
 
     tracing::info!(
         "NEW SEARCH query={} focus_mode={:?} auto={} fast={} research={} max_urls={} variations={}",
-        &effective_query[..effective_query.len().min(120)],
+        crate::util::truncate_chars(&effective_query, 120),
         normalized_focus,
         is_auto_mode,
         is_fast_mode,
@@ -173,13 +174,26 @@ pub async fn execute_search(
         config::enabled_engines()
     };
 
+    // v8.0: drop engines the health registry has benched (P1-1).
+    let engine_list = engines::filter_healthy(engine_list);
     let engine_instances = engines::get_engines(&engine_list);
-    let base_search_client = build_search_client(None);
-    let stealth_client = build_stealth_search_client(None);
-    let stealth_engine_set: std::collections::HashSet<String> = config::stealth_engines()
-        .into_iter().collect();
+
+    // Build BOTH fetchers ONCE. Cloning a Fetcher is an Arc clone of the inner
+    // client, so every task shares connection pools.
+    //
+    // v7.0 constructed a fresh reqwest::Client *inside each spawned task* when
+    // proxies were enabled — up to 175 clients per search, each with its own
+    // pool, defeating connection reuse entirely. And the wreq client it built
+    // was passed in as `_stealth_client` and never used at all.
+    let (plain_fetcher, stealth_fetcher) = fetcher::build_pair(None);
+    let stealth_engine_set: std::collections::HashSet<String> =
+        config::stealth_engines().into_iter().collect();
     let stealth_mode = config::stealth_mode();
-    tracing::info!("Stealth mode: {} ({} engines configured)", stealth_mode, stealth_engine_set.len());
+    tracing::info!(
+        "Stealth mode: {} ({} engines in override set)",
+        stealth_mode,
+        stealth_engine_set.len()
+    );
     let proxy_pool = ProxyPoolManager::from_env();
     if proxy_pool.has_proxies() {
         tracing::info!("Proxy pool loaded with {} entries", proxy_pool.len());
@@ -193,11 +207,25 @@ pub async fn execute_search(
     let stage_start = std::time::Instant::now();
 
     // ── Single-phase: ALL engines fire simultaneously ──
+    // v8.0: mode-aware deadline. v7.0 hardcoded 6s for every mode despite a
+    // comment promising "lite 2.5s, research 8s, specialized 5s" — research
+    // mode, which is meant to gather 200+ sources, got the same 6s as fast.
+    let engine_deadline = Duration::from_millis(if is_fast_mode {
+        2_500
+    } else if is_research_mode {
+        20_000
+    } else if is_specialized {
+        8_000
+    } else {
+        6_000
+    });
+
     let results = dispatch_engines(
-        &engine_instances, &query_variations, &base_search_client,
-        &stealth_client, &stealth_engine_set, &stealth_mode,
+        &engine_instances, &query_variations,
+        &plain_fetcher, &stealth_fetcher,
+        &stealth_engine_set, &stealth_mode,
         &proxy_pool, &engine_semaphore, jitter_min, jitter_max,
-        engine_concurrency,
+        engine_concurrency, engine_deadline,
     ).await;
     all_results.extend(results);
 
@@ -486,10 +514,10 @@ fn apply_focus_mode(query: &str, focus_mode: Option<&str>) -> String {
 // =============================================================================
 
 async fn dispatch_engines(
-    engine_instances: &[Box<dyn engines::SearchEngine>],
+    engine_instances: &[std::sync::Arc<dyn engines::SearchEngine>],
     query_variations: &[String],
-    base_client: &reqwest::Client,
-    _stealth_client: &wreq::Client,
+    plain_fetcher: &Fetcher,
+    stealth_fetcher: &Fetcher,
     stealth_engine_set: &std::collections::HashSet<String>,
     stealth_mode: &str,
     proxy_pool: &ProxyPoolManager,
@@ -497,61 +525,79 @@ async fn dispatch_engines(
     jitter_min: u64,
     jitter_max: u64,
     engine_concurrency: usize,
+    deadline: Duration,
 ) -> Vec<RawSearchResult> {
-    // v6.1.0: Collect engine names to recreate in spawned tasks ('static requirement)
-    let engine_names: Vec<String> = engine_instances.iter().map(|e| e.name().to_string()).collect();
-
     let mut join_set = JoinSet::new();
     let mut dispatch_index: u64 = 0;
 
     for variation in query_variations {
-        for engine_name in &engine_names {
-            let base_client = base_client.clone();
+        for engine in engine_instances {
+            // v8.0: clone the Arc instead of re-running get_engines() inside the
+            // task. That call re-entered generic::spec_for(), which used
+            // Box::leak to fabricate &'static str templates for Google
+            // variants — an unbounded leak, once per alias per variation per
+            // search, for the process lifetime.
+            let engine = std::sync::Arc::clone(engine);
+            let ename = engine.name().to_string();
+
+            // ── Pick the fetcher. THIS is the line v7.0 was missing. ──
+            // The stealth client existed, was constructed per search, and was
+            // passed in as `_stealth_client` — unreachable behind an
+            // underscore, because the trait only took &reqwest::Client.
+            let use_stealth = match stealth_mode {
+                "off" => false,
+                "on" => true,
+                // "auto": the engine declares its own need, with the
+                // STEALTH_ENGINES env list as an override.
+                _ => engine.needs_stealth() || stealth_engine_set.contains(&ename),
+            };
+            let fetcher = if use_stealth {
+                stealth_fetcher.clone()
+            } else {
+                plain_fetcher.clone()
+            };
+
             let query_variant = variation.clone();
-            let ename = engine_name.clone();
             let jitter = config::random_jitter_ms(jitter_min, jitter_max);
             let proxy_hint = proxy_pool.next_proxy();
             let pool = proxy_pool.clone();
             let sem = engine_semaphore.clone();
-            let stealth_set = stealth_engine_set.clone();
-            let stealth_mode_val = stealth_mode.to_string();
-            let extra_spread = (dispatch_index % engine_concurrency as u64) * 15;
+            let extra_spread = (dispatch_index % engine_concurrency.max(1) as u64) * 15;
             dispatch_index += 1;
 
             join_set.spawn(async move {
-                let _permit = match sem.acquire().await {
-                    Ok(p) => p,
-                    Err(_) => return Vec::new(),
-                };
-
+                // ── Sleep BEFORE acquiring the permit (v8.0 P0-9) ──
+                // v7.0 acquired the semaphore permit and *then* slept for
+                // jitter + spread (up to ~785ms). Each task therefore occupied
+                // a concurrency slot doing nothing. At ENGINE_CONCURRENCY=20
+                // with 175 tasks that is ~7s of queued sleeping against a 6s
+                // deadline, so most engines were aborted before they ever
+                // issued a request. The measured run completed "33/35 engines"
+                // while only 4 produced data.
                 let delay = jitter.saturating_add(extra_spread);
                 if delay > 0 {
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
 
-                let is_stealth = stealth_mode_val != "off"
-                    && (stealth_mode_val == "on" || stealth_set.contains(&ename));
-
-                let client = if let Some(proxy) = proxy_hint.as_deref() {
-                    tracing::debug!("Engine {} using proxy hint {}{}", ename, proxy,
-                        if is_stealth { " [stealth]" } else { "" });
-                    build_search_client(Some(proxy))
-                } else {
-                    base_client
+                let _permit = match sem.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => return Vec::new(),
                 };
 
-                if is_stealth {
-                    tracing::debug!("Engine {} → stealth mode (Chrome TLS impersonation)", ename);
-                }
-
-                // Recreate engine from name inside spawn (all engines are zero-size unit structs)
-                let engine_vec = engines::get_engines(&[ename.clone()]);
-                let results = if let Some(engine) = engine_vec.first() {
-                    engine.search(&client, &query_variant).await
-                } else {
-                    tracing::warn!("Unknown engine in dispatch: {}", ename);
-                    Vec::new()
+                // Per-engine proxy still needs its own client; keep it rare.
+                let fetcher = match proxy_hint.as_deref() {
+                    Some(proxy) => {
+                        tracing::debug!("Engine {} via proxy {}", ename, proxy);
+                        if fetcher.is_stealth() {
+                            Fetcher::Stealth(config::build_stealth_client(Some(proxy)))
+                        } else {
+                            Fetcher::Plain(fetcher::build_plain_client(Some(proxy)))
+                        }
+                    }
+                    None => fetcher,
                 };
+
+                let results = engine.search(&fetcher, &query_variant).await;
 
                 if let Some(proxy) = proxy_hint {
                     if results.is_empty() {
@@ -560,30 +606,26 @@ async fn dispatch_engines(
                         pool.mark_proxy_success(&proxy);
                     }
                 }
-
-                tracing::info!("Engine [{}] variant [{}]: {} results", ename, query_variant, results.len());
                 results
             });
         }
     }
 
-    // v6.1.0: Collect results as they complete with deadline-based early cancel
-    let deadline = Duration::from_secs(6); // Default deadline
+    // ── Collect with a deadline-based early cancel ──
     let deadline_instant = tokio::time::Instant::now() + deadline;
     let mut all: Vec<RawSearchResult> = Vec::new();
-    let mut engines_completed = 0;
-    let total_engines = join_set.len();
+    let mut tasks_completed = 0usize;
+    let total_tasks = join_set.len();
 
     loop {
         let result = tokio::select! {
             res = join_set.join_next() => res,
             _ = tokio::time::sleep_until(deadline_instant) => {
-                // Deadline reached — abort remaining engines
                 let remaining = join_set.len();
                 if remaining > 0 {
                     tracing::info!(
-                        "Engine deadline reached: {} engines completed, aborting {} remaining (have {} results)",
-                        engines_completed, remaining, all.len()
+                        "Engine deadline ({:?}) reached: {}/{} tasks done, aborting {} (have {} results)",
+                        deadline, tasks_completed, total_tasks, remaining, all.len()
                     );
                     join_set.abort_all();
                 }
@@ -594,28 +636,35 @@ async fn dispatch_engines(
         match result {
             Some(Ok(batch)) => {
                 all.extend(batch);
-                engines_completed += 1;
+                tasks_completed += 1;
             }
             Some(Err(err)) => {
                 if !err.is_cancelled() {
                     tracing::debug!("Engine task join error: {}", err);
                 }
-                engines_completed += 1;
+                tasks_completed += 1;
             }
-            None => break, // All tasks completed
+            None => break,
         }
     }
 
-    // Drain any remaining results from aborted-but-completed tasks
+    // Drain anything that finished between the abort and now.
     while let Some(result) = join_set.join_next().await {
         if let Ok(batch) = result {
             all.extend(batch);
         }
     }
 
+    // v8.0: count DISTINCT engines that produced results, not tasks. v7.0
+    // logged "engines completed" for engines x variations, which made a
+    // single-engine run look like 33 engines succeeding.
+    let producing: std::collections::HashSet<&str> =
+        all.iter().map(|r| r.engine.as_str()).collect();
+    let families: std::collections::HashSet<&str> =
+        all.iter().map(|r| engines::engine_family(&r.engine)).collect();
     tracing::info!(
-        "Engine dispatch: {}/{} engines completed, {} total results",
-        engines_completed, total_engines, all.len()
+        "Engine dispatch: {}/{} tasks done | {} engines produced results | {} independent families | {} raw results",
+        tasks_completed, total_tasks, producing.len(), families.len(), all.len()
     );
     all
 }
@@ -783,43 +832,6 @@ fn extract_youtube_json_ld(html: &str) -> Option<String> {
 // =============================================================================
 // HTTP Client Builders
 // =============================================================================
-
-/// Build a standard reqwest client for non-WAF-protected targets
-fn build_search_client(proxy: Option<&str>) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(8))
-        .timeout(Duration::from_secs(16))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .pool_max_idle_per_host(10)
-        .cookie_store(true)
-        .user_agent(config::random_user_agent())
-        .tcp_nodelay(true)
-        .gzip(true)
-        .brotli(true)
-        .deflate(true)
-        .https_only(false);
-
-    if let Some(proxy_url) = proxy {
-        match reqwest::Proxy::all(proxy_url) {
-            Ok(proxy_cfg) => {
-                builder = builder.proxy(proxy_cfg);
-            }
-            Err(err) => {
-                tracing::warn!("Invalid proxy {}: {}", proxy_url, err);
-            }
-        }
-    }
-
-    builder
-        .build()
-        .expect("Failed to build search HTTP client")
-}
-
-/// Build a wreq stealth client for WAF-protected engines.
-/// Uses BoringSSL to clone Chrome's TLS fingerprint (JA4 + HTTP/2 settings).
-fn build_stealth_search_client(proxy: Option<&str>) -> wreq::Client {
-    config::build_stealth_client(proxy)
-}
 
 /// Build a properly configured scrape client.
 fn build_scrape_client() -> reqwest::Client {

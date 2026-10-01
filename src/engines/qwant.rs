@@ -1,15 +1,29 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Qwant Search Engine — Multi-page HTML scraping
+// Qwant — HTML scraping
+//
+// v8.0: Qwant's main site is a JS SPA, so we target the `lite` interface which
+// serves server-rendered HTML. Status is checked before parsing.
+//
+// v7.0 used a bare `a[href]` scan over the SPA shell, which produced
+// navigation links rather than results — and did so silently.
 // ══════════════════════════════════════════════════════════════════════════════
 
-use crate::models::RawSearchResult;
-use reqwest::Client;
-use scraper::{Html, Selector};
 use std::collections::HashSet;
+use std::sync::LazyLock;
+
+use scraper::{Html, Selector};
+
+use crate::fetcher::Fetcher;
+use crate::models::RawSearchResult;
 
 pub struct Qwant;
 
-const PAGES: usize = 3; // Qwant's HTML is JS-heavy, fewer pages are more reliable
+static SEL_RESULT: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("article, .result, .web-result").unwrap());
+static SEL_LINK: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("a[href^='http']").unwrap());
+static SEL_DESC: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("p, .description").unwrap());
 
 #[async_trait::async_trait]
 impl super::SearchEngine for Qwant {
@@ -17,95 +31,96 @@ impl super::SearchEngine for Qwant {
         "qwant"
     }
 
-    async fn search(&self, client: &Client, query: &str) -> Vec<RawSearchResult> {
-        let mut all_results = Vec::new();
-        let mut seen_urls: HashSet<String> = HashSet::new();
+    fn needs_stealth(&self) -> bool {
+        true
+    }
 
-        for page in 0..PAGES {
-            let offset = page * 10;
-            let url = format!(
-                "https://www.qwant.com/?q={}&t=web&offset={}",
-                urlencoding::encode(query),
-                offset
-            );
+    async fn search(&self, f: &Fetcher, query: &str) -> Vec<RawSearchResult> {
+        let url = format!("https://lite.qwant.com/?q={}&t=web", urlencoding::encode(query));
 
-            let req = crate::config::apply_browser_headers(client
-                .get(&url), &url);
-            let resp = match req
-                .header("Accept", "text/html,application/xhtml+xml")
-                .send()
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::debug!("Qwant page {} request failed: {}", page, e);
-                    break;
-                }
-            };
-
-            let html_text = match resp.text().await {
-                Ok(t) => t,
-                Err(_) => break,
-            };
-
-            let page_results = parse_qwant_html(&html_text);
-            // Don't break if empty on first page — Qwant is JS-heavy
-            if page_results.is_empty() && page > 0 {
-                break;
+        super::health::record_attempt("qwant");
+        let resp = match f.get(&url, &[]).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!("Qwant transport error: {}", e);
+                super::health::record_transport_err("qwant");
+                return Vec::new();
             }
-
-            for r in page_results {
-                if seen_urls.insert(r.url.clone()) {
-                    all_results.push(r);
-                }
-            }
+        };
+        if resp.status != 200 {
+            tracing::warn!("Qwant: HTTP {} — not parsing", resp.status);
+            super::health::record_block("qwant", resp.status);
+            return Vec::new();
+        }
+        if super::health::looks_like_challenge(&resp.body) {
+            super::health::record_block("qwant", 0);
+            return Vec::new();
         }
 
-        tracing::info!("Qwant total: {} results", all_results.len());
-        all_results
+        let results = parse_qwant_html(&resp.body, 0);
+        super::health::record_parsed("qwant", results.len());
+        tracing::info!("Qwant [{}]: {} results", f.kind(), results.len());
+        results
     }
 }
 
-fn parse_qwant_html(html: &str) -> Vec<RawSearchResult> {
+pub fn parse_qwant_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
     let document = Html::parse_document(html);
     let mut results = Vec::new();
     let mut seen = HashSet::new();
 
-    // Generic approach: find all links that look like search results
-    let a_sel = Selector::parse("a[href]").unwrap();
-    
-    for link in document.select(&a_sel) {
+    for el in document.select(&SEL_RESULT) {
+        let Some(link) = el.select(&SEL_LINK).next() else { continue };
         let href = match link.value().attr("href") {
-            Some(h) => h,
-            None => continue,
+            Some(h) if h.starts_with("http") && !h.contains("qwant.com") => h.to_string(),
+            _ => continue,
         };
-
-        if !href.starts_with("https://") || href.contains("qwant.com") {
-            continue;
-        }
-
-        if href.contains("google.com") || href.contains("bing.com") {
-            continue;
-        }
-
         let title = link.text().collect::<String>().trim().to_string();
-        
-        if title.len() < 5 {
+        if crate::util::char_len(&title) < 5 {
             continue;
         }
-
-        if !seen.insert(href.to_string()) {
+        if !seen.insert(href.clone()) {
             continue;
         }
+        let snippet = el
+            .select(&SEL_DESC)
+            .next()
+            .map(|s| s.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
 
         results.push(RawSearchResult {
-            url: href.to_string(),
+            url: href,
             title,
-            snippet: String::new(),
+            snippet,
             engine: "qwant".to_string(),
-            rank_position: results.len() + 1,
+            rank_position: rank_base + results.len() + 1,
+            published: None,
         });
     }
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_qwant_lite_articles() {
+        let html = r#"<html><body>
+          <article><a href="https://a.test/1">A Qwant Result Title</a><p>Snippet A</p></article>
+          <article><a href="https://b.test/2">B Qwant Result Title</a><p>Snippet B</p></article>
+        </body></html>"#;
+        let r = parse_qwant_html(html, 0);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].rank_position, 1);
+        assert_eq!(r[0].snippet, "Snippet A");
+    }
+
+    #[test]
+    fn ignores_self_links() {
+        let html = r#"<html><body><article>
+            <a href="https://www.qwant.com/settings">Qwant Settings Page</a></article></body></html>"#;
+        assert_eq!(parse_qwant_html(html, 0).len(), 0);
+    }
 }

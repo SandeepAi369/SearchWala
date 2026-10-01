@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use crate::config;
 use crate::engines;
+use crate::fetcher::{self, Fetcher};
 use crate::extractor;
 use crate::llm;
 use crate::models::*;
@@ -80,9 +81,13 @@ pub fn execute_stream_search(
         // Single query — no snowballing
         let query_variations = vec![effective_query.clone()];
 
-        let enabled = config::enabled_engines();
+        // v8.0: use the pruned, health-filtered roster and the Fetcher pair so
+        // the streaming path gets TLS impersonation too. (Full unification of
+        // the two pipelines is P2-5 — this keeps them behaviourally aligned in
+        // the meantime.)
+        let enabled = engines::filter_healthy(engines::all_engines());
         let engine_instances = engines::get_engines(&enabled);
-        let base_search_client = build_search_client(None);
+        let (plain_fetcher, stealth_fetcher) = fetcher::build_pair(None);
         let proxy_pool = ProxyPoolManager::from_env();
         let engine_concurrency = config::engine_concurrency().max(1).min(24);
         let semaphore = Arc::new(Semaphore::new(engine_concurrency));
@@ -96,31 +101,39 @@ pub fn execute_stream_search(
                 let sem = semaphore.clone();
                 let engine = engine.as_ref();
                 let query_clone = variation.clone();
-                let base_client = base_search_client.clone();
+                let fetcher: Fetcher = if engine.needs_stealth() {
+                    stealth_fetcher.clone()
+                } else {
+                    plain_fetcher.clone()
+                };
                 let proxy_hint = proxy_pool.next_proxy();
                 let pool = proxy_pool.clone();
                 let jitter = config::random_jitter_ms(jitter_min, jitter_max);
-                let spread = (dispatch_idx % engine_concurrency as u64) * 15;
+                let spread = (dispatch_idx % engine_concurrency.max(1) as u64) * 15;
                 dispatch_idx += 1;
 
                 search_futures.push(async move {
-                    let _permit = match sem.acquire().await {
-                        Ok(p) => p,
-                        Err(_) => return Vec::new(),
-                    };
-
+                    // Sleep BEFORE taking the permit — holding a concurrency
+                    // slot while sleeping starved the dispatch window (P0-9).
                     let delay = jitter.saturating_add(spread);
                     if delay > 0 {
                         tokio::time::sleep(Duration::from_millis(delay)).await;
                     }
 
-                    let client = if let Some(proxy) = proxy_hint.as_deref() {
-                        build_search_client(Some(proxy))
-                    } else {
-                        base_client
+                    let _permit = match sem.acquire().await {
+                        Ok(p) => p,
+                        Err(_) => return Vec::new(),
                     };
 
-                    let results = engine.search(&client, &query_clone).await;
+                    let fetcher = match proxy_hint.as_deref() {
+                        Some(proxy) if fetcher.is_stealth() => {
+                            Fetcher::Stealth(config::build_stealth_client(Some(proxy)))
+                        }
+                        Some(proxy) => Fetcher::Plain(fetcher::build_plain_client(Some(proxy))),
+                        None => fetcher,
+                    };
+
+                    let results = engine.search(&fetcher, &query_clone).await;
 
                     if let Some(proxy) = proxy_hint {
                         if results.is_empty() {
@@ -445,27 +458,6 @@ fn extract_youtube_short_description(html: &str) -> Option<String> {
 // HTTP Client Builders — Fixed versions matching search.rs
 // =============================================================================
 
-fn build_search_client(proxy: Option<&str>) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(8))
-        .timeout(Duration::from_secs(16))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .pool_max_idle_per_host(5)
-        .cookie_store(true)
-        .user_agent(config::random_user_agent())
-        .tcp_nodelay(true)
-        .gzip(true).brotli(true)
-        .deflate(true)
-        .https_only(false);
-
-    if let Some(proxy_url) = proxy {
-        if let Ok(proxy_cfg) = reqwest::Proxy::all(proxy_url) {
-            builder = builder.proxy(proxy_cfg);
-        }
-    }
-
-    builder.build().expect("search HTTP client error")
-}
 
 /// FIXED: Added User-Agent, connect_timeout, tcp_nodelay (was completely bare before)
 fn build_scrape_client() -> reqwest::Client {

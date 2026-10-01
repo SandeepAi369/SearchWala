@@ -12,15 +12,17 @@ tokio = { version = "1", features = ["full"] }
 
 # HTTP server
 axum = "0.8"
-tower-http = { version = "0.7", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors", "catch-panic", "limit"] }
 
 # HTTP client (rustls + socks proxy support, portable in minimal environments)
 # 'stream' feature required for SSE streaming from LLM providers
-reqwest = { version = "0.13", default-features = false, features = ["json", "gzip", "brotli", "deflate", "cookies", "rustls", "socks", "stream", "form"] }
+# 'zstd' is REQUIRED: we advertise zstd in Accept-Encoding, and without this
+# feature reqwest hands back undecodable raw zstd bytes (v8.0 P0-4).
+reqwest = { version = "0.13", default-features = false, features = ["json", "gzip", "brotli", "deflate", "zstd", "cookies", "rustls", "socks", "stream", "form"] }
 
 # TLS impersonation — BoringSSL-based browser fingerprint cloning (JA4/HTTP2)
 # Used for WAF-protected engines (Brave, Startpage, Yahoo, etc.)
-wreq = { version = "0.16", features = ["json", "gzip", "brotli", "cookies", "form"] }
+wreq = { version = "0.16", features = ["json", "gzip", "brotli", "deflate", "zstd", "cookies", "form"] }
 wreq-util = "0.2"
 
 # Serialization
@@ -29,6 +31,10 @@ serde_json = "1"
 
 # HTML parsing & text extraction
 scraper = "0.27"
+
+# Charset-aware HTML decoding — replaces bare String::from_utf8_lossy, which
+# mangles windows-1252 / ISO-8859-1 / GBK / Shift_JIS pages (v8.0 P0-1).
+encoding_rs = "0.8"
 
 # URL handling
 url = "2"

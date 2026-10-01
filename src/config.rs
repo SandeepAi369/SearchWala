@@ -4,7 +4,6 @@
 // ============================================================================
 
 use rand::seq::IndexedRandom;
-use rand::Rng;
 use rand::RngExt;
 
 /// Canonical version string sourced from Cargo.toml at compile time.
@@ -106,16 +105,6 @@ pub fn random_jitter_ms(min_ms: u64, max_ms: u64) -> u64 {
     let a: u64 = rng.random_range(lo..=hi);
     let b: u64 = rng.random_range(lo..=hi);
     a.min(b) // right-skewed: bias toward faster actions
-}
-
-/// Session-aware jitter: increases delay slightly with each consecutive request
-/// to mimic human fatigue / reading patterns. Resets each search session.
-pub fn session_jitter_ms(base_min: u64, base_max: u64, request_index: usize) -> u64 {
-    // Add ~5% extra delay per request in the session (caps at 3x)
-    let fatigue_factor = 1.0 + (request_index as f64 * 0.05).min(2.0);
-    let adjusted_min = (base_min as f64 * fatigue_factor) as u64;
-    let adjusted_max = (base_max as f64 * fatigue_factor) as u64;
-    random_jitter_ms(adjusted_min, adjusted_max)
 }
 
 // =============================================================================
@@ -449,13 +438,20 @@ pub fn apply_browser_headers_ctx(
     ];
     req = req.header("Accept", *accept_variants.choose(&mut rng).unwrap());
 
-    // 2026: Accept-Encoding with zstd support (modern browsers)
-    let encoding_variants = [
-        "gzip, deflate, br, zstd",
-        "gzip, deflate, br",
-        "gzip, deflate, br, zstd",
-    ];
-    req = req.header("Accept-Encoding", *encoding_variants.choose(&mut rng).unwrap());
+    // ── Accept-Encoding is deliberately NOT set here (v8.0 P0-4) ──
+    //
+    // v7.0 hand-wrote this header and advertised `zstd` in two of three
+    // randomized variants, while the reqwest client had no zstd feature
+    // enabled. Origins that honoured the offer (increasingly common behind
+    // Cloudflare) returned bodies reqwest could not decompress; the raw zstd
+    // bytes then went through from_utf8_lossy and produced garbage, so the
+    // parser found zero results — silently, and on roughly two thirds of
+    // requests to zstd-capable hosts.
+    //
+    // reqwest/wreq now emit Accept-Encoding themselves, derived from what they
+    // can actually decode (gzip + brotli + deflate + zstd, all enabled in
+    // Cargo.toml). A hand-written encoding list that disagrees with the
+    // client's real capability is a correctness bug dressed as evasion.
 
     req
 }
@@ -522,16 +518,6 @@ pub const TRACKING_PARAMS: &[&str] = &[
 // Multi-Query Intelligence Configuration
 // =============================================================================
 
-/// Whether multi-query decomposition is enabled (default: true)
-/// Set MULTI_QUERY=false to disable and use single query mode
-pub fn multi_query_max_sub_queries() -> usize {
-    std::env::var("MAX_SUB_QUERIES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5)
-        .min(8)
-        .max(1)
-}
 
 // =============================================================================
 // Stealth HTTP Client — wreq with BoringSSL TLS impersonation
@@ -559,18 +545,33 @@ pub fn stealth_mode() -> String {
     std::env::var("STEALTH_MODE").unwrap_or_else(|_| "auto".to_string()).to_lowercase()
 }
 
-/// Build a wreq stealth client with Chrome TLS impersonation
+/// Build a wreq stealth client with browser TLS + HTTP/2 impersonation.
+///
+/// v8.0: uses `Emulation::weighted_random()` instead of a pinned
+/// `Emulation::Chrome147`.
+///
+/// `weighted_random()` installs a real browser profile and keeps the
+/// User-Agent, client hints, JA4 TLS fingerprint and HTTP/2 SETTINGS mutually
+/// consistent. v7.0 pinned a Chrome-147 TLS fingerprint while
+/// `apply_browser_headers` overrode the UA with hand-written strings claiming
+/// Chrome 155 / Firefox 157 / Safari 27 — versions that `wreq-util 0.2` cannot
+/// fingerprint at all (its ceiling is Chrome 149). A UA/TLS mismatch is a
+/// STRONGER bot signal than no spoofing, because it is exactly the
+/// inconsistency WAFs test for. `Fetcher::Stealth` therefore no longer applies
+/// our own UA headers.
 pub fn build_stealth_client(proxy: Option<&str>) -> wreq::Client {
     use wreq_util::Emulation;
 
     let mut builder = wreq::Client::builder()
-        .emulation(Emulation::Chrome147)
+        .emulation(Emulation::weighted_random())
         .cookie_store(true)
         .connect_timeout(std::time::Duration::from_secs(8))
         .timeout(std::time::Duration::from_secs(16))
         .redirect(wreq::redirect::Policy::limited(10))
         .gzip(true)
-        .brotli(true);
+        .brotli(true)
+        .zstd(true)
+        .deflate(true);
 
     if let Some(proxy_url) = proxy {
         match wreq::Proxy::all(proxy_url) {
@@ -586,69 +587,10 @@ pub fn build_stealth_client(proxy: Option<&str>) -> wreq::Client {
     builder.build().expect("Failed to build wreq stealth client")
 }
 
-/// Apply browser headers to a wreq RequestBuilder
-pub fn apply_stealth_headers(
-    builder: wreq::RequestBuilder,
-    target_url: &str,
-) -> wreq::RequestBuilder {
-    let headers = random_browser_headers();
-
-    let dynamic_referer = url::Url::parse(target_url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| format!("https://{}/", h)))
-        .unwrap_or_else(|| headers.referer.to_string());
-
-    let mut req = builder
-        .header("User-Agent", headers.user_agent)
-        .header("Accept-Language", headers.accept_language)
-        .header("Referer", dynamic_referer)
-        .header("Sec-Fetch-Site", "none")
-        .header("Sec-Fetch-Mode", "navigate")
-        .header("Sec-Fetch-Dest", "document")
-        .header("Sec-Fetch-User", "?1")
-        .header("DNT", "1")
-        .header("Upgrade-Insecure-Requests", "1")
-        .header("Cache-Control", "max-age=0")
-        .header("Priority", "u=0, i");
-
-    // Client hints for Chromium-based profiles
-    if !headers.sec_ch_ua.is_empty() {
-        req = req.header("Sec-CH-UA", headers.sec_ch_ua);
-        req = req.header("Sec-CH-UA-Arch", "\"x86\"");
-        req = req.header("Sec-CH-UA-Bitness", "\"64\"");
-        req = req.header("Sec-CH-UA-Full-Version-List", headers.sec_ch_ua);
-    }
-    if !headers.sec_ch_ua_mobile.is_empty() {
-        req = req.header("Sec-CH-UA-Mobile", headers.sec_ch_ua_mobile);
-    }
-    if !headers.sec_ch_ua_platform.is_empty() {
-        req = req.header("Sec-CH-UA-Platform", headers.sec_ch_ua_platform);
-        let platform_ver = if headers.sec_ch_ua_platform.contains("Windows") {
-            "\"15.0.0\""
-        } else if headers.sec_ch_ua_platform.contains("macOS") {
-            "\"15.8.0\""
-        } else if headers.sec_ch_ua_platform.contains("Chrome OS") {
-            "\"14816.0.0\""
-        } else {
-            "\"6.12.0\""
-        };
-        req = req.header("Sec-CH-UA-Platform-Version", platform_ver);
-    }
-
-    let mut rng = rand::rng();
-    let accept_variants = [
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    ];
-    req = req.header("Accept", *accept_variants.choose(&mut rng).unwrap());
-
-    let encoding_variants = [
-        "gzip, deflate, br, zstd",
-        "gzip, deflate, br",
-        "gzip, deflate, br, zstd",
-    ];
-    req = req.header("Accept-Encoding", *encoding_variants.choose(&mut rng).unwrap());
-
-    req
-}
+// NOTE: `apply_stealth_headers` was REMOVED in v8.0.
+//
+// It overrode the User-Agent and Sec-CH-UA headers that `wreq-util`'s
+// Emulation had already set consistently with the TLS/HTTP2 fingerprint,
+// recreating the exact UA-vs-TLS mismatch that WAFs look for. The stealth
+// path in `crate::fetcher::Fetcher` now sends only Accept-Language and
+// per-request extras, letting wreq own the browser identity.
