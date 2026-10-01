@@ -106,7 +106,8 @@ pub fn random_jitter_ms(min_ms: u64, max_ms: u64) -> u64 {
 // Each profile is a coherent browser "identity" — the UA string, client hints,
 // language, and referer all match what that real browser would send.
 // Anti-bot systems verify this consistency; mismatched headers are flagged.
-// ALL PROFILES UPDATED TO APRIL 2026 CURRENT VERSIONS.
+// ALL PROFILES UPDATED TO OCTOBER 2026 CURRENT VERSIONS.
+// Chrome 155 / Edge 154 / Firefox 157 / Safari 27 / Opera 119
 
 struct BrowserProfile {
     user_agent: &'static str,
@@ -118,181 +119,185 @@ struct BrowserProfile {
 }
 
 const BROWSER_PROFILES: &[BrowserProfile] = &[
-    // ── Chrome 147 — Windows 11 ──
+    // ══════════════════════════════════════════════════════════════════
+    // OCTOBER 2026 — Chrome 155, Edge 154, Firefox 157, Safari 27
+    // ══════════════════════════════════════════════════════════════════
+
+    // ── Chrome 155 — Windows 11 ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-        sec_ch_ua: "\"Chromium\";v=\"147\", \"Not/A)Brand\";v=\"24\", \"Google Chrome\";v=\"147\"",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"155\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"155\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"Windows\"",
         accept_language: "en-US,en;q=0.9",
         referer: "https://www.google.com/",
     },
-    // ── Chrome 147 — macOS Sequoia ──
+    // ── Chrome 155 — macOS ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-        sec_ch_ua: "\"Chromium\";v=\"147\", \"Not/A)Brand\";v=\"24\", \"Google Chrome\";v=\"147\"",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"155\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"155\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"macOS\"",
         accept_language: "en-US,en;q=0.9",
         referer: "https://www.google.com/",
     },
-    // ── Chrome 147 — Linux ──
+    // ── Chrome 155 — Linux ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-        sec_ch_ua: "\"Chromium\";v=\"147\", \"Not/A)Brand\";v=\"24\", \"Google Chrome\";v=\"147\"",
+        user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"155\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"155\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"Linux\"",
         accept_language: "en-US,en;q=0.7",
         referer: "https://www.google.com/",
     },
-    // ── Chrome 146 — Windows 11 ──
+    // ── Chrome 154 — Windows 11 ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        sec_ch_ua: "\"Chromium\";v=\"146\", \"Not;A=Brand\";v=\"24\", \"Google Chrome\";v=\"146\"",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"154\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"154\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"Windows\"",
         accept_language: "en-US,en;q=0.9,es;q=0.8",
         referer: "https://www.google.com/",
     },
-    // ── Chrome 146 — macOS ──
+    // ── Chrome 154 — macOS ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        sec_ch_ua: "\"Chromium\";v=\"146\", \"Not;A=Brand\";v=\"24\", \"Google Chrome\";v=\"146\"",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"154\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"154\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"macOS\"",
         accept_language: "en-US,en;q=0.9",
         referer: "https://www.google.com/",
     },
-    // ── Edge 147 — Windows 11 ──
+    // ── Edge 154 — Windows 11 ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
-        sec_ch_ua: "\"Chromium\";v=\"147\", \"Not/A)Brand\";v=\"24\", \"Microsoft Edge\";v=\"147\"",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.4258.48",
+        sec_ch_ua: "\"Chromium\";v=\"154\", \"Not_A Brand\";v=\"24\", \"Microsoft Edge\";v=\"154\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"Windows\"",
         accept_language: "en-US,en;q=0.9",
         referer: "https://www.bing.com/",
     },
-    // ── Edge 146 — Windows 11 ──
+    // ── Edge 154 — macOS ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
-        sec_ch_ua: "\"Chromium\";v=\"146\", \"Not;A=Brand\";v=\"24\", \"Microsoft Edge\";v=\"146\"",
-        sec_ch_ua_mobile: "?0",
-        sec_ch_ua_platform: "\"Windows\"",
-        accept_language: "en-GB,en;q=0.9",
-        referer: "https://www.bing.com/",
-    },
-    // ── Edge 147 — macOS ──
-    BrowserProfile {
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
-        sec_ch_ua: "\"Chromium\";v=\"147\", \"Not/A)Brand\";v=\"24\", \"Microsoft Edge\";v=\"147\"",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.4258.48",
+        sec_ch_ua: "\"Chromium\";v=\"154\", \"Not_A Brand\";v=\"24\", \"Microsoft Edge\";v=\"154\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"macOS\"",
         accept_language: "en-US,en;q=0.9",
         referer: "https://www.bing.com/",
     },
-    // ── Firefox 136 — Windows 11 ──
+    // ── Edge 154 — Linux ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0",
+        user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.4258.48",
+        sec_ch_ua: "\"Chromium\";v=\"154\", \"Not_A Brand\";v=\"24\", \"Microsoft Edge\";v=\"154\"",
+        sec_ch_ua_mobile: "?0",
+        sec_ch_ua_platform: "\"Linux\"",
+        accept_language: "en-GB,en;q=0.9",
+        referer: "https://www.bing.com/",
+    },
+    // ── Firefox 157 — Windows 11 ──
+    BrowserProfile {
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:157.0) Gecko/20100101 Firefox/157.0",
         sec_ch_ua: "",
         sec_ch_ua_mobile: "",
         sec_ch_ua_platform: "",
         accept_language: "en-US,en;q=0.5",
         referer: "https://www.google.com/",
     },
-    // ── Firefox 136 — macOS ──
+    // ── Firefox 157 — macOS ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:136.0) Gecko/20100101 Firefox/136.0",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15.8; rv:157.0) Gecko/20100101 Firefox/157.0",
         sec_ch_ua: "",
         sec_ch_ua_mobile: "",
         sec_ch_ua_platform: "",
         accept_language: "en-US,en;q=0.5",
         referer: "https://duckduckgo.com/",
     },
-    // ── Firefox 136 — Linux ──
+    // ── Firefox 157 — Linux ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:136.0) Gecko/20100101 Firefox/136.0",
+        user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0",
         sec_ch_ua: "",
         sec_ch_ua_mobile: "",
         sec_ch_ua_platform: "",
         accept_language: "en-US,en;q=0.5",
         referer: "https://search.brave.com/",
     },
-    // ── Firefox 135 — Windows ──
+    // ── Firefox 156 — Windows ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0",
         sec_ch_ua: "",
         sec_ch_ua_mobile: "",
         sec_ch_ua_platform: "",
         accept_language: "en-US,en;q=0.5",
         referer: "https://www.google.com/",
     },
-    // ── Safari 18.4 — macOS Sequoia ──
+    // ── Safari 27.0 — macOS Sequoia ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_8_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15",
         sec_ch_ua: "",
         sec_ch_ua_mobile: "",
         sec_ch_ua_platform: "",
         accept_language: "en-US,en;q=0.9",
         referer: "https://www.google.com/",
     },
-    // ── Safari 18.3 — macOS ──
+    // ── Safari 26.0 — macOS ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
         sec_ch_ua: "",
         sec_ch_ua_mobile: "",
         sec_ch_ua_platform: "",
         accept_language: "en-AU,en;q=0.9",
         referer: "https://duckduckgo.com/",
     },
-    // ── Chrome 147 — ChromeOS ──
+    // ── Chrome 155 — ChromeOS ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (X11; CrOS x86_64 14816.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-        sec_ch_ua: "\"Chromium\";v=\"147\", \"Not/A)Brand\";v=\"24\", \"Google Chrome\";v=\"147\"",
+        user_agent: "Mozilla/5.0 (X11; CrOS x86_64 14816.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"155\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"155\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"Chrome OS\"",
         accept_language: "en-US,en;q=0.9",
         referer: "https://www.google.com/",
     },
-    // ── Chrome 145 — Windows 10 (older but common) ──
+    // ── Chrome 153 — Windows (slightly older, still common) ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-        sec_ch_ua: "\"Chromium\";v=\"145\", \"Not)A;Brand\";v=\"99\", \"Google Chrome\";v=\"145\"",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"153\", \"Not)A;Brand\";v=\"99\", \"Google Chrome\";v=\"153\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"Windows\"",
         accept_language: "en-US,en;q=0.9",
         referer: "https://www.google.com/",
     },
-    // ── Opera 117 — Windows ──
+    // ── Opera 119 (Chrome 154 base) — Windows ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 OPR/117.0.0.0",
-        sec_ch_ua: "\"Chromium\";v=\"147\", \"Not/A)Brand\";v=\"24\", \"Opera\";v=\"117\"",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 OPR/119.0.0.0",
+        sec_ch_ua: "\"Chromium\";v=\"154\", \"Not_A Brand\";v=\"24\", \"Opera\";v=\"119\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"Windows\"",
         accept_language: "en-US,en;q=0.9",
         referer: "https://www.google.com/",
     },
-    // ── Brave Browser (Chrome 147 base) — Windows ──
+    // ── Brave Browser (Chrome 155 base) — Windows ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-        sec_ch_ua: "\"Chromium\";v=\"147\", \"Not/A)Brand\";v=\"24\", \"Brave\";v=\"147\"",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"155\", \"Not_A Brand\";v=\"24\", \"Brave\";v=\"155\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"Windows\"",
         accept_language: "en-US,en;q=0.9",
         referer: "https://search.brave.com/",
     },
-    // ── Vivaldi (Chrome 147 base) — Linux ──
+    // ── Vivaldi (Chrome 155 base) — Linux ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-        sec_ch_ua: "\"Chromium\";v=\"147\", \"Not/A)Brand\";v=\"24\"",
+        user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"155\", \"Not_A Brand\";v=\"24\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"Linux\"",
         accept_language: "en-US,en;q=0.7",
         referer: "https://duckduckgo.com/",
     },
-    // ── Chrome 147 — Windows (UK locale) ──
+    // ── Chrome 155 — Windows (UK locale) ──
     BrowserProfile {
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-        sec_ch_ua: "\"Chromium\";v=\"147\", \"Not/A)Brand\";v=\"24\", \"Google Chrome\";v=\"147\"",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+        sec_ch_ua: "\"Chromium\";v=\"155\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"155\"",
         sec_ch_ua_mobile: "?0",
         sec_ch_ua_platform: "\"Windows\"",
         accept_language: "en-GB,en;q=0.9,en-US;q=0.8",
@@ -375,7 +380,7 @@ pub fn apply_browser_headers(
         let platform_ver = if headers.sec_ch_ua_platform.contains("Windows") {
             "\"15.0.0\""
         } else if headers.sec_ch_ua_platform.contains("macOS") {
-            "\"15.4.0\""
+            "\"15.8.0\""
         } else if headers.sec_ch_ua_platform.contains("Chrome OS") {
             "\"14816.0.0\""
         } else {
@@ -459,3 +464,124 @@ pub const TRACKING_PARAMS: &[&str] = &[
     "_ga", "_gl", "_gid", "mc_cid", "mc_eid", "mkt_tok", "amp", "amp_js_v", "usqp",
     "spm", "share_from", "scm",
 ];
+
+
+// =============================================================================
+// Stealth HTTP Client — wreq with BoringSSL TLS impersonation
+// =============================================================================
+// Modern WAFs (Cloudflare, Akamai, DataDome) inspect:
+//   1. TLS ClientHello (JA4 fingerprint — cipher order, extensions, ML-KEM)
+//   2. HTTP/2 SETTINGS frame (window size, stream priority, pseudo-headers)
+//   3. User-Agent + Client Hints consistency
+// Standard reqwest gets blocked because its TLS fingerprint is non-browser.
+// wreq clones real Chrome/Firefox/Safari TLS+HTTP/2 fingerprints via BoringSSL.
+// =============================================================================
+
+/// Engines that require TLS impersonation (behind Cloudflare/WAFs)
+pub fn stealth_engines() -> Vec<String> {
+    let default = "brave,startpage,yahoo,google,google_scholar,google_news,google_images,google_videos,google_us,google_uk,google_in,google_de,google_fr,google_es,google_it,google_br,google_jp,google_ca,google_au,google_nl,google_se,google_no,google_fi,bing,bing_news,bing_images,bing_videos,bing_us,bing_uk,bing_in,bing_de,bing_fr,bing_es,bing_it,bing_jp,bing_ca,bing_au,bing_nl,bing_se,bing_no,bing_fi,ecosia,yandex";
+    let raw = std::env::var("STEALTH_ENGINES").unwrap_or_else(|_| default.to_string());
+    raw.split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Whether stealth mode is enabled (default: auto)
+pub fn stealth_mode() -> String {
+    std::env::var("STEALTH_MODE").unwrap_or_else(|_| "auto".to_string()).to_lowercase()
+}
+
+/// Build a wreq stealth client with Chrome TLS impersonation
+pub fn build_stealth_client(proxy: Option<&str>) -> wreq::Client {
+    use wreq_util::Emulation;
+
+    let mut builder = wreq::Client::builder()
+        .emulation(Emulation::Chrome147)
+        .cookie_store(true)
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_secs(16))
+        .redirect(wreq::redirect::Policy::limited(10))
+        .gzip(true)
+        .brotli(true);
+
+    if let Some(proxy_url) = proxy {
+        match wreq::Proxy::all(proxy_url) {
+            Ok(proxy_cfg) => {
+                builder = builder.proxy(proxy_cfg);
+            }
+            Err(err) => {
+                tracing::warn!("wreq: Invalid proxy {}: {}", proxy_url, err);
+            }
+        }
+    }
+
+    builder.build().expect("Failed to build wreq stealth client")
+}
+
+/// Apply browser headers to a wreq RequestBuilder
+pub fn apply_stealth_headers(
+    builder: wreq::RequestBuilder,
+    target_url: &str,
+) -> wreq::RequestBuilder {
+    let headers = random_browser_headers();
+
+    let dynamic_referer = url::Url::parse(target_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| format!("https://{}/", h)))
+        .unwrap_or_else(|| headers.referer.to_string());
+
+    let mut req = builder
+        .header("User-Agent", headers.user_agent)
+        .header("Accept-Language", headers.accept_language)
+        .header("Referer", dynamic_referer)
+        .header("Sec-Fetch-Site", "none")
+        .header("Sec-Fetch-Mode", "navigate")
+        .header("Sec-Fetch-Dest", "document")
+        .header("Sec-Fetch-User", "?1")
+        .header("DNT", "1")
+        .header("Upgrade-Insecure-Requests", "1")
+        .header("Cache-Control", "max-age=0")
+        .header("Priority", "u=0, i");
+
+    // Client hints for Chromium-based profiles
+    if !headers.sec_ch_ua.is_empty() {
+        req = req.header("Sec-CH-UA", headers.sec_ch_ua);
+        req = req.header("Sec-CH-UA-Arch", "\"x86\"");
+        req = req.header("Sec-CH-UA-Bitness", "\"64\"");
+        req = req.header("Sec-CH-UA-Full-Version-List", headers.sec_ch_ua);
+    }
+    if !headers.sec_ch_ua_mobile.is_empty() {
+        req = req.header("Sec-CH-UA-Mobile", headers.sec_ch_ua_mobile);
+    }
+    if !headers.sec_ch_ua_platform.is_empty() {
+        req = req.header("Sec-CH-UA-Platform", headers.sec_ch_ua_platform);
+        let platform_ver = if headers.sec_ch_ua_platform.contains("Windows") {
+            "\"15.0.0\""
+        } else if headers.sec_ch_ua_platform.contains("macOS") {
+            "\"15.8.0\""
+        } else if headers.sec_ch_ua_platform.contains("Chrome OS") {
+            "\"14816.0.0\""
+        } else {
+            "\"6.12.0\""
+        };
+        req = req.header("Sec-CH-UA-Platform-Version", platform_ver);
+    }
+
+    let mut rng = rand::rng();
+    let accept_variants = [
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    ];
+    req = req.header("Accept", *accept_variants.choose(&mut rng).unwrap());
+
+    let encoding_variants = [
+        "gzip, deflate, br, zstd",
+        "gzip, deflate, br",
+        "gzip, deflate, br, zstd",
+    ];
+    req = req.header("Accept-Encoding", *encoding_variants.choose(&mut rng).unwrap());
+
+    req
+}
