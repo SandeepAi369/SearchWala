@@ -9,13 +9,6 @@ use rand::RngExt;
 /// Canonical version string sourced from Cargo.toml at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Maximum URLs to scrape per query.
-pub fn max_urls() -> usize {
-    std::env::var("MAX_URLS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(420)
-}
 
 /// Concurrent scrape limit.
 pub fn concurrency() -> usize {
@@ -33,86 +26,18 @@ pub fn engine_concurrency() -> usize {
         .unwrap_or(20)
 }
 
-/// Scrape timeout per URL (seconds). 0 means use client default.
-/// Changed from 0 (infinite) to 12s — this was the root cause of
-/// extraction failing after ~10 sources (hung connections starving semaphore).
-pub fn scrape_timeout_secs() -> u64 {
-    std::env::var("SCRAPE_TIMEOUT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        // v8.0: 12s meant any batch containing one slow URL pinned the scrape
-        // stage at 12,003ms. 8s still clears the long tail of real pages while
-        // bounding the stage.
-        .unwrap_or(8)
+
+
+
+/// An explicitly-set numeric env var, or None. Used where a mode profile
+/// supplies the default and the environment should only override it when the
+/// operator actually set something.
+pub fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name).ok().and_then(|v| v.trim().parse().ok())
 }
 
-/// Engine-dispatch early-exit: minimum raw results before we may stop waiting.
-///
-/// **DISABLED BY DEFAULT, on measurement.** Tuning run, same query, cold
-/// (`CACHE=off`):
-///
-/// | threshold   | latency | raw results | multi-family | engines |
-/// |-------------|---------|-------------|--------------|---------|
-/// | R=60  F=3   | 4.25 s  | 64          | 2            | 5       |
-/// | R=120 F=4   | 5.26 s  | 133         | 9            | 5       |
-/// | R=200 F=5   | 7.39 s  | 161         | 9            | 9       |
-/// | disabled    | 4.76 s  | **165**     | 7            | **9**   |
-///
-/// Exiting early cost ~60% of the raw results and most of the cross-family
-/// agreement to save roughly half a second — the wrong trade for a system
-/// whose entire ranking premise is cross-engine consensus. Disabling it is
-/// also no slower in practice, because the dispatch normally completes well
-/// inside its deadline once the per-host gate has spread the load.
-///
-/// The real latency win came from the SCRAPE stage early-exit instead
-/// (8,000 ms → ~1,000 ms), which costs nothing because it requires BOTH
-/// enough sources AND enough extracted text before it fires.
-///
-/// Set `EARLY_EXIT_MIN_RESULTS` to re-enable this for latency-critical
-/// deployments that can accept weaker consensus.
-pub fn early_exit_min_results() -> usize {
-    std::env::var("EARLY_EXIT_MIN_RESULTS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(usize::MAX)
-}
 
-/// Minimum INDEPENDENT engine families required alongside the result count.
-/// Guards against exiting on a large result count that all came from one index.
-pub fn early_exit_min_families() -> usize {
-    std::env::var("EARLY_EXIT_MIN_FAMILIES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5)
-}
 
-/// Hard ceiling on the whole scrape stage.
-pub fn scrape_stage_deadline_secs() -> u64 {
-    std::env::var("SCRAPE_STAGE_DEADLINE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10)
-}
-
-/// Sources needed before the scrape stage may stop waiting on stragglers.
-pub fn scrape_min_sources() -> usize {
-    std::env::var("SCRAPE_MIN_SOURCES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(25)
-}
-
-/// Characters of extracted text needed alongside the source count.
-///
-/// Guards against exiting on 25 sources that each yielded a meta description.
-/// Phase 3 extraction averages 5,000-17,000 chars/source, so this is ~8-15
-/// substantial articles.
-pub fn scrape_min_chars() -> usize {
-    std::env::var("SCRAPE_MIN_CHARS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(80_000)
-}
 
 /// Server port.
 pub fn port() -> u16 {
@@ -130,14 +55,6 @@ pub fn max_html_bytes() -> usize {
         .unwrap_or(1_500_000)
 }
 
-/// Minimum extracted text length to consider a scrape successful.
-/// Changed from hardcoded 0 to configurable with default 50.
-pub fn min_text_length() -> usize {
-    std::env::var("MIN_TEXT_LENGTH")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50)
-}
 
 pub fn jitter_min_ms() -> u64 {
     std::env::var("JITTER_MIN_MS")
@@ -535,14 +452,20 @@ pub fn user_agents_count() -> usize {
 // Engines — Full list of enabled search engines
 // =============================================================================
 
-pub fn enabled_engines() -> Vec<String> {
-    let default = "wikipedia,duckduckgo,duckduckgo_html,duckduckgo_news,duckduckgo_images,duckduckgo_videos,brave,brave_news,yahoo,yahoo_news,bing,bing_news,bing_images,bing_videos,bing_us,bing_uk,bing_in,bing_de,bing_fr,bing_es,bing_it,bing_jp,bing_ca,bing_au,bing_nl,bing_se,bing_no,bing_fi,google,google_news,google_scholar,google_images,google_videos,google_us,google_uk,google_in,google_de,google_fr,google_es,google_it,google_br,google_jp,google_ca,google_au,google_nl,google_se,google_no,google_fi,qwant,startpage,mojeek,yandex,yandex_ru,yandex_global,baidu,baidu_cn,ecosia,ecosia_de,ecosia_fr,metager,metager_de,swisscows,swisscows_ch,ask,ask_us,aol,aol_search,lycos,dogpile,gibiru,searchencrypt,presearch,yep,mwmbl,sogou,sogou_cn,naver,daum,seznam,rambler,searchalot,excite,webcrawler,info,pipilika,kiddle,marginalia,wiby,right_dao,stract";
-
-    let raw = std::env::var("ENGINES").unwrap_or_else(|_| default.to_string());
-    raw.split(',')
+/// Engines named in the `ENGINES` env var, if the operator set it.
+///
+/// v8.0 kept a hard-coded 90-name default here that nothing dispatched any
+/// more, yet `/health`, `/config` and the startup banner all reported it
+/// ("Engines: 90 total"). The real rosters live in `modes.rs`; this is only an
+/// override for the general web pool (see `engines::all_engines`).
+pub fn engines_override() -> Option<Vec<String>> {
+    let raw = std::env::var("ENGINES").ok()?;
+    let v: Vec<String> = raw
+        .split(',')
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
-        .collect()
+        .collect();
+    if v.is_empty() { None } else { Some(v) }
 }
 
 // =============================================================================

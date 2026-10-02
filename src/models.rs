@@ -13,6 +13,10 @@ pub struct LlmConfig {
     pub model: String,
     pub base_url: Option<String>,
     pub timeout_ms: Option<u64>,
+    /// Per-call output budget. Set by the server from the search mode; clients
+    /// may also pass it.
+    #[serde(default)]
+    pub max_output_tokens: Option<usize>,
 }
 
 /// Hand-written so a stray `{:?}` cannot write the user's API key to the log.
@@ -28,6 +32,7 @@ impl std::fmt::Debug for LlmConfig {
             .field("base_url", &self.base_url)
             .field("api_key", &"<redacted>")
             .field("timeout_ms", &self.timeout_ms)
+            .field("max_output_tokens", &self.max_output_tokens)
             .finish()
     }
 }
@@ -35,10 +40,15 @@ impl std::fmt::Debug for LlmConfig {
 #[derive(Debug, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
+    /// Subject-area focus — tech | science | finance | health | news.
+    /// Composes with `focus_mode` ("deep" + "health" is valid).
+    #[serde(default)]
+    pub domain: Option<String>,
     /// Max number of URLs to scrape (default: from config)
     pub max_results: Option<usize>,
-    /// Optional focus mode: auto | fast | research | academic | reddit | youtube.
-    /// When absent, defaults to "auto" (QueryIntelligence-driven).
+    /// Mode: auto | fast | deep | study | academic | reddit | youtube.
+    /// Legacy spellings still work: lite→auto, research→deep,
+    /// specialized_<domain>→auto+domain. Absent → auto.
     pub focus_mode: Option<String>,
     /// Optional BYOK LLM config for synthesized answer generation.
     pub llm: Option<LlmConfig>,
@@ -51,8 +61,19 @@ pub struct SearchRequest {
 #[derive(Debug, Serialize)]
 pub struct SearchResponse {
     pub query: String,
+    /// Mode actually used ("fast", "auto", "deep", "study", ...).
+    pub mode: String,
+    /// Resolved tier, e.g. "auto:light" — shows how Auto sized this query.
+    pub tier: String,
+    pub domain: String,
+    /// The queries actually sent to engines (original first).
+    pub sub_queries: Vec<String>,
     pub sources_found: usize,
     pub sources_processed: usize,
+    /// Pages whose text was extracted (before chunking).
+    pub sources_extracted: usize,
+    /// Characters of text extracted across those pages.
+    pub chars_extracted: usize,
     pub results: Vec<SourceResult>,
     pub search_results: Vec<SearchHit>,
     pub copilot_query: Option<String>,
@@ -135,6 +156,10 @@ pub struct RawSearchResult {
     pub rank_position: usize,
     /// Publication date when the engine reports one (news verticals do).
     pub published: Option<chrono::DateTime<chrono::Utc>>,
+    /// Text the engine already supplied (e.g. a paper abstract from OpenAlex).
+    /// When substantial, the scrape stage uses it instead of fetching the URL —
+    /// publisher landing pages are slow, often paywalled, and often blocked.
+    pub full_text: Option<String>,
 }
 
 // --- Health -----------------------------------------------------------------
@@ -153,8 +178,8 @@ pub struct HealthResponse {
 pub struct ConfigResponse {
     pub version: String,
     pub engines: Vec<String>,
-    pub max_urls: usize,
-    pub scrape_timeout_secs: u64,
+    /// What each mode does by default: engines, budgets, synthesis.
+    pub modes: serde_json::Value,
     pub concurrent_scrapes: usize,
     pub concurrent_engines: usize,
     pub jitter_min_ms: u64,

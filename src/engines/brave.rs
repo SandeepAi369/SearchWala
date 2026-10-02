@@ -61,7 +61,7 @@ impl super::SearchEngine for Brave {
         let mut seen_urls: HashSet<String> = HashSet::new();
         let mut rank_base = 0usize;
 
-        for page in 0..PAGES {
+        for page in 0..super::page_budget(PAGES) {
             // Brave's `offset` is the page number, not a row offset.
             let url = format!(
                 "https://search.brave.com/search?q={}&source=web&offset={}",
@@ -148,6 +148,7 @@ pub fn parse_brave_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
             engine: "brave".to_string(),
             rank_position: rank_base + results.len() + 1,
             published: None,
+            full_text: None,
         });
     }
 

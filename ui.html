@@ -233,6 +233,14 @@
     }
     #stopBtn:hover{ background:color-mix(in srgb, #f87171 26%, transparent); }
     #stopBtn.visible{ display:inline-block; }
+    /* ── v8.1: rendered Markdown in answers ── */
+    .md-table{ overflow-x:auto; margin:12px 0; }
+    .md-table table{ border-collapse:collapse; width:100%; font-size:13px; }
+    .md-table th,.md-table td{ border:1px solid var(--border-2); padding:6px 10px; text-align:left; vertical-align:top; }
+    .md-table th{ background:var(--bg-2); font-weight:600; }
+    #answerContent h4{ font-size:14px; margin:12px 0 6px; }
+    #answerContent ol,#answerContent ul{ padding-left:22px; margin:8px 0; }
+    #answerContent code{ background:var(--bg-2); padding:1px 5px; border-radius:4px; font-size:.92em; }
   </style>
 </head>
 <body>
@@ -277,10 +285,11 @@
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
           </button>
           <div id="modeMenu" class="mode-menu hidden">
-            <button class="mode-menu-item active" data-mode="auto" onclick="selectMode(this)"><span class="mode-icon">🤖</span>Auto</button>
-            <button class="mode-menu-item" data-mode="fast" onclick="selectMode(this)"><span class="mode-icon">⚡</span>Fast</button>
-            <button class="mode-menu-item" data-mode="research" onclick="selectMode(this)"><span class="mode-icon">🔬</span>Deep Research</button>
-            <button class="mode-menu-item" data-mode="academic" onclick="selectMode(this)"><span class="mode-icon">🎓</span>Academic</button>
+            <button class="mode-menu-item active" data-mode="auto" onclick="selectMode(this)" title="Sizes the search to your question"><span class="mode-icon">🤖</span>Auto</button>
+            <button class="mode-menu-item" data-mode="fast" onclick="selectMode(this)" title="A few reliable engines, quick concise answer"><span class="mode-icon">⚡</span>Fast</button>
+            <button class="mode-menu-item" data-mode="deep" onclick="selectMode(this)" title="Every engine, many sub-queries, long cited report"><span class="mode-icon">🔬</span>Deep Research</button>
+            <button class="mode-menu-item" data-mode="study" onclick="selectMode(this)" title="Structured study notes with a self-test"><span class="mode-icon">📘</span>Study</button>
+            <button class="mode-menu-item" data-mode="academic" onclick="selectMode(this)" title="Scholarly papers (OpenAlex, arXiv) and a literature review"><span class="mode-icon">🎓</span>Academic</button>
             <div class="mode-menu-divider"></div>
             <button class="mode-menu-item" data-mode="reddit" onclick="selectMode(this)"><span class="mode-icon">💬</span>Reddit</button>
             <button class="mode-menu-item" data-mode="youtube" onclick="selectMode(this)"><span class="mode-icon">▶</span>YouTube</button>
@@ -390,8 +399,8 @@
     </div>
     <label class="check-row"><input id="enableLlm" type="checkbox" checked /> Enable AI Synthesis</label>
     <div class="field" style="margin-top:12px">
-      <label>Max Results</label>
-      <input id="maxResults" type="number" value="50" min="5" max="900" />
+      <label>Max sources <span style="color:var(--muted);font-weight:400">(blank = let each mode decide)</span></label>
+      <input id="maxResults" type="number" value="" min="3" max="300" placeholder="mode default" />
     </div>
     <button class="modal-btn modal-btn-primary" style="width:100%;margin-top:12px" onclick="saveSettings();closeSettings()">Save & Close</button>
   </div>
@@ -486,7 +495,7 @@
       localStorage.setItem('ss_base_url',dom.baseUrl.value);
       localStorage.setItem('ss_model',dom.modelInput.value);
       localStorage.setItem('ss_llm_on',dom.enableLlm.checked?'1':'0');
-      localStorage.setItem('ss_max_results',dom.maxResults.value);
+      localStorage.setItem('ss_max_sources_v81',dom.maxResults.value);
     }
     function loadSettings(){
       const p=localStorage.getItem('ss_provider');
@@ -494,17 +503,15 @@
       const u=localStorage.getItem('ss_base_url');
       const m=localStorage.getItem('ss_model');
       const l=localStorage.getItem('ss_llm_on');
-      const r=localStorage.getItem('ss_max_results');
+      // New key: the old 'ss_max_results' was almost always the forced default
+      // of 50, which would now pin every mode to 50 sources. Ignore it.
+      const r=localStorage.getItem('ss_max_sources_v81');
       if(p)dom.provider.value=p;
       if(k)dom.apiKey.value=k;
       if(u)dom.baseUrl.value=u;
       if(m)dom.modelInput.value=m;
       if(l!==null)dom.enableLlm.checked=l==='1';
-      // Migration: if saved max_results is below 50, bump to 50 (new default)
-      if(r){
-        const rv=parseInt(r);
-        dom.maxResults.value=(rv<50)?50:rv;
-      }
+      if(r&&parseInt(r)>0) dom.maxResults.value=parseInt(r);
       const pr=presets[dom.provider.value]||presets.cerebras;
       if(!dom.modelInput.value)dom.modelInput.value=pr.model;
       if(!dom.baseUrl.value&&pr.base)dom.baseUrl.value=pr.base;
@@ -537,8 +544,21 @@
 
     // ═══ Mode dropdown (topbar) ═══
     // ═══ Mode dropdown (search modes) ═══
-    const modeLabels={auto:'Auto',fast:'Fast',research:'Deep Research',academic:'Academic',reddit:'Reddit',youtube:'YouTube'};
-    const modeIcons={auto:'🤖',fast:'⚡',research:'🔬',academic:'🎓',reddit:'💬',youtube:'▶'};
+    const modeLabels={auto:'Auto',fast:'Fast',deep:'Deep Research',study:'Study',academic:'Academic',reddit:'Reddit',youtube:'YouTube'};
+    const modeIcons={auto:'🤖',fast:'⚡',deep:'🔬',study:'📘',academic:'🎓',reddit:'💬',youtube:'▶'};
+    // What the user is waiting for, per mode (no more "querying 90+ engines").
+    const modeStatus={
+      auto:'Analysing your question…',
+      fast:'Fast search: a few reliable engines…',
+      deep:'Deep research: every engine and several sub-queries — this takes a while…',
+      study:'Study mode: gathering educational sources…',
+      academic:'Academic mode: searching OpenAlex and arXiv…',
+      reddit:'Searching Reddit discussions…',
+      youtube:'Searching YouTube…'
+    };
+    // LLM timeout per mode: Deep runs several calls (evidence extraction, then
+    // the report), study notes and literature reviews are long single calls.
+    const modeTimeoutMs={fast:30000,auto:60000,deep:240000,study:120000,academic:120000,reddit:60000,youtube:60000};
     function toggleModeMenu(){$('modeMenu').classList.toggle('hidden');$('categoryMenu').classList.add('hidden')}
     function selectMode(el){
       focusMode=el.dataset.mode;
@@ -546,7 +566,7 @@
       el.classList.add('active');
       $('modeMenu').classList.add('hidden');
       syncModeUI();
-      dom.statusMode.textContent=getEffectiveFocus();
+      dom.statusMode.textContent=modeSummary();
     }
     function syncModeUI(){
       $('modeLabelBtn').textContent=modeLabels[focusMode]||'Auto';
@@ -569,13 +589,18 @@
       // Visual: highlight button when a domain is active
       const btn=$('categoryBtn');
       if(selectedCategory){btn.classList.add('active-category')}else{btn.classList.remove('active-category')}
+      dom.statusMode.textContent=modeSummary();
     }
 
-    // Build the actual focus_mode string for the backend
-    // If category is set, override focus to specialized_{category}
+    // v8.1: mode and domain are sent SEPARATELY. v8.0 returned
+    // 'specialized_'+category here, discarding the selected mode — choosing
+    // Deep Research and then Health silently produced a non-deep search.
     function getEffectiveFocus(){
-      if(selectedCategory) return 'specialized_'+selectedCategory;
       return focusMode;
+    }
+    function modeSummary(){
+      const m=modeLabels[focusMode]||'Auto';
+      return selectedCategory?`${m} · ${catLabels[selectedCategory]}`:m;
     }
 
     // Close all dropdowns on click outside
@@ -862,26 +887,68 @@
     // but were resolved against the unordered source list).
     let citationSources=[];
 
-    function formatMarkdownToHtml(text){
-      return esc(text)
+    // Inline Markdown: bold, inline code, and [n] citations as real links.
+    function mdInline(s){
+      return s
+        .replace(/`([^`]+)`/g,'<code>$1</code>')
         .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
-        .replace(/^## (.*$)/gm,'<h2>$1</h2>')
-        .replace(/^### (.*$)/gm,'<h3>$1</h3>')
-        .replace(/^- (.*$)/gm,'<li>$1</li>')
-        .replace(/^\d+\. (.*$)/gm,'<li>$1</li>')
         .replace(/\[(\d+)\]/g,(m,n)=>{
-          const s=citationSources[parseInt(n,10)-1];
-          if(!s||!s.url) return `<sup class="cite cite-dead">[${n}]</sup>`;
-          const t=(s.title||s.url).replace(/"/g,'&quot;');
-          return `<a class="cite" href="${esc(s.url)}" target="_blank" rel="noopener" `
-               + `title="${t}">[${n}]</a>`;
-        })
-        .replace(/\n\n/g,'</p><p>')
-        .replace(/\n/g,'<br>');
+          const src=citationSources[parseInt(n,10)-1];
+          if(!src||!src.url) return `<sup class="cite cite-dead">[${n}]</sup>`;
+          const t=(src.title||src.url).replace(/"/g,'&quot;');
+          return `<a class="cite" href="${esc(src.url)}" target="_blank" rel="noopener" title="${t}">[${n}]</a>`;
+        });
+    }
+
+    // Line-based Markdown renderer. v8.1 answers use headings, bullet and
+    // numbered lists, and (Deep comparisons) tables — the previous regex
+    // renderer showed tables as raw pipes and emitted <li> with no list.
+    // Input is escaped first, so no source text can inject HTML.
+    function formatMarkdownToHtml(text){
+      const lines=esc(text).split('\n');
+      const out=[];
+      let list=null, para=[];
+      const flushPara=()=>{ if(para.length){ out.push('<p>'+mdInline(para.join(' '))+'</p>'); para=[]; } };
+      const closeList=()=>{ if(list){ out.push(`</${list}>`); list=null; } };
+      const isRow=l=>/^\s*\|.*\|\s*$/.test(l);
+      const isSep=l=>/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l);
+      const cells=l=>l.trim().replace(/^\||\|$/g,'').split('|').map(c=>mdInline(c.trim()));
+      for(let i=0;i<lines.length;i++){
+        const line=lines[i];
+        // Table: header row, separator row, body rows.
+        if(isRow(line) && i+1<lines.length && isSep(lines[i+1])){
+          flushPara(); closeList();
+          const head=cells(line); i+=2;
+          const body=[];
+          while(i<lines.length && isRow(lines[i])){ body.push(cells(lines[i])); i++; }
+          i--;
+          out.push('<div class="md-table"><table><thead><tr>'+head.map(c=>`<th>${c}</th>`).join('')+'</tr></thead><tbody>'
+            +body.map(r=>'<tr>'+r.map(c=>`<td>${c}</td>`).join('')+'</tr>').join('')+'</tbody></table></div>');
+          continue;
+        }
+        let m;
+        if((m=line.match(/^(#{2,4})\s+(.*)$/))){
+          flushPara(); closeList();
+          const lvl=Math.min(m[1].length,4);
+          out.push(`<h${lvl}>${mdInline(m[2])}</h${lvl}>`); continue;
+        }
+        if((m=line.match(/^\s*[-*•]\s+(.*)$/))){
+          flushPara(); if(list!=='ul'){ closeList(); out.push('<ul>'); list='ul'; }
+          out.push(`<li>${mdInline(m[1])}</li>`); continue;
+        }
+        if((m=line.match(/^\s*\d+[.)]\s+(.*)$/))){
+          flushPara(); if(list!=='ol'){ closeList(); out.push('<ol>'); list='ol'; }
+          out.push(`<li>${mdInline(m[1])}</li>`); continue;
+        }
+        if(!line.trim()){ flushPara(); closeList(); continue; }
+        closeList(); para.push(line.trim());
+      }
+      flushPara(); closeList();
+      return out.join('');
     }
 
     function renderAnswer(text){
-      dom.answerContent.innerHTML='<p>'+formatMarkdownToHtml(text)+'</p>';
+      dom.answerContent.innerHTML=formatMarkdownToHtml(text);
     }
 
     function typewriterRender(text){
@@ -911,7 +978,7 @@
       function typeNext(){
         if(typewriterAbort||wordIndex>=words.length){
           // Done — render final without cursor
-          dom.answerContent.innerHTML='<p>'+formatMarkdownToHtml(text)+'</p>';
+          dom.answerContent.innerHTML=formatMarkdownToHtml(text);
           return;
         }
 
@@ -925,7 +992,7 @@
         wordIndex++;
 
         // Render with cursor
-        dom.answerContent.innerHTML='<p>'+formatMarkdownToHtml(accumulated)+'</p><span class="tw-cursor"></span>';
+        dom.answerContent.innerHTML=formatMarkdownToHtml(accumulated)+'<span class="tw-cursor"></span>';
 
         // Auto-scroll page so new content is always visible
         // Scroll the WINDOW (not answerContent — it's not the scrollable container)
@@ -980,8 +1047,8 @@
 
       saveSettings();
       startStatus();
-      dom.statusMode.textContent=effectiveFocus;
-      updateStatus(effectiveFocus==='research'?'Deep Research: querying 90+ engines...':effectiveFocus.startsWith('specialized')?`Specialized ${(catLabels[selectedCategory]||'').toUpperCase()}: querying curated engines...`:effectiveFocus==='fast'?'Fast search: primary engines...':'Auto-analyzing query...');
+      dom.statusMode.textContent=modeSummary();
+      updateStatus(modeStatus[effectiveFocus]||modeStatus.auto);
 
       const prov=dom.provider.value;
       const key=dom.apiKey.value.trim();
@@ -989,31 +1056,28 @@
       const base=dom.baseUrl.value.trim()||(presets[prov]||{}).base||'';
       const useLlm=dom.enableLlm.checked;
 
-      // DEEP RESEARCH = 200 sources minimum, NOT 30
-      const userMax=parseInt(dom.maxResults.value)||50;
-      const maxR=(effectiveFocus==='research')?Math.max(userMax,200):effectiveFocus==='fast'?Math.min(userMax,30):effectiveFocus.startsWith('specialized')?Math.max(userMax,80):userMax;
-
-      const payload={query,focus_mode:effectiveFocus,max_results:maxR};
+      // Each mode sizes itself on the server. "Max sources" is only sent when
+      // the user set it explicitly; the server clamps it to the mode's range.
+      // (v8.0 forced Deep to >=200 and silently raised any saved value below 50.)
+      const payload={query,focus_mode:effectiveFocus};
+      if(selectedCategory) payload.domain=selectedCategory;
+      const userMax=parseInt(dom.maxResults.value);
+      if(userMax>0) payload.max_results=userMax;
 
       if(useLlm&&key&&model){
-        payload.llm={provider:prov,api_key:key,model,base_url:base,timeout_ms:effectiveFocus==='research'?90000:45000};
+        payload.llm={provider:prov,api_key:key,model,base_url:base,timeout_ms:modeTimeoutMs[effectiveFocus]||60000};
       }
 
-      let endpoint='/search';
-      if(useLlm&&key&&model){
-        endpoint=effectiveFocus==='research'?'/search/research-llm':'/search/auto-llm';
-      }
-      // Specialized mode timeout: mid-tier between lite (45s) and research (90s)
-      if(useLlm&&key&&model&&effectiveFocus.startsWith('specialized')){
-        payload.llm.timeout_ms=60000;
-      }
+      // One endpoint for every mode; the legacy /search/*-llm routes remain
+      // for API clients.
+      const endpoint='/search';
 
       beginRequest();
       try{
-        if(effectiveFocus==='research'&&useLlm)updateStatus('Scraping 200+ sources for deep research...');
-
         const data=await api(endpoint,'POST',payload);
         stopStatus();
+        // Show how the server sized this search (e.g. "Auto · auto:light").
+        if(data.tier) dom.statusMode.textContent=`${modeSummary()} — ${data.tier}, ${data.sources_extracted||0} pages read`;
 
         const sources=data.search_results||[];
         // The source list is now RRF-ordered by the backend (v7.0 rendered it
@@ -1033,6 +1097,12 @@
           currentAnswer=cleanAnswer(data.llm_answer);
           typewriterRender(currentAnswer);
           dom.ttsBtn.classList.remove('hidden');
+          // An answer can arrive WITH a caveat (cut off at the output limit,
+          // or some Deep evidence batches failed). Show it rather than hide it.
+          if(data.llm_error&&String(data.llm_error).startsWith('partial')){
+            dom.llmError.textContent=String(data.llm_error).replace(/^partial:\s*/,'Note: ');
+            dom.llmError.classList.remove('hidden');
+          }
         }else if(data.llm_error){
           dom.answerContent.innerHTML='<div style="color:var(--muted);padding:20px 0">AI could not generate an answer. Browse sources above.</div>';
           dom.llmError.textContent=data.llm_error;

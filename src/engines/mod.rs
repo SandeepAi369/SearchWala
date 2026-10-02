@@ -4,6 +4,7 @@
 // Smart fallback: if primary engines fail, instantly switch to backups
 // ============================================================================
 
+pub mod arxiv;
 pub mod bing;
 pub mod brave;
 pub mod duckduckgo;
@@ -11,6 +12,7 @@ pub mod generic;
 pub mod health;
 pub mod marginalia_api;
 pub mod mojeek;
+pub mod openalex;
 pub mod qwant;
 pub mod searxng;
 pub mod startpage;
@@ -22,6 +24,34 @@ use std::sync::Arc;
 
 use crate::fetcher::Fetcher;
 use crate::models::RawSearchResult;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-search SERP page budget
+//
+// Engines paginate with fixed constants (Bing 3, Brave 3, Yahoo 3, ...). When
+// a mode's deadline is shorter than an engine's full pagination, the dispatch
+// aborts the task and every page it had ALREADY fetched is dropped with it —
+// measured in v8.0 Fast mode: 2 of 9 tasks aborted at 2.5 s, contributing
+// nothing. Each mode now sets a page budget that engines honour, so Fast asks
+// for one page and gets it rather than asking for three and getting zero.
+// ─────────────────────────────────────────────────────────────────────────────
+
+tokio::task_local! {
+    static PAGE_BUDGET: usize;
+}
+
+/// Pages this engine may fetch: its own default, capped by the current
+/// search's budget. Outside a budgeted scope the default applies unchanged.
+pub fn page_budget(default: usize) -> usize {
+    PAGE_BUDGET
+        .try_with(|b| (*b).max(1).min(default.max(1)))
+        .unwrap_or(default)
+}
+
+/// Run `fut` with a page budget in scope.
+pub async fn with_page_budget<F: std::future::Future>(budget: usize, fut: F) -> F::Output {
+    PAGE_BUDGET.scope(budget.max(1), fut).await
+}
 
 #[async_trait::async_trait]
 pub trait SearchEngine: Send + Sync {
@@ -108,6 +138,16 @@ pub fn get_engines(enabled: &[String]) -> Vec<Arc<dyn SearchEngine>> {
             "searxng" => {
                 if seen.insert("searxng".to_string()) {
                     engines.push(Arc::new(searxng::SearxNG));
+                }
+            }
+            "openalex" => {
+                if seen.insert("openalex".to_string()) {
+                    engines.push(Arc::new(openalex::OpenAlex));
+                }
+            }
+            "arxiv" => {
+                if seen.insert("arxiv".to_string()) {
+                    engines.push(Arc::new(arxiv::Arxiv));
                 }
             }
             "marginalia" | "marginalia_api" => {
@@ -216,6 +256,12 @@ pub fn backup_engines() -> Vec<String> {
 /// ALL engines dispatched simultaneously — maximum coverage, no waiting.
 /// Quarantined engines are filtered out by the caller via `health::should_skip`.
 pub fn all_engines() -> Vec<String> {
+    // `ENGINES` replaces the general web pool (used by Auto's standard/heavy
+    // tiers and by Deep). Mode-specific rosters (Fast, Study, Academic,
+    // Reddit, YouTube) are deliberate and unaffected.
+    if let Some(v) = crate::config::engines_override() {
+        return v;
+    }
     let mut all = primary_engines();
     all.extend(backup_engines());
     // Optional upstream: only when the operator has configured an instance.
@@ -338,6 +384,12 @@ pub fn engine_family(name: &str) -> &'static str {
     if name.starts_with("wikipedia") {
         return "wikipedia";
     }
+    if name.starts_with("openalex") {
+        return "openalex";
+    }
+    if name.starts_with("arxiv") {
+        return "arxiv";
+    }
     if name.starts_with("qwant") {
         return "qwant";
     }
@@ -366,6 +418,9 @@ pub fn family_weight(family: &str) -> f32 {
         "qwant" => 1.1,
         // Independent but narrow — valuable for diversity, weaker on precision.
         "marginalia" | "mwmbl" | "wiby" => 0.9,
+        // Scholarly indices: authoritative but topically narrow.
+        "openalex" => 1.2,
+        "arxiv" => 1.0,
         _ => 1.0,
     }
 }

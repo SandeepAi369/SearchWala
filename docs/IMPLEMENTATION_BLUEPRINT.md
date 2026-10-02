@@ -2374,3 +2374,128 @@ testing had rate-limited this IP: Brave 3/3 blocked, Yahoo 3/3, DuckDuckGo 2/5.
 So the last run shows `multi_family=0` where an earlier run showed 13–14. That
 is IP state, not a code regression — and `/health/engines` showing exactly
 which engines are blocked, with counts, is the feature working as intended.
+
+---
+
+## v8.1 — Mode refinement (Fast / Auto / Deep / Study / Academic / Reddit / YouTube)
+
+Status: **gate PASSED.** 256 unit tests, zero warnings, intent probe 50/50.
+
+Goal: make each mode do what its name promises. Fast should be the fastest,
+Auto should size itself to the question, Deep should read the most and write
+the most complete report, and Study/Academic should have their own sources and
+prompts.
+
+### What was wrong with the modes
+
+- **No single source of truth.** Mode behaviour was spread across `search.rs`
+  (`apply_focus_mode`), `config.rs` env defaults, `llm.rs` (three separate
+  prompt paths) and the stale `/search/stream` pipeline in `stream.rs`. They
+  disagreed: the stream endpoint ignored modes completely.
+- **Deep was not deeper.** It used the same scrape stage and early exit as
+  Auto, and the LLM path truncated each source to 3,000 chars
+  (`summarize_iterative`), so a "deep" report saw less text than Auto.
+- **Study did not exist.** The UI had no study mode; it is new in v8.1.
+- **Academic sent `site:edu OR site:gov …` to every engine** (see the
+  OpenAlex header comment). It now queries OpenAlex and arXiv directly.
+
+### Design
+
+`src/modes.rs` resolves one `ModeProfile` per request from (mode × domain ×
+query intelligence). Every budget the pipeline uses (engines, SERP pages,
+deadline, early exit, sub-queries, URLs, scrape deadline/thresholds, top-k,
+chunks per URL, freshness, synthesis style, context and output caps) lives in
+that one struct. `GET /config` prints it per mode. Auto picks a tier from the
+query (Lookup / Light / Standard / Heavy). `src/synthesis.rs` holds one prompt
+per synthesis style: Concise, Standard, Report (map-reduce), StudyNotes,
+Literature, Community, Video.
+
+### Measured (20 golden queries, `CACHE=off`, no LLM)
+
+| mode | nDCG@10 | MRR | Recall@20 | p50 |
+|---|---|---|---|---|
+| Fast | 0.4657 | 0.6401 | 0.4667 | 2.4 s |
+| Auto | 0.4779 | 0.6899 | 0.5583 | 5.3 s |
+| Deep | **0.5241** | **0.7442** | **0.6208** | 17.2 s |
+
+Before the last two fixes below, Deep was the *worst* mode on ranking quality
+(nDCG 0.4026, MRR 0.5236) despite reading the most pages.
+
+One end-to-end run per mode ("how does mRNA vaccine technology work"):
+
+| mode | time | URLs selected | pages read | chars extracted |
+|---|---|---|---|---|
+| Fast | 2.7 s | 10 | 6 | 0.42 M |
+| Auto (heavy tier) | 5.8 s | 50 | 30 | 1.42 M |
+| Deep | 21.6 s | 150 | 120 (30 abstracts) | 5.74 M |
+| Study | 6.2 s | 35 | 20 | 0.83 M |
+| Academic | 5.2 s | 40 | 25 (17 abstracts) | 0.44 M |
+
+With a local 7B model (Ollama, 4,096-token window), Deep's map-reduce report
+took 84 s and 13 of 15 citations were supported by the cited source.
+
+### Bugs found during this work
+
+1. **MMR panic, introduced by me in Phase 4.** `window.clamp(top_k, len)`
+   panics when there are fewer chunks than `top_k` (Reddit: 14 chunks vs 25).
+   Fixed with `.min()`, plus a regression test.
+2. **Cross-query fusion erased cross-engine consensus.** `cross_query_fusion`
+   returned one representative result per URL, carrying one engine name, and
+   the caller re-ran RRF over those. In every multi-query mode each page
+   looked as if a single engine had found it (`found_by_families == 1` for
+   all of them). It now returns scores only (`cross_query_scores`) and the raw
+   results are kept. Deep went from "Paris: 1 family" to 2–3.
+3. **Deep facets changed the meaning of factual questions.** "capital of
+   France" got the sub-queries "… research evidence" and "… limitations
+   challenges", and OpenAlex was added for Factual intent, so three economics
+   papers about *financial* capital (Journal of Finance, QJE) ranked above
+   Wikipedia's "Paris". Factual questions now get overview/history/key-facts
+   facets, and scholarly indices are only added for Research intent or the
+   Science/Health/Tech domains. The 1.5× selection boost for prefetched
+   abstracts no longer applies in Deep.
+4. **Bing soft-blocking, including adult content.** With an automated client,
+   Bing returns a normal 200 page of results unrelated to the query:
+   "capital of France" → Bhubaneswar/Odisha, "best budget phone 2026" →
+   Mumbai's BEST bus company, "mRNA vaccine mechanism" → **pornography**
+   (ranks 2 and 5 of Auto's results). Page 2 is identical to page 1. Nothing
+   trips a challenge marker. `health::screen_serp` now clears pages where
+   under 25% of results are on-topic and trims mixed pages (under 60%) to
+   their on-topic results. Filler only ever matches the query's first word,
+   so "on-topic" means two or more terms, or any term after the first. The
+   first version of the rule ("two or more terms") wrongly blocked Wikipedia
+   on "definition of photosynthesis". The rule changed, and the index APIs
+   (Wikipedia, OpenAlex, arXiv), which never serve filler, are exempt.
+5. **Yandex CAPTCHA parsed as results.** Yandex redirects to `/showcaptcha`
+   with HTTP 200; the generic fallback selectors returned its "SmartCaptcha"
+   footer link at rank 6 in Deep. Added `/checkcaptcha` and `smartcaptcha`
+   challenge markers.
+6. **Hindi words were split at the virama.** `char::is_alphanumeric` is false
+   for ् (U+094D), so "क्या" tokenized as ["क", "या"] and "प्रधानमंत्री" as
+   three fragments: in query terms, BM25 and the citation check. Fixed with
+   `util::is_word_char` in all four tokenizers.
+7. **Hindi queries searched English Wikipedia.** "भारत की राजधानी" returned
+   "Bayana" and "Vishnu Sharma". When `WIKIPEDIA_LANGS` is unset, the query's
+   script now picks the edition (hi, bn, ta, te, …, ja, zh, ru), and English is
+   searched only if the native edition returns fewer than 3 hits. The same
+   query now returns "भारत की राजधानियों की सूची" and "नई दिल्ली".
+8. **Reddit URL rewrite produced `old.old.reddit.com`**; Reddit's CAPTCHA page
+   ("Welcome to Reddit") was extracted as content. Fixed: `reddit_to_old` and
+   `looks_like_blocked_page`; Reddit falls back to search snippets.
+9. **Local LLM servers silently drop the prompt head.** Ollama serves a
+   4,096-token window by default and truncates longer prompts from the start,
+   which is where the instructions are. `ContextBudget` now assumes 4,096
+   tokens for local servers and fits prompt + answer inside it; truncated
+   answers (`finish_reason: "length"`) are reported as partial.
+10. **The Deep map step had an escape hatch** ("reply NO RELEVANT FACTS") that
+   the 7B model took for every batch. Removed; a test enforces it.
+
+### Known limitations
+
+- **IP state dominates live numbers.** After about 60 eval searches, Brave
+  (429), DuckDuckGo (202) and Yahoo stopped answering this IP, and Reddit and
+  YouTube modes, which only use `site:`-capable engines, briefly returned no
+  results. `/health/engines` shows this state.
+- **YouTube transcripts** need a PO token; the mode uses video descriptions.
+- **Wikipedia's full-text search is weak for shopping queries**: "best budget
+  phone 2026" surfaces "Mercy (2026 film)". There is no commercial intent to
+  route on; left as is rather than adding a speculative rule.

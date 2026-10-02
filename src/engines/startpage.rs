@@ -49,7 +49,7 @@ impl super::SearchEngine for Startpage {
         let mut seen_urls: HashSet<String> = HashSet::new();
         let mut rank_base = 0usize;
 
-        for page in 1..=PAGES {
+        for page in 1..=super::page_budget(PAGES) {
             let form: Vec<(String, String)> = vec![
                 ("query".to_string(), query.to_string()),
                 ("cat".to_string(), "web".to_string()),
@@ -145,6 +145,7 @@ pub fn parse_startpage_html(html: &str, rank_base: usize) -> Vec<RawSearchResult
             engine: "startpage".to_string(),
             rank_position: rank_base + results.len() + 1,
             published: None,
+            full_text: None,
         });
     }
 

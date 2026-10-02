@@ -98,6 +98,7 @@ pub fn parse_qwant_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
             engine: "qwant".to_string(),
             rank_position: rank_base + results.len() + 1,
             published: None,
+            full_text: None,
         });
     }
 
