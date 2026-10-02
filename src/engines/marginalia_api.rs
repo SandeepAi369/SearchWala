@@ -90,6 +90,7 @@ impl super::SearchEngine for MarginaliaApi {
                 engine: "marginalia_api".to_string(),
                 rank_position: i + 1,
                 published: None,
+                full_text: None,
             })
             .collect();
 

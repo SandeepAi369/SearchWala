@@ -4,7 +4,7 @@
 
 ### Open-source meta-search engine in pure Rust
 
-[![Version](https://img.shields.io/badge/version-8.0.0-blue?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
+[![Version](https://img.shields.io/badge/version-8.1.0-blue?style=flat-square)](https://github.com/SandeepAi369/SearchWala)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-190-brightgreen?style=flat-square)](#testing)
 [![License](https://img.shields.io/badge/license-Apache%202.0-purple?style=flat-square)](./LICENSE)
@@ -60,6 +60,49 @@ important one — HTTP 200 with nothing parsed means the selectors have rotted,
 which is otherwise indistinguishable from "no matches for this query".
 
 To get more independent indexes, see [Expanding coverage](#expanding-coverage).
+
+---
+
+## Modes
+
+Pick a **mode** for how much work to do, and optionally a **domain** for what
+kind of sources to prefer. They compose: "Deep + Health" is a valid search.
+
+| Mode | What it does | Typical time* |
+|---|---|---|
+| **Fast** | 5 reliable engines, 1 results page each, ~10 pages read, stops as soon as 3 independent indexes agree. Short cited answer. | ~2 s |
+| **Auto** | Sizes itself to the question: navigational lookups behave like Fast; short facts read ~20 pages; complex, comparative or explanatory questions read ~55 pages with 3 sub-queries. Time-sensitive questions add news engines. | 2–6 s |
+| **Deep Research** | Every engine plus news (and scholarly indices for research-type questions), up to 5 sub-queries — LLM-planned when a model is configured — and ~150 pages read. The report is written map-reduce: cited evidence notes per batch of sources, then one report from all the notes. | 20–30 s |
+| **Study** | Educational sources preferred (Wikipedia, Britannica, Khan Academy, OpenStax, LibreTexts, NCERT, `.edu`…), "explained simply" and "examples" sub-queries, no recency bias. Produces study notes: overview, key concepts, explanation, worked example, common misconceptions, quick revision and a self-test. | ~6 s |
+| **Academic** | Searches **OpenAlex** and **arXiv** directly and uses paper abstracts without fetching paywalled publisher pages. Produces a literature review; arXiv preprints are labelled as not peer-reviewed. | ~4 s |
+| **Reddit** / **YouTube** | Site-restricted search through engines that support `site:`. Reddit threads are often behind a CAPTCHA, so the search snippet is used when the page can't be read; YouTube uses video descriptions (transcripts are not accessible). | ~5 s |
+
+\* Search and extraction only, measured on one connection; LLM time comes on top.
+
+**Domains** — `tech`, `science`, `finance`, `health`, `news` — add relevant
+engines (news verticals, OpenAlex/arXiv), prefer that field's authorities when
+choosing pages to read and when ranking passages (e.g. health → WHO, NIH, CDC,
+NHS; finance → regulators, Reuters, Bloomberg, Indian market sources), and add
+field-appropriate rules to the answer (health and finance carry disclaimers;
+news gets a dated timeline).
+
+`GET /config` returns the exact engines and budgets each mode uses.
+
+**Local models.** Ollama, LM Studio and llama.cpp serve a 4,096-token window
+by default and *silently* drop the start of a longer prompt — the instructions.
+SearchWala assumes 4,096 tokens for any local server (loopback/private
+`base_url`, or provider `ollama`) and fits prompt + answer inside it. Raise the
+server's window (e.g. `OLLAMA_CONTEXT_LENGTH=16384`) and set
+`CONTEXT_MAX_TOKENS` to the same value for longer answers; if an answer is cut
+off at the output limit, the response says so.
+
+**Soft-blocked engines.** When an engine decides a client is a bot it may
+not show a CAPTCHA; it returns a normal-looking page of unrelated results
+instead. In our tests Bing answered "capital of France" with pages about
+Odisha and "mRNA vaccine mechanism" with adult sites. Every result page is
+screened: a page where fewer than a quarter of the results mention the query
+is discarded (and logged as a block in `/health/engines`), and a mixed page
+keeps only its on-topic results.
 
 ---
 
@@ -149,24 +192,24 @@ All optional. Defaults are chosen to work without configuration.
 |---|---|---|
 | `PORT` | `8000` | listen port |
 | `BIND` | `127.0.0.1` | set `0.0.0.0` to expose on the network |
-| `ENGINES` | from code | comma-separated override, incl. engines not in the default roster |
-| `MAX_URLS` | `420` | scrape ceiling |
+| `ENGINES` | from code | replaces the general web engine pool used by Auto and Deep |
 | `CONCURRENCY` | `32` | concurrent scrapes |
-| `SCRAPE_TIMEOUT` | `8` | per-URL seconds |
-| `SCRAPE_STAGE_DEADLINE` | `10` | whole-stage ceiling, seconds |
-| `SCRAPE_MIN_SOURCES` / `SCRAPE_MIN_CHARS` | `25` / `80000` | when the scrape stage may stop waiting on stragglers |
+| `SCRAPE_STAGE_DEADLINE`, `SCRAPE_MIN_SOURCES`, `SCRAPE_MIN_CHARS` | per mode | global overrides of the modes' scrape budgets |
+| `EARLY_EXIT_MIN_RESULTS` / `EARLY_EXIT_MIN_FAMILIES` | per mode | force an engine-stage early exit (only Fast uses one by default) |
+| `OPENALEX_MAILTO` | unset | your email, to join OpenAlex's polite pool |
 | `ENGINE_REQUEST_TIMEOUT_MS` | `4000` | **must stay below the dispatch deadline** |
 | `HOST_MIN_INTERVAL_MS` | `400` | per-host request spacing |
 | `STEALTH_MODE` | `auto` | `on` / `off` / `auto` (engine decides) |
 | `CACHE` | on | `off` disables both cache tiers |
 | `SERP_CACHE_TTL_SECS` / `PAGE_CACHE_TTL_SECS` | `600` / `21600` | cache lifetimes |
-| `CONTEXT_MAX_TOKENS` | per model | overrides the LLM context budget |
+| `CONTEXT_MAX_TOKENS` | per model; 4096 for local servers | the model's whole window (prompt + answer) |
+| `OLLAMA_CONTEXT_LENGTH` | unset | honoured as the window for local servers when `CONTEXT_MAX_TOKENS` is unset |
 | `ALLOW_LOCAL_LLM` | `0` | `1` permits a loopback/private `base_url` for a local model |
-| `WIKIPEDIA_LANGS` | `en` | e.g. `en,hi` to search other language editions |
+| `WIKIPEDIA_LANGS` | auto | Unset: the query's script picks the edition (Devanagari → `hi`, Tamil → `ta`, …) with English as fallback. Set e.g. `en,hi` to force a list |
 | `SEARXNG_BASE_URL` | unset | a self-hosted SearXNG instance to federate |
 | `MARGINALIA_API_KEY` | `public` | a dedicated Marginalia key |
 | `DUMP_SERP_DIR` | unset | save zero-result response bodies for parser debugging |
-| `MULTI_QUERY` | `true` | sub-query decomposition |
+| `MULTI_QUERY` | `true` | sub-query decomposition (count is per mode) |
 | `ENGINE_QUARANTINE` | on | `off` keeps dispatching engines that produce nothing |
 
 ---
@@ -197,10 +240,9 @@ Three legitimate routes past that, in order of practicality:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /search` | search + extract (+ synthesis when `llm` is supplied) |
-| `POST /search/auto-llm` | synthesis with auto/fast focus |
-| `POST /search/research-llm` | iterative multi-batch research |
-| `POST /search/stream` | SSE streaming |
+| `POST /search` | search + extract (+ synthesis when `llm` is supplied). Body: `query`, `focus_mode` (`fast`/`auto`/`deep`/`study`/`academic`/`reddit`/`youtube`), optional `domain`, optional `max_results` (clamped to the mode's range), optional `llm` |
+| `POST /search/auto-llm`, `POST /search/research-llm` | legacy aliases (research-llm forces Deep) |
+| `POST /search/stream` | Same pipeline as `/search`, as Server-Sent Events: `plan`, `engines`, `sources`, `extracted`, `synthesizing`, then `result` (the full response) and `done` |
 | `GET /health` | liveness + version |
 | `GET /health/engines` | **per-engine liveness and verdicts** |
 | `GET /health/cache` | cache hit ratios |
@@ -213,6 +255,9 @@ Three legitimate routes past that, in order of practicality:
 
 ```jsonc
 {
+  "mode": "auto", "tier": "auto:light", "domain": "general",
+  "sub_queries": ["capital of australia"],
+  "sources_extracted": 18, "chars_extracted": 402113,
   "search_results": [{
     "url": "…", "title": "…", "snippet": "…",
     "engine": "wikipedia,duckduckgo,brave",  // every engine that found it
@@ -282,14 +327,16 @@ Current baseline (live engines, so it moves with engine availability):
 src/
   main.rs            axum server, routes, TTS
   lib.rs             library target (so the eval harness can drive the pipeline)
+  modes.rs           Mode/Domain → ModeProfile: every per-mode budget in one place
   search.rs          orchestration: dispatch → select → scrape → rank → synthesize
+  synthesis.rs       per-mode prompts; Deep map-reduce; LLM query planning
   fetcher.rs         Fetcher{Plain,Stealth} — one surface over reqwest + wreq
   host_gate.rs       per-registrable-host request spacing
   engines/
     mod.rs           trait, roster, engine FAMILIES and weights
     health.rs        per-engine counters, verdicts, auto-quarantine
     bing.rs brave.rs duckduckgo.rs mojeek.rs qwant.rs startpage.rs yahoo.rs
-    wikipedia.rs wiby.rs marginalia_api.rs searxng.rs
+    wikipedia.rs wiby.rs marginalia_api.rs searxng.rs openalex.rs arxiv.rs
     generic.rs       template-driven HTML engines
   extractor.rs       trafilatura + conditional Readability
   ranking.rs         RRF, BM25+, freshness, MMR, script-aware chunking

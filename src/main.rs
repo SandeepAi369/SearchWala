@@ -41,163 +41,163 @@ struct AppState {
 const SEARCH_UI: &str = include_str!("../ui.html");
 
 
-/// POST /search - Main search endpoint
+fn params_from(body: SearchRequest, focus_override: Option<&str>, default_llm_urls: Option<usize>) -> search::SearchParams {
+    search::SearchParams {
+        query: body.query.trim().to_string(),
+        max_results: body.max_results.or(default_llm_urls),
+        focus_mode: focus_override.map(str::to_string).or(body.focus_mode),
+        domain: body.domain,
+        llm: body.llm,
+        enable_copilot: body.enable_copilot.unwrap_or(false),
+    }
+}
+
+fn empty_query_error() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": "Query cannot be empty" })),
+    )
+}
+
+fn no_results_error(resp: &SearchResponse) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "error": "No results found. Search engines may be unreachable.",
+            "query": resp.query,
+            "mode": resp.mode,
+            "engines_queried": resp.engine_stats.engines_queried,
+        })),
+    )
+}
+
+/// POST /search — the main endpoint. Mode via `focus_mode`, subject area via
+/// `domain`; synthesis runs when `llm` is supplied.
 async fn search_handler(
     state: axum::extract::State<Arc<AppState>>,
     Json(body): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let query = body.query.trim().to_string();
-
-    if query.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Query cannot be empty"
-            })),
-        ));
+    if body.query.trim().is_empty() {
+        return Err(empty_query_error());
     }
-
-    let response = search::execute_search(
-        &query,
-        body.max_results,
-        body.focus_mode,
-        body.llm,
-        body.enable_copilot,
+    let params = params_from(body, None, None);
+    let response = search::execute_search_full(
+        params,
         Some(&state.temp_db),
         Some(&state.history_db),
-    ).await;
-
+        None,
+    )
+    .await;
     if response.sources_processed == 0 {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "No results found. Search engines may be unreachable.",
-                "query": query,
-                "engines_queried": response.engine_stats.engines_queried,
-            })),
-        ));
+        return Err(no_results_error(&response));
     }
-
     Ok(Json(response))
 }
 
-/// POST /search/auto-llm — LLM flow with auto/fast focus mode
-/// Also handles backward-compatible /search/lite-llm requests
+/// POST /search/auto-llm — kept for API compatibility. Requires `llm`; the
+/// mode defaults to auto but `focus_mode` is honoured.
 async fn search_auto_llm_handler(
     state: axum::extract::State<Arc<AppState>>,
     Json(body): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let query = body.query.trim().to_string();
-
-    if query.is_empty() {
+    if body.query.trim().is_empty() {
+        return Err(empty_query_error());
+    }
+    if body.llm.is_none() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Query cannot be empty"
-            })),
+            Json(serde_json::json!({ "error": "LLM config is required for /search/auto-llm" })),
         ));
     }
-
-    let Some(llm_cfg) = body.llm else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "LLM config is required for /search/auto-llm"
-            })),
-        ));
-    };
-
-    // v6.1.0: Pass through focus_mode (auto/fast) instead of hardcoding
-    let focus = body.focus_mode.or(Some("auto".to_string()));
-
-    let response = search::execute_search(
-        &query,
-        body.max_results.or(Some(50)),
-        focus,
-        Some(llm_cfg),
-        body.enable_copilot,
-        Some(&state.temp_db),
-        Some(&state.history_db),
-    )
-    .await;
-
+    let params = params_from(body, None, None);
+    let response =
+        search::execute_search_full(params, Some(&state.temp_db), Some(&state.history_db), None).await;
     if response.sources_processed == 0 {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "No results found. Search engines may be unreachable.",
-                "query": query,
-                "engines_queried": response.engine_stats.engines_queried,
-            })),
-        ));
+        return Err(no_results_error(&response));
     }
-
     Ok(Json(response))
 }
 
-/// POST /search/research-llm - LLM flow forced to research focus mode
+/// POST /search/research-llm — kept for API compatibility; forces Deep mode.
+/// v8.0 also dropped the request's domain here.
 async fn search_research_llm_handler(
     state: axum::extract::State<Arc<AppState>>,
     Json(body): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let query = body.query.trim().to_string();
-
-    if query.is_empty() {
+    if body.query.trim().is_empty() {
+        return Err(empty_query_error());
+    }
+    if body.llm.is_none() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Query cannot be empty"
-            })),
+            Json(serde_json::json!({ "error": "LLM config is required for /search/research-llm" })),
         ));
     }
-
-    let Some(llm_cfg) = body.llm else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "LLM config is required for /search/research-llm"
-            })),
-        ));
-    };
-
-    let response = search::execute_search(
-        &query,
-        body.max_results,
-        Some("research".to_string()),
-        Some(llm_cfg),
-        body.enable_copilot,
-        Some(&state.temp_db),
-        Some(&state.history_db),
-    )
-    .await;
-
+    let params = params_from(body, Some("deep"), None);
+    let response =
+        search::execute_search_full(params, Some(&state.temp_db), Some(&state.history_db), None).await;
     if response.sources_processed == 0 {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "No results found. Search engines may be unreachable.",
-                "query": query,
-                "engines_queried": response.engine_stats.engines_queried,
-            })),
-        ));
+        return Err(no_results_error(&response));
     }
-
     Ok(Json(response))
 }
 
-/// POST /search/stream - Streaming search endpoint
+/// POST /search/stream — Server-Sent Events.
+///
+/// v8.0 ran a SEPARATE, stale copy of the pipeline here (`stream.rs`): no
+/// query intelligence, no RRF, `lite` as its only recognised mode, the full
+/// 90-name legacy engine list, and no deadline. Every mode therefore behaved
+/// differently on this endpoint. It now runs the same pipeline and forwards
+/// its progress events, then the final response:
+///
+///   data: {"type":"plan", ...}
+///   data: {"type":"engines", ...}
+///   data: {"type":"sources", ...}
+///   data: {"type":"extracted", ...}
+///   data: {"type":"synthesizing", ...}
+///   data: {"type":"result", "response": { ...same shape as POST /search... }}
+///   data: {"type":"done"}
+///
+/// If the client disconnects, the pipeline task is aborted rather than left
+/// scraping for a response nobody will read.
 async fn stream_handler(
+    state: axum::extract::State<Arc<AppState>>,
     Json(body): Json<SearchRequest>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let query = body.query.trim().to_string();
-    let stream = stream::execute_stream_search(
-        query,
-        body.max_results,
-        body.focus_mode,
-        body.llm,
-        body.enable_copilot
-    );
-    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new())
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
+    let params = params_from(body, None, None);
+    let state = state.0.clone();
+
+    tokio::spawn(async move {
+        let (ptx, mut prx) = tokio::sync::mpsc::channel::<search::Progress>(32);
+        let pipeline = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                search::execute_search_full(params, Some(&state.temp_db), Some(&state.history_db), Some(ptx)).await
+            })
+        };
+
+        while let Some(p) = prx.recv().await {
+            let data = serde_json::to_string(&p).unwrap_or_default();
+            if tx.send(Ok(Event::default().data(data))).await.is_err() {
+                tracing::info!("stream client disconnected; aborting pipeline");
+                pipeline.abort();
+                return;
+            }
+        }
+
+        let final_event = match pipeline.await {
+            Ok(resp) => serde_json::json!({ "type": "result", "response": resp }),
+            Err(e) => serde_json::json!({ "type": "error", "error": e.to_string() }),
+        };
+        let _ = tx.send(Ok(Event::default().data(final_event.to_string()))).await;
+        let _ = tx
+            .send(Ok(Event::default().data(serde_json::json!({ "type": "done" }).to_string())))
+            .await;
+    });
+
+    Sse::new(tokio_stream::wrappers::ReceiverStream::new(rx))
+        .keep_alive(axum::response::sse::KeepAlive::new())
 }
 
 // =============================================================================
@@ -271,7 +271,7 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
     Json(HealthResponse {
         status: "ok".to_string(),
         version: crate::config::VERSION.to_string(),
-        engines: config::enabled_engines(),
+        engines: modes::all_roster_engines(),
         uptime_seconds: uptime,
     })
 }
@@ -280,9 +280,8 @@ async fn health_handler(state: axum::extract::State<Arc<AppState>>) -> impl Into
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
         version: crate::config::VERSION.to_string(),
-        engines: config::enabled_engines(),
-        max_urls: config::max_urls(),
-        scrape_timeout_secs: config::scrape_timeout_secs(),
+        engines: modes::all_roster_engines(),
+        modes: modes::describe_modes(),
         concurrent_scrapes: config::concurrency(),
         concurrent_engines: config::engine_concurrency(),
         jitter_min_ms: config::jitter_min_ms(),
@@ -532,15 +531,15 @@ async fn main() {
         .init();
 
     let port = config::port();
-    let engines = config::enabled_engines();
+    let engines = modes::all_roster_engines();
 
     tracing::info!("============================================");
     tracing::info!("  SearchWala v{}", crate::config::VERSION);
     tracing::info!("  Language: Rust");
     tracing::info!("  Engines: {} total", engines.len());
-    tracing::info!("  Max URLs: {}", config::max_urls());
+    tracing::info!("  Modes: fast, auto, deep, study, academic, reddit, youtube (+ domains)");
     tracing::info!("  Concurrency: {}", config::concurrency());
-    tracing::info!("  Scrape timeout: {}s", config::scrape_timeout_secs());
+
     tracing::info!("  Features: Iterative Research, TempDb, HistoryDb");
     tracing::info!("  CORS: permissive");
     tracing::info!("  Port: {}", port);

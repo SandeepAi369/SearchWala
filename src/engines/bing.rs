@@ -120,7 +120,7 @@ impl super::SearchEngine for Bing {
         let mut rank_base = 0usize;
         let encoded = urlencoding::encode(query);
 
-        for page in 0..self.pages {
+        for page in 0..super::page_budget(self.pages) {
             // Bing's `first` is a 1-based row offset.
             let first = page * 10 + 1;
             let base = if self.news {
@@ -292,6 +292,7 @@ pub fn parse_bing_html(html: &str, engine: &str, rank_base: usize) -> Vec<RawSea
             engine: engine.to_string(),
             rank_position: rank_base + out.len() + 1,
             published: None,
+            full_text: None,
         });
     }
 
@@ -329,6 +330,7 @@ pub fn parse_bing_news(html: &str, engine: &str, rank_base: usize) -> Vec<RawSea
             engine: engine.to_string(),
             rank_position: rank_base + out.len() + 1,
             published: None,
+            full_text: None,
         });
     }
 

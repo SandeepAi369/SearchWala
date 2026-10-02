@@ -85,9 +85,34 @@ pub fn char_len(s: &str) -> usize {
     s.chars().count()
 }
 
+/// True for characters that belong inside a word.
+///
+/// `char::is_alphanumeric` excludes combining marks such as the Devanagari
+/// virama (्), so splitting on it broke every Indic conjunct: "क्या" became
+/// ["क", "या"] and "प्रधानमंत्री" three fragments. Query terms, BM25 tokens
+/// and citation checks all tokenized Hindi that way. Dandas (। ॥) remain
+/// separators; ZWJ/ZWNJ, which shape conjuncts, stay inside the word.
+#[inline]
+pub fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric()
+        || (('\u{0900}'..='\u{0DFF}').contains(&c) && !matches!(c, '\u{0964}' | '\u{0965}'))
+        || matches!(c, '\u{200C}' | '\u{200D}')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indic_conjuncts_stay_whole_words() {
+        let split = |s: &str| -> Vec<String> {
+            s.split(|c: char| !is_word_char(c)).filter(|t| !t.is_empty()).map(str::to_string).collect()
+        };
+        assert_eq!(split("क्या है"), vec!["क्या", "है"]);
+        assert_eq!(split("प्रधानमंत्री।"), vec!["प्रधानमंत्री"]);
+        assert_eq!(split("हिन्दी, தமிழ்"), vec!["हिन्दी", "தமிழ்"]);
+        assert_eq!(split("rust-lang 2.0"), vec!["rust", "lang", "2", "0"]);
+    }
 
     #[test]
     fn truncate_chars_never_panics_on_devanagari() {

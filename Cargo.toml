@@ -1,8 +1,8 @@
 [package]
 name = "searchwala"
-version = "8.0.0"
+version = "8.1.0"
 edition = "2021"
-description = "High-performance meta-search engine aggregating 90+ search engines with stealth WAF bypass, BM25 ranking, 5-tier content extraction, and optional BYOK LLM synthesis — all in pure Rust"
+description = "Meta-search engine in Rust: cross-engine consensus ranking, trafilatura + Readability extraction, scholarly sources, mode-specific synthesis (fast/auto/deep/study/academic) with optional BYOK LLM"
 authors = ["Sandeep"]
 license = "Apache-2.0"
 

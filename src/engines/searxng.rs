@@ -147,6 +147,7 @@ impl super::SearchEngine for SearxNG {
                     .as_deref()
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|d| d.with_timezone(&chrono::Utc)),
+                full_text: None,
             })
             .collect();
 

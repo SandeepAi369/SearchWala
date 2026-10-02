@@ -31,14 +31,15 @@ struct Args {
     baseline: Option<String>,
     save: Option<String>,
     focus: String,
-    max_results: usize,
+    /// None = let the mode decide (the realistic comparison).
+    max_results: Option<usize>,
     json: bool,
 }
 
 fn parse_args() -> Args {
     let mut a = Args {
         focus: "auto".to_string(),
-        max_results: 40,
+        max_results: None,
         ..Default::default()
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -64,7 +65,7 @@ fn parse_args() -> Args {
                 i += 2;
             }
             "--max-results" => {
-                a.max_results = argv.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(40);
+                a.max_results = argv.get(i + 1).and_then(|v| v.parse().ok());
                 i += 2;
             }
             "--json" => {
@@ -108,7 +109,7 @@ async fn main() {
 
     let total = args.limit.unwrap_or(golden.queries.len()).min(golden.queries.len());
     eprintln!(
-        "Evaluating {total} of {} golden queries (focus={}, max_results={})",
+        "Evaluating {total} of {} golden queries (focus={}, max_results={:?})",
         golden.queries.len(),
         args.focus,
         args.max_results
@@ -124,7 +125,7 @@ async fn main() {
         let t0 = Instant::now();
         let resp = searchwala::search::execute_search(
             &gq.query,
-            Some(args.max_results),
+            args.max_results,
             Some(args.focus.clone()),
             None, // no LLM — we are measuring RETRIEVAL and RANKING
             None,

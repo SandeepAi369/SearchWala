@@ -49,7 +49,7 @@ impl super::SearchEngine for DuckDuckGo {
         let mut seen_urls: HashSet<String> = HashSet::new();
         let mut rank_base = 0usize;
 
-        for page in 0..PAGES {
+        for page in 0..super::page_budget(PAGES) {
             let url = format!(
                 "https://html.duckduckgo.com/html/?q={}&s={}",
                 urlencoding::encode(query),
@@ -150,6 +150,7 @@ pub fn parse_ddg_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
             engine: "duckduckgo".to_string(),
             rank_position: rank_base + results.len() + 1,
             published: None,
+            full_text: None,
         });
     }
 

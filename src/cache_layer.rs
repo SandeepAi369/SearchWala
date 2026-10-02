@@ -202,6 +202,7 @@ mod tests {
             engine: "test".into(),
             rank_position: 1,
             published: None,
+            full_text: None,
         }
     }
 

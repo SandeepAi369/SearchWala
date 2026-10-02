@@ -16,13 +16,14 @@ pub mod host_gate;
 pub mod eval;
 pub mod extractor;
 pub mod llm;
+pub mod modes;
 pub mod models;
 pub mod query_intel;
 pub mod ranking;
 pub mod search;
 pub mod ssrf;
+pub mod synthesis;
 pub mod url_utils;
-pub mod stream;
 #[cfg(test)]
 pub mod testalloc;
 pub mod proxy_pool;

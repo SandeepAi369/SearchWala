@@ -116,7 +116,7 @@ impl super::SearchEngine for GenericEngine {
         // Global, 1-based rank across all pages (P0-7).
         let mut rank_base = 0usize;
 
-        for page_idx in 0..self.spec.effective_pages() {
+        for page_idx in 0..super::page_budget(self.spec.effective_pages()) {
             let url = self.spec.url_for_page(&encoded, page_idx);
             super::health::record_attempt(&self.name);
 
@@ -247,6 +247,7 @@ pub fn parse_generic_html(
                 engine: engine_name.to_string(),
                 rank_position: rank_base + batch.len() + 1,
                 published: None,
+                full_text: None,
             });
 
             if batch.len() >= 40 {

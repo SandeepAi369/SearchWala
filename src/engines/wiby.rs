@@ -55,6 +55,7 @@ impl super::SearchEngine for Wiby {
                 engine: "wiby".to_string(),
                 rank_position: out.len() + 1,
                 published: None,
+                full_text: None,
             });
         }
 

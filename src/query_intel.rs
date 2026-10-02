@@ -313,7 +313,7 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
 
 /// Tokenize on non-alphanumerics, for word-boundary matching.
 fn word_tokens(q: &str) -> Vec<&str> {
-    q.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).collect()
+    q.split(|c: char| !crate::util::is_word_char(c)).filter(|t| !t.is_empty()).collect()
 }
 
 fn detect_temporal(q_lower: &str, intent: &QueryIntent) -> (bool, Option<String>) {
@@ -405,7 +405,7 @@ fn extract_entities(query: &str) -> Vec<String> {
     let mut current_entity = Vec::new();
 
     for word in query.split_whitespace() {
-        let clean = word.trim_matches(|c: char| !c.is_alphanumeric());
+        let clean = word.trim_matches(|c: char| !crate::util::is_word_char(c));
         if clean.is_empty() {
             continue;
         }
@@ -502,7 +502,7 @@ pub fn decompose_query(query: &str, intel: &QueryIntelligence) -> Vec<String> {
     // Each became a full engine dispatch. With 35 engines x 5 variations x 2-3
     // pages that is 350-525 HTTP requests per search from one IP inside a 6s
     // deadline: it could not complete AND it was the fastest route to the
-    // rate limits the audit measured. Worse, `ranking::cross_query_fusion` —
+    // rate limits the audit measured. Worse, `ranking::cross_query_fusion` (now `cross_query_scores`) —
     // which exists specifically to weight the original query 2x — was DEAD
     // CODE, so results from "what are the implications of" carried the same
     // RRF weight as the real query.

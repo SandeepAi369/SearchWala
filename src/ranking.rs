@@ -224,6 +224,38 @@ pub fn rank_top_chunks_with_rrf(
     rank_top_chunks_with_signals(query, sources, top_k, rrf_scores, None)
 }
 
+/// Per-mode ranking knobs (v8.1). Defaults reproduce the pre-mode behaviour.
+#[derive(Debug, Clone, Copy)]
+pub struct RankOptions {
+    pub max_chunks_per_url: usize,
+    /// Apply recency decay (still gated on the query being time-sensitive).
+    pub freshness: bool,
+    pub mode: crate::modes::Mode,
+    pub domain: crate::modes::Domain,
+}
+
+impl Default for RankOptions {
+    fn default() -> Self {
+        Self {
+            max_chunks_per_url: MAX_CHUNKS_PER_URL_IN_TOP_K,
+            freshness: true,
+            mode: crate::modes::Mode::Auto,
+            domain: crate::modes::Domain::General,
+        }
+    }
+}
+
+impl RankOptions {
+    pub fn from_profile(p: &crate::modes::ModeProfile) -> Self {
+        Self {
+            max_chunks_per_url: p.max_chunks_per_url.max(1),
+            freshness: p.freshness,
+            mode: p.mode,
+            domain: p.domain,
+        }
+    }
+}
+
 /// Full ranking with optional query-intelligence signals (freshness).
 pub fn rank_top_chunks_with_signals(
     query: &str,
@@ -231,6 +263,18 @@ pub fn rank_top_chunks_with_signals(
     top_k: usize,
     rrf_scores: Option<&HashMap<String, f64>>,
     intel: Option<&crate::query_intel::QueryIntelligence>,
+) -> Vec<SourceResult> {
+    rank_with_options(query, sources, top_k, rrf_scores, intel, &RankOptions::default())
+}
+
+/// Ranking with explicit per-mode options.
+pub fn rank_with_options(
+    query: &str,
+    sources: &[SourceResult],
+    top_k: usize,
+    rrf_scores: Option<&HashMap<String, f64>>,
+    intel: Option<&crate::query_intel::QueryIntelligence>,
+    opts: &RankOptions,
 ) -> Vec<SourceResult> {
     if sources.is_empty() || top_k == 0 {
         return Vec::new();
@@ -376,8 +420,15 @@ pub fn rank_top_chunks_with_signals(
         // and canonical docs now actually outrank random blogspam.
         score *= crate::llm::trust_score(&candidates[idx].url) as f64;
 
+        // ── Mode / domain source preference (v8.1) ──
+        // Study prefers educational sources, Academic scholarly ones, and a
+        // domain prefers its authorities (health: WHO/NIH/NHS, ...).
+        score *= crate::modes::source_boost(&candidates[idx].url, opts.mode, opts.domain);
+
         // ── Freshness prior (P2-2) ──
-        if let Some(it) = intel {
+        // Off for evergreen modes (Study, Academic) even on dated queries:
+        // recency bias there demotes the canonical explanation.
+        if let (true, Some(it)) = (opts.freshness, intel) {
             score *= freshness_multiplier(
                 candidates[idx].published,
                 it.is_time_sensitive,
@@ -407,7 +458,7 @@ pub fn rank_top_chunks_with_signals(
     // This both caps per-source monoculture AND removes near-duplicate chunks
     // across different URLs (which the per-URL cap misses).
     // ==========================================================================
-    let selected = mmr_rerank(&candidates, &scored, top_k, &tokenized_docs);
+    let selected = mmr_rerank(&candidates, &scored, top_k, &tokenized_docs, opts.max_chunks_per_url.max(1));
 
     selected
         .into_iter()
@@ -501,6 +552,7 @@ fn mmr_rerank(
     scored: &[(usize, f64)],
     top_k: usize,
     tokenized: &[Vec<String>],
+    max_per_url: usize,
 ) -> Vec<usize> {
     if scored.is_empty() || top_k == 0 {
         return Vec::new();
@@ -509,7 +561,10 @@ fn mmr_rerank(
     let max_score = scored.iter().map(|(_, s)| *s).fold(0.0_f64, f64::max).max(1e-9);
 
     // ── Candidate window ──
-    let window = (top_k.saturating_mul(MMR_WINDOW_FACTOR)).clamp(top_k, scored.len());
+    // `min`, not `clamp(top_k, len)`: the v8.0 clamp PANICKED ("min > max")
+    // whenever a search produced fewer chunks than top_k — found by Reddit
+    // mode returning 14 chunks against a top_k of 25.
+    let window = top_k.saturating_mul(MMR_WINDOW_FACTOR).min(scored.len());
 
     // Per-candidate state, built once for the window only.
     struct Cand {
@@ -546,7 +601,7 @@ fn mmr_rerank(
                 continue;
             }
             // Hard per-URL cap.
-            if url_counts.get(&c.url_key).copied().unwrap_or(0) >= MAX_CHUNKS_PER_URL_IN_TOP_K {
+            if url_counts.get(&c.url_key).copied().unwrap_or(0) >= max_per_url {
                 continue;
             }
             any_eligible = true;
@@ -803,7 +858,7 @@ fn apply_chunk_overlap(chunks: &mut Vec<String>) {
 
 /// Tokenize with stopword removal — used for BM25+ scoring.
 fn tokenize_filtered(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric())
+    text.split(|c: char| !crate::util::is_word_char(c))
         .filter_map(|raw| {
             let t = raw.trim().to_lowercase();
             if t.len() < 2 {
@@ -816,6 +871,11 @@ fn tokenize_filtered(text: &str) -> Vec<String> {
             Some(t)
         })
         .collect()
+}
+
+/// Content terms of a query (lowercased, stopwords removed, de-duplicated).
+pub(crate) fn query_terms(text: &str) -> Vec<String> {
+    unique_tokens_filtered(text)
 }
 
 /// Unique tokens with stopword removal — used for query terms.
@@ -841,6 +901,8 @@ fn unique_tokens_filtered(text: &str) -> Vec<String> {
 
 
 /// Fuse results from several sub-queries, weighting the original query higher.
+/// Returns the fused score per `canonical_key`, the multi-query counterpart of
+/// [`compute_rrf_scores`].
 ///
 /// ═══════════════════════════════════════════════════════════════════════════
 /// v8.0: this function existed in v7.0 and was DEAD CODE. `search.rs` did a
@@ -849,20 +911,25 @@ fn unique_tokens_filtered(text: &str) -> Vec<String> {
 /// like "what are the implications of") carried exactly the same RRF weight as
 /// one surfaced by the user's actual query. It is now wired in, and it reuses
 /// the engine-FAMILY collapse so the two fusion layers cannot double-count.
+///
+/// v8.1: it used to return ONE representative result per URL, carrying one
+/// engine name. The caller then re-ran RRF over those representatives, so in
+/// every multi-query mode (Auto standard/heavy, Deep, Study, Academic) each
+/// page looked like it came from a single engine: `found_by_families` was 1
+/// for all of them and the consensus that fusion had measured was thrown
+/// away. It now returns scores only; the caller keeps the raw results, so
+/// engine and family lists stay accurate.
 /// ═══════════════════════════════════════════════════════════════════════════
-pub fn cross_query_fusion(
+pub fn cross_query_scores(
     query_results: &[(String, Vec<RawSearchResult>)],
     original_query: &str,
-) -> Vec<RawSearchResult> {
+) -> HashMap<String, f64> {
     /// The original query counts for more than any derived sub-query.
     const ORIGINAL_WEIGHT: f64 = 2.0;
     const SUB_WEIGHT: f64 = 1.0;
 
     let mut scores: HashMap<String, f64> = HashMap::new();
-    let mut repr: HashMap<String, RawSearchResult> = HashMap::new();
-    // (page, family) -> best rank, per sub-query, so one index cannot agree
-    // with itself across its own aliases.
-    let mut sub_query_count: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut sub_query_count: HashMap<String, HashSet<&str>> = HashMap::new();
 
     for (sub_query, results) in query_results {
         let weight = if sub_query.eq_ignore_ascii_case(original_query) {
@@ -870,34 +937,11 @@ pub fn cross_query_fusion(
         } else {
             SUB_WEIGHT
         };
-
-        let mut best: HashMap<(String, &'static str), usize> = HashMap::new();
-        for r in results {
-            let key = crate::url_utils::canonical_key(&r.url);
-            let fam = engines::engine_family(&r.engine);
-            best.entry((key.clone(), fam))
-                .and_modify(|cur| {
-                    if r.rank_position < *cur {
-                        *cur = r.rank_position;
-                    }
-                })
-                .or_insert(r.rank_position.max(1));
-
-            // Keep the richest representative for this URL.
-            repr.entry(key.clone())
-                .and_modify(|e| {
-                    if e.snippet.is_empty() && !r.snippet.is_empty() {
-                        e.snippet = r.snippet.clone();
-                    }
-                })
-                .or_insert_with(|| r.clone());
-
-            sub_query_count.entry(key).or_default().insert(sub_query.clone());
-        }
-
-        for ((key, fam), rank) in best {
-            let fw = engines::family_weight(fam) as f64;
-            *scores.entry(key).or_insert(0.0) += weight * fw / (RRF_K + rank as f64);
+        // (page, family) -> best rank, per sub-query, so one index cannot agree
+        // with itself across its own aliases.
+        for (key, score) in compute_rrf_scores(results) {
+            *scores.entry(key.clone()).or_insert(0.0) += weight * score;
+            sub_query_count.entry(key).or_default().insert(sub_query.as_str());
         }
     }
 
@@ -911,22 +955,7 @@ pub fn cross_query_fusion(
             }
         }
     }
-
-    let mut fused: Vec<(String, f64)> = scores.into_iter().collect();
-    fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Rewrite rank_position to the FUSED order so the downstream RRF pass sees
-    // a coherent ranking rather than per-sub-query ranks.
-    fused
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, (key, _))| {
-            repr.remove(&key).map(|mut r| {
-                r.rank_position = i + 1;
-                r
-            })
-        })
-        .collect()
+    scores
 }
 
 #[cfg(test)]
@@ -942,6 +971,7 @@ mod tests {
             engine: engine.to_string(),
             rank_position: rank,
             published: None,
+            full_text: None,
         }
     }
 
@@ -1205,6 +1235,12 @@ mod tests {
 
     // ── P1-9: cross-query fusion (was dead code in v7.0) ──
 
+    fn fused_order(groups: &[(String, Vec<RawSearchResult>)], orig: &str) -> Vec<String> {
+        let mut v: Vec<(String, f64)> = cross_query_scores(groups, orig).into_iter().collect();
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        v.into_iter().map(|(k, _)| k).collect()
+    }
+
     #[test]
     fn original_query_outweighs_sub_queries() {
         let orig = "cricket world cup 2027";
@@ -1212,13 +1248,9 @@ mod tests {
             (orig.to_string(), vec![hit("https://a.test/from-original", "bing", 1)]),
             ("cricket".to_string(), vec![hit("https://b.test/from-sub", "bing", 1)]),
         ];
-        let fused = cross_query_fusion(&groups, orig);
-        assert_eq!(fused.len(), 2);
-        assert!(
-            fused[0].url.contains("from-original"),
-            "the original query's hit must rank first, got {:?}",
-            fused.iter().map(|r| &r.url).collect::<Vec<_>>()
-        );
+        let order = fused_order(&groups, orig);
+        assert_eq!(order.len(), 2);
+        assert!(order[0].contains("from-original"), "the original query's hit must rank first, got {order:?}");
     }
 
     #[test]
@@ -1231,26 +1263,43 @@ mod tests {
             ("postgres".to_string(), vec![hit(shared, "brave", 5)]),
             ("mysql".to_string(), vec![hit(shared, "yandex", 5)]),
         ];
-        let fused = cross_query_fusion(&groups, orig);
-        let pos_shared = fused.iter().position(|r| r.url == shared).unwrap();
-        let pos_one = fused.iter().position(|r| r.url == only_one).unwrap();
+        let s = cross_query_scores(&groups, orig);
+        let k = |u: &str| crate::url_utils::canonical_key(u);
         assert!(
-            pos_shared < pos_one,
+            s[&k(shared)] > s[&k(only_one)],
             "a page confirmed by 3 sub-queries and 3 families should beat a \
              single-query rank-1 hit"
         );
     }
 
     #[test]
-    fn fusion_rewrites_rank_to_the_fused_order() {
-        let orig = "q";
+    fn fusion_keeps_cross_engine_consensus_within_a_sub_query() {
+        // Regression (v8.1): fusion collapsed each URL to one representative
+        // engine, so with sub-queries every page reported one family and
+        // two-engine agreement on the original query counted for nothing.
+        let orig = "capital of France";
+        let agreed = "https://en.wikipedia.org/wiki/Paris";
+        let single = "https://odd.test/page";
         let groups = vec![
-            (orig.to_string(), vec![hit("https://a.test/1", "bing", 7), hit("https://b.test/2", "bing", 9)]),
+            (
+                orig.to_string(),
+                vec![hit(single, "bing", 1), hit(agreed, "wikipedia", 2), hit(agreed, "duckduckgo", 2)],
+            ),
+            ("capital of France history".to_string(), vec![]),
         ];
-        let fused = cross_query_fusion(&groups, orig);
-        // Downstream RRF needs a coherent ranking, not per-sub-query ranks.
-        assert_eq!(fused[0].rank_position, 1);
-        assert_eq!(fused[1].rank_position, 2);
+        let order = fused_order(&groups, orig);
+        assert_eq!(order[0], crate::url_utils::canonical_key(agreed), "{order:?}");
+    }
+
+    #[test]
+    fn fusion_matches_plain_rrf_for_a_single_query() {
+        let orig = "q";
+        let results = vec![hit("https://a.test/1", "bing", 1), hit("https://a.test/1", "brave", 3), hit("https://b.test/2", "bing", 2)];
+        let fused = cross_query_scores(&[(orig.to_string(), results.clone())], orig);
+        let plain = compute_rrf_scores(&results);
+        for (k, v) in &plain {
+            assert!((fused[k] - 2.0 * v).abs() < 1e-12, "only the original-query weight should differ");
+        }
     }
 
     #[test]
@@ -1264,14 +1313,37 @@ mod tests {
                 hit("https://m.example.com/story?utm_source=x", "bing_de", 1),
             ],
         )];
-        let fused = cross_query_fusion(&groups, orig);
-        assert_eq!(fused.len(), 1, "one page, three spellings: {fused:?}");
+        let s = cross_query_scores(&groups, orig);
+        assert_eq!(s.len(), 1, "one page, three spellings: {s:?}");
     }
 
     #[test]
     fn fusion_handles_empty_groups() {
-        assert!(cross_query_fusion(&[], "q").is_empty());
-        assert!(cross_query_fusion(&[("q".into(), vec![])], "q").is_empty());
+        assert!(cross_query_scores(&[], "q").is_empty());
+        assert!(cross_query_scores(&[("q".into(), vec![])], "q").is_empty());
+    }
+
+    #[test]
+    fn ranking_fewer_chunks_than_top_k_does_not_panic() {
+        // Regression: MMR's window used `.clamp(top_k, len)`, which panics when
+        // len < top_k. Any thin-result search (Reddit: 14 chunks, top_k 25)
+        // crashed the request.
+        let sources: Vec<SourceResult> = (0..3)
+            .map(|i| SourceResult {
+                url: format!("https://t{i}.test/a"),
+                title: format!("Title {i}"),
+                extracted_text: format!("Short source {i} about rust ownership and borrowing rules."),
+                char_count: 60,
+                engine: "test".into(),
+                confidence: 1.0,
+                ..Default::default()
+            })
+            .collect();
+        for top_k in [1, 3, 25, 500] {
+            let out = rank_top_chunks_with_signals("rust ownership", &sources, top_k, None, None);
+            assert!(out.len() <= top_k.min(3).max(1) || out.len() <= 3);
+        }
+        assert!(rank_top_chunks_with_signals("rust", &[], 25, None, None).is_empty());
     }
 
     #[test]

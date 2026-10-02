@@ -25,9 +25,55 @@ use crate::models::RawSearchResult;
 
 pub struct Wikipedia;
 
-fn languages() -> Vec<String> {
-    parse_languages(&std::env::var("WIKIPEDIA_LANGS").unwrap_or_else(|_| "en".to_string()))
+/// Editions to search. An explicit WIKIPEDIA_LANGS wins; otherwise the
+/// query's script picks the edition, with English as a fallback.
+///
+/// Without this a Hindi query went to en.wikipedia, which full-text matched
+/// stray Devanagari in unrelated articles: "भारत की राजधानी" (capital of
+/// India) returned "Bayana" and "Vishnu Sharma" at ranks 2 and 4 in Auto.
+fn languages(query: &str) -> Vec<String> {
+    match std::env::var("WIKIPEDIA_LANGS") {
+        Ok(raw) if !raw.trim().is_empty() => parse_languages(&raw),
+        _ => match script_language(query) {
+            Some(lang) => vec![lang.to_string(), "en".to_string()],
+            None => vec!["en".to_string()],
+        },
+    }
 }
+
+/// The Wikipedia edition for the dominant non-Latin script in `query`.
+/// Devanagari maps to Hindi, the most-read Devanagari edition.
+fn script_language(query: &str) -> Option<&'static str> {
+    let mut counts: std::collections::HashMap<&'static str, usize> = std::collections::HashMap::new();
+    for c in query.chars() {
+        let lang = match c as u32 {
+            0x0900..=0x097F => "hi",
+            0x0980..=0x09FF => "bn",
+            0x0A00..=0x0A7F => "pa",
+            0x0A80..=0x0AFF => "gu",
+            0x0B00..=0x0B7F => "or",
+            0x0B80..=0x0BFF => "ta",
+            0x0C00..=0x0C7F => "te",
+            0x0C80..=0x0CFF => "kn",
+            0x0D00..=0x0D7F => "ml",
+            0x0600..=0x06FF => "ar",
+            0x0400..=0x04FF => "ru",
+            0x3040..=0x30FF => "ja",
+            0xAC00..=0xD7AF => "ko",
+            0x4E00..=0x9FFF => "zh",
+            _ => continue,
+        };
+        *counts.entry(lang).or_default() += 1;
+    }
+    // Kana anywhere means Japanese, even though most of the text is Han.
+    if counts.contains_key("ja") {
+        return Some("ja");
+    }
+    counts.into_iter().max_by_key(|(_, n)| *n).map(|(l, _)| l)
+}
+
+/// Enough native-edition hits that the English fallback adds only noise.
+const NATIVE_HITS_ENOUGH: usize = 3;
 
 /// Testable core — avoids process-global env mutation in tests.
 fn parse_languages(raw: &str) -> Vec<String> {
@@ -67,7 +113,12 @@ impl super::SearchEngine for Wikipedia {
         let encoded = urlencoding::encode(query);
         let mut out = Vec::new();
 
-        for lang in languages() {
+        let langs = languages(query);
+        let auto_fallback = langs.len() == 2 && langs[1] == "en" && std::env::var("WIKIPEDIA_LANGS").is_err();
+        for (i, lang) in langs.into_iter().enumerate() {
+            if auto_fallback && i == 1 && out.len() >= NATIVE_HITS_ENOUGH {
+                break;
+            }
             let url = format!(
                 "https://{lang}.wikipedia.org/w/api.php?action=query&list=search\
                  &srsearch={encoded}&srlimit=20&srprop=snippet|timestamp&format=json&formatversion=2"
@@ -124,6 +175,7 @@ impl super::SearchEngine for Wikipedia {
                     engine: "wikipedia".to_string(),
                     rank_position: out.len() + 1,
                     published,
+                    full_text: None,
                 });
             }
             super::health::record_parsed("wikipedia", out.len() - before);
@@ -165,6 +217,18 @@ mod tests {
         assert_eq!(parse_languages("en"), vec!["en".to_string()]);
         assert_eq!(parse_languages(""), vec!["en".to_string()]);
         assert_eq!(parse_languages(",,,"), vec!["en".to_string()]);
+    }
+
+    #[test]
+    fn script_picks_the_wikipedia_edition() {
+        assert_eq!(script_language("भारत की राजधानी"), Some("hi"));
+        assert_eq!(script_language("தமிழ்நாடு"), Some("ta"));
+        assert_eq!(script_language("東京の天気"), Some("ja"));
+        assert_eq!(script_language("北京天气"), Some("zh"));
+        assert_eq!(script_language("Москва"), Some("ru"));
+        assert_eq!(script_language("capital of France"), None);
+        // Mixed: the dominant script wins.
+        assert_eq!(script_language("iPhone 17 की कीमत"), Some("hi"));
     }
 
     #[test]

@@ -23,10 +23,7 @@ use std::collections::HashSet;
 use std::fmt::Write;
 use std::time::Duration;
 
-use axum::response::sse::Event;
-use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
-use tokio::sync::mpsc;
 
 use crate::models::{LlmConfig, SourceResult};
 use crate::query_intel::{QueryIntelligence, QueryIntent};
@@ -36,7 +33,7 @@ use crate::query_intel::{QueryIntelligence, QueryIntent};
 /// v7.0's prompts were hardcoded English, so a Hindi query about Hindi sources
 /// produced an English answer. For a tool whose best-performing extraction
 /// case is Hindi news, that is a product defect, not a nicety.
-const LANGUAGE_RULE: &str = " LANGUAGE: Answer in the SAME language the user      asked in. If the question is in Hindi, answer in Hindi; if in Spanish,      answer in Spanish. When the sources are in a different language from the      question, translate the facts into the question's language — never switch      the answer's language to match the sources.";
+pub(crate) const LANGUAGE_RULE: &str = " LANGUAGE: Answer in the SAME language the user      asked in. If the question is in Hindi, answer in Hindi; if in Spanish,      answer in Spanish. When the sources are in a different language from the      question, translate the facts into the question's language — never switch      the answer's language to match the sources.";
 
 /// How much context the model may receive.
 ///
@@ -48,10 +45,64 @@ const LANGUAGE_RULE: &str = " LANGUAGE: Answer in the SAME language the user    
 /// Defaults are deliberately conservative — overshooting costs the user money —
 /// and `CONTEXT_MAX_TOKENS` overrides everything.
 pub struct ContextBudget {
+    /// The model's whole window: prompt + generated output.
     pub max_tokens: usize,
 }
 
+/// Tokens reserved for the system prompt, instructions and per-source headers.
+const SCAFFOLD_TOKENS: usize = 900;
+
+/// Default window assumed for a LOCAL model server.
+///
+/// Measured 2026-10-02 against Ollama 0.14.2 (qwen2.5-coder 7B, whose own
+/// limit is 32,768): a 15k-token prompt sent to the OpenAI-compatible endpoint
+/// came back with `prompt_tokens: 4096`. Ollama silently truncates to its
+/// runtime `num_ctx`, dropping the START of the prompt — which is where the
+/// system prompt and every instruction live. LM Studio and llama.cpp default
+/// to similar windows. SearchWala previously assumed 24k tokens for any
+/// unknown model, so local users lost ~80% of each prompt without any error.
+const LOCAL_SERVER_DEFAULT_TOKENS: usize = 4_096;
+
+fn is_local_llm(cfg: &LlmConfig) -> bool {
+    let provider = cfg.provider.to_lowercase();
+    if matches!(provider.as_str(), "ollama" | "lmstudio" | "lm_studio" | "llamacpp" | "llama.cpp") {
+        return true;
+    }
+    let Some(base) = cfg.base_url.as_deref() else { return false };
+    let Ok(u) = url::Url::parse(base.trim()) else { return false };
+    match u.host() {
+        Some(url::Host::Domain(d)) => d == "localhost" || d.ends_with(".local") || d.ends_with(".localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
 impl ContextBudget {
+    /// Budget for a configured provider. Prefer this over `for_model`.
+    pub fn for_config(cfg: &LlmConfig) -> Self {
+        let override_tokens = std::env::var("CONTEXT_MAX_TOKENS").ok().and_then(|v| v.parse().ok());
+        Self::for_config_with_override(cfg, override_tokens, std::env::var("OLLAMA_CONTEXT_LENGTH").ok().and_then(|v| v.parse().ok()))
+    }
+
+    /// Testable core.
+    pub fn for_config_with_override(
+        cfg: &LlmConfig,
+        override_tokens: Option<usize>,
+        ollama_ctx: Option<usize>,
+    ) -> Self {
+        if let Some(v) = override_tokens {
+            return Self { max_tokens: v.clamp(2_000, 900_000) };
+        }
+        if is_local_llm(cfg) {
+            // Users who raise Ollama's window usually export
+            // OLLAMA_CONTEXT_LENGTH in the same shell — honour it.
+            let t = ollama_ctx.unwrap_or(LOCAL_SERVER_DEFAULT_TOKENS);
+            return Self { max_tokens: t.clamp(2_000, 900_000) };
+        }
+        Self::for_model_with_override(&cfg.model, None)
+    }
+
     pub fn for_model(model: &str) -> Self {
         Self::for_model_with_override(
             model,
@@ -76,25 +127,57 @@ impl ContextBudget {
         } else if m.contains("haiku") || m.contains("mini") || m.contains("flash") {
             60_000
         } else {
-            // Unknown model: stay close to the old behaviour rather than risk
-            // a context-length error on someone's self-hosted 8k model.
+            // Unknown hosted model: conservative.
             24_000
         };
         Self { max_tokens }
     }
 
-    /// Characters of source text we may pack, leaving headroom for the prompt
-    /// scaffolding and the answer itself.
-    pub fn max_context_chars(&self) -> usize {
-        // ~3.3 chars/token is a safe average across Latin and Indic scripts
-        // (Devanagari is far denser per token than English).
-        let usable = (self.max_tokens as f64 * 0.70) as usize;
-        usable.saturating_mul(33) / 10
+    /// Largest output worth requesting: an eighth of the window, never more
+    /// than a third of it. The old fixed 2,048-token floor, on a 4,096-token
+    /// local window, left almost nothing for the sources.
+    pub fn max_output_tokens(&self) -> usize {
+        let floor = if self.max_tokens >= 16_000 { 2_048 } else { 256 };
+        (self.max_tokens / 8).clamp(floor, 32_000).min(self.max_tokens / 3)
     }
 
-    pub fn max_output_tokens(&self) -> usize {
-        (self.max_tokens / 8).clamp(2_048, 32_000)
+    /// Cap a mode's requested output so it fits the window.
+    pub fn fit_output(&self, requested: usize) -> usize {
+        requested.min(self.max_tokens / 3).max(128)
     }
+
+    /// Tokens left for source text once `output_tokens` and the prompt
+    /// scaffolding are reserved. Prompt and output share ONE window.
+    pub fn context_tokens(&self, output_tokens: usize) -> usize {
+        self.max_tokens
+            .saturating_sub(output_tokens + SCAFFOLD_TOKENS)
+            .max(400)
+    }
+
+    /// Characters of source text at an English-like density, with the default
+    /// output reserved. Prefer `chars_for_tokens` with the real sources.
+    pub fn max_context_chars(&self) -> usize {
+        self.context_tokens(self.max_output_tokens()) * 4
+    }
+}
+
+/// How many characters of THESE sources fit in `tokens`.
+///
+/// A fixed chars-per-token ratio is wrong across scripts: English runs ~4
+/// characters per token, Devanagari closer to 1-1.5. The previous code used
+/// 3.3 for everything (its comment claimed this was "safe" for Indic scripts,
+/// which has the direction backwards), so a Hindi context overshot its token
+/// budget by roughly 2-3x. This measures the density of the actual text.
+pub fn chars_for_tokens(tokens: usize, sources: &[SourceResult]) -> usize {
+    let mut chars = 0usize;
+    let mut est = 0usize;
+    for s in sources.iter().take(40) {
+        let sample = crate::util::truncate_chars(&s.extracted_text, 2_000);
+        chars += crate::util::char_len(sample);
+        est += est_tokens(sample);
+    }
+    let per_token = if est == 0 { 4.0 } else { (chars as f64 / est as f64).clamp(0.8, 4.5) };
+    (tokens as f64 * per_token) as usize
 }
 
 /// Rough token estimate that accounts for script density.
@@ -106,16 +189,10 @@ pub fn est_tokens(s: &str) -> usize {
     units / 4 + 1
 }
 
-const MAX_CONTEXT_CHUNKS_LITE: usize = 30;    // v5.2.0: increased from 25 for richer context
-const BATCH_SIZE_RESEARCH: usize = 50;
 // MAX_CONTEXT_CHARS_LITE (16_000) REMOVED in v8.0 — superseded by
 // ContextBudget::for_model, which scales with the model instead of discarding
 // >97% of the evidence the pipeline gathered.
-const MAX_CONTEXT_CHARS_RESEARCH_BATCH: usize = 12_000;
-const DEFAULT_LLM_TIMEOUT_MS: u64 = 45_000;
-const RESEARCH_BATCH_TIMEOUT_MS: u64 = 60_000;
-const FIRST_BATCH_WAIT_MS: u64 = 60_000;
-const PIPELINE_ACCUMULATION_MS: u64 = 5_000;
+pub(crate) const DEFAULT_LLM_TIMEOUT_MS: u64 = 45_000;
 
 #[derive(Debug, Default)]
 pub struct LlmExecutionResult {
@@ -436,7 +513,9 @@ fn build_request_body(
                 "model": model,
                 "messages": msgs,
                 // v7.0 hardcoded 4096, which truncated every research report.
-                "max_tokens": max_output_tokens.max(8192),
+                // v8.1: was `.max(8192)`, which forced even Fast's two-sentence
+                // answers onto an 8K budget. Modes now set the length deliberately.
+                "max_tokens": max_output_tokens.max(256),
                 "temperature": 0.2,
             });
 
@@ -621,6 +700,15 @@ pub(crate) async fn call_llm_retrying(
     Err(last)
 }
 
+/// Output-token budget for one call: the mode's explicit value when set
+/// (Fast answers are deliberately short), else the model-derived default.
+fn output_tokens_for(config: &LlmConfig) -> usize {
+    config
+        .max_output_tokens
+        .map(|n| n.clamp(128, 64_000))
+        .unwrap_or_else(|| ContextBudget::for_config(config).max_output_tokens())
+}
+
 /// Make a single non-streaming LLM call. Returns extracted text or error string.
 pub(crate) async fn call_llm(
     config: &LlmConfig,
@@ -629,7 +717,7 @@ pub(crate) async fn call_llm(
     let info = resolve_provider(config);
     let url = build_chat_url(&info, &config.model, false);
     let headers = build_auth_headers(config, &info);
-    let body = build_request_body(messages, &config.model, &info, false, ContextBudget::for_model(&config.model).max_output_tokens());
+    let body = build_request_body(messages, &config.model, &info, false, output_tokens_for(config));
 
     tracing::info!(
         "LLM call: provider={} model={} format={:?} url={}",
@@ -659,6 +747,13 @@ pub(crate) async fn call_llm(
     let json: serde_json::Value = serde_json::from_str(&resp_text)
         .map_err(|e| format!("json_parse_error: {e}"))?;
 
+    if was_truncated(&json) {
+        // Recorded per task so synthesis can tell the user, instead of
+        // returning an answer that silently stops mid-section.
+        let _ = TRUNCATED.try_with(|t| t.set(true));
+        tracing::info!("LLM output hit the max_tokens limit (model={})", config.model);
+    }
+
     extract_response_text(&json, &info.format)
         .ok_or_else(|| {
             // Log raw response structure for debugging (without API keys)
@@ -669,153 +764,29 @@ pub(crate) async fn call_llm(
         })
 }
 
+tokio::task_local! {
+    /// Set when any LLM call in the current scope stopped at its token limit.
+    pub(crate) static TRUNCATED: std::cell::Cell<bool>;
+}
+
+/// Did the provider stop because it ran out of output tokens?
+/// OpenAI-compatible: `finish_reason: "length"`; Anthropic: `stop_reason:
+/// "max_tokens"`; Gemini (OpenAI-compatible endpoint) also reports "length".
+pub fn was_truncated(json: &serde_json::Value) -> bool {
+    let oai = json
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(|f| f.as_str());
+    let anthropic = json.get("stop_reason").and_then(|f| f.as_str());
+    matches!(oai, Some("length") | Some("max_tokens")) || anthropic == Some("max_tokens")
+}
+
 // =============================================================================
 // Core LLM Call — SSE Streaming (replaces genai client.exec_chat_stream)
 // =============================================================================
 
-/// Extract a text chunk from a streaming SSE data line per provider format
-fn extract_stream_chunk(data: &str, format: &ApiFormat) -> Option<String> {
-    if data.trim() == "[DONE]" {
-        return None;
-    }
 
-    let json: serde_json::Value = serde_json::from_str(data).ok()?;
-
-    match format {
-        ApiFormat::OpenAiCompatible => {
-            // choices[0].delta.content
-            json.get("choices")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("delta"))
-                .and_then(|d| d.get("content"))
-                .and_then(|t| t.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        }
-        ApiFormat::Gemini => {
-            // candidates[0].content.parts[0].text
-            json.get("candidates")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("content"))
-                .and_then(|c| c.get("parts"))
-                .and_then(|p| p.get(0))
-                .and_then(|p| p.get("text"))
-                .and_then(|t| t.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        }
-        ApiFormat::Anthropic => {
-            // Anthropic SSE: event type = content_block_delta
-            // delta.text for content_block_delta events
-            let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            if event_type == "content_block_delta" {
-                json.get("delta")
-                    .and_then(|d| d.get("text"))
-                    .and_then(|t| t.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-            } else {
-                None
-            }
-        }
-    }
-}
-
-/// Stream LLM response chunks via SSE, sending each chunk through tx_sse.
-pub(crate) async fn call_llm_stream(
-    config: &LlmConfig,
-    messages: &[ChatMessage],
-    tx_sse: &mpsc::Sender<Result<Event, std::convert::Infallible>>,
-) -> Result<(), String> {
-    let info = resolve_provider(config);
-    let url = build_chat_url(&info, &config.model, true);
-    let headers = build_auth_headers(config, &info);
-    let body = build_request_body(messages, &config.model, &info, true, ContextBudget::for_model(&config.model).max_output_tokens());
-
-    tracing::info!(
-        "LLM stream: provider={} model={} format={:?}",
-        config.provider, config.model, info.format,
-    );
-
-    // Use a longer timeout for streaming — no overall timeout, just connect timeout
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .pool_max_idle_per_host(5)
-        .tcp_nodelay(true)
-        .build()
-        .map_err(|e| format!("client_build_error: {e}"))?;
-
-    let resp = client
-        .post(&url)
-        .headers(headers)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("http_request_failed: {e}"))?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let err_text = resp.text().await.unwrap_or_default();
-        let error_msg = match serde_json::from_str::<serde_json::Value>(&err_text) {
-            Ok(json) => extract_error_message(&json, &info.format),
-            Err(_) => err_text.chars().take(500).collect(),
-        };
-        return Err(format!("http_{}: {}", status.as_u16(), error_msg));
-    }
-
-    // Read the byte stream and parse SSE data lines
-    let mut stream = resp.bytes_stream();
-    let mut buffer = String::new();
-
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = match chunk_result {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
-            Err(e) => {
-                tracing::warn!("Stream read error: {e}");
-                break;
-            }
-        };
-
-        buffer.push_str(&chunk);
-
-        // Process complete SSE lines from buffer
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
-            // v8.0: drain in place. v7.0 did `buffer = buffer[n+1..].to_string()`
-            // per line, which is O(n^2) reallocation across a long stream.
-            buffer.drain(..newline_pos + 1);
-
-            if line.is_empty() {
-                continue;
-            }
-
-            // SSE format: "data: {...}"
-            let data = if let Some(d) = line.strip_prefix("data: ") {
-                d
-            } else if let Some(d) = line.strip_prefix("data:") {
-                d
-            } else {
-                // Skip event: lines, id: lines, etc.
-                continue;
-            };
-
-            let data = data.trim();
-            if data == "[DONE]" {
-                break;
-            }
-
-            if let Some(text) = extract_stream_chunk(data, &info.format) {
-                let json = serde_json::json!({
-                    "type": "llm_chunk",
-                    "text": text,
-                }).to_string();
-                let _ = tx_sse.send(Ok(Event::default().data(json))).await;
-            }
-        }
-    }
-
-    Ok(())
-}
 
 // =============================================================================
 // DIRECT SYNTHESIS — Single-call for lite mode
@@ -825,169 +796,6 @@ pub(crate) async fn call_llm_stream(
 // v5.2.0: INTENT-AWARE SYNTHESIS — Selects optimal prompt per query intent
 // =============================================================================
 
-pub async fn summarize_direct_with_intent(
-    query: &str,
-    llm_config: LlmConfig,
-    sources: &[SourceResult],
-    intel: &QueryIntelligence,
-) -> LlmExecutionResult {
-    if sources.is_empty() {
-        return LlmExecutionResult {
-            llm_answer: None,
-            llm_error: Some("llm_skipped: no scraped content available".to_string()),
-            batches_processed: 0,
-                    ..Default::default()
-        };
-    }
-
-    // v8.0 P1-10: the budget follows the model, not a fixed 16 KB.
-    let budget = ContextBudget::for_model(&llm_config.model);
-    let context = build_ranked_context(sources, budget.max_context_chars());
-    if context.is_empty() {
-        return LlmExecutionResult {
-            llm_answer: None,
-            llm_error: Some("llm_skipped: no usable source text".to_string()),
-            batches_processed: 0,
-                    ..Default::default()
-        };
-    }
-
-    tracing::info!(
-        "LLM intent-aware synthesis: intent={} sources={} cited={} context_chars={} budget={}",
-        intel.intent,
-        sources.len(),
-        context.citation_map.len(),
-        crate::util::char_len(&context.text),
-        budget.max_context_chars(),
-    );
-
-    let timeout_ms = llm_config.timeout_ms.unwrap_or(DEFAULT_LLM_TIMEOUT_MS);
-    let (system_prompt, user_prompt) = build_intent_prompts(query, &context.text, intel);
-
-    let messages = vec![
-        ChatMessage::system(system_prompt),
-        ChatMessage::user(user_prompt),
-    ];
-
-    tracing::info!("LLM calling model={} provider={} intent={}", llm_config.model, llm_config.provider, intel.intent);
-
-    let call_result = if timeout_ms == 0 {
-        call_llm_retrying(&llm_config, &messages).await
-    } else {
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm_retrying(&llm_config, &messages)).await {
-            Ok(result) => result,
-            Err(_) => {
-                return LlmExecutionResult {
-                    llm_answer: None,
-                    llm_error: Some(format!("llm_timeout: exceeded {}ms", timeout_ms)),
-                    batches_processed: 0,
-                    ..Default::default()
-                };
-            }
-        }
-    };
-
-    match call_result {
-        Ok(answer) => {
-            let answer = post_process_answer(&answer, query);
-            // v6.1.0: Citation faithfulness check — flag unsupported citations
-            let checks = verify_citations(&answer, sources, &context.citation_map);
-            let unsupported = checks.iter().filter(|c| !c.supported).count();
-            if unsupported > 0 {
-                tracing::info!("{} unsupported citation(s) in answer", unsupported);
-            }
-            let citation_map = context.citation_map.clone();
-            let citation_checks = checks;
-            if answer.is_empty() {
-                LlmExecutionResult {
-                    llm_answer: None,
-                    llm_error: Some("llm_empty_response".to_string()),
-                    batches_processed: 1,
-                            ..Default::default()
-        }
-            } else if answer_quality_insufficient(&answer) {
-                // v6.1.0: Quality-gated retry — one retry max
-                tracing::info!(
-                    "LLM quality gate failed (len={}, has_citations={}), retrying once",
-                    answer.len(),
-                    answer.contains('[') && answer.contains(']')
-                );
-
-                let retry_result = if timeout_ms == 0 {
-                    call_llm_retrying(&llm_config, &messages).await
-                } else {
-                    match tokio::time::timeout(
-                        Duration::from_millis(timeout_ms),
-                        call_llm(&llm_config, &messages),
-                    ).await {
-                        Ok(r) => r,
-                        Err(_) => {
-                            // Retry timed out — return original answer
-                            return LlmExecutionResult {
-                                llm_answer: Some(answer),
-                                llm_error: None,
-                                batches_processed: 1,
-                                citation_map: citation_map.clone(),
-                                citation_checks: citation_checks.clone(),
-                            };
-                        }
-                    }
-                };
-
-                match retry_result {
-                    Ok(retry_answer) => {
-                        let retry_answer = post_process_answer(&retry_answer, query);
-                        let _ = verify_citations(&retry_answer, sources, &context.citation_map);
-                        // Pick the better answer (longer + has citations)
-                        let final_answer = if retry_answer.len() > answer.len()
-                            || (retry_answer.contains('[') && !answer.contains('['))
-                        {
-                            tracing::info!("LLM retry produced better answer ({} vs {} chars)", retry_answer.len(), answer.len());
-                            retry_answer
-                        } else {
-                            answer
-                        };
-                        LlmExecutionResult {
-                            llm_answer: Some(final_answer),
-                            llm_error: None,
-                            batches_processed: 2,
-                            citation_map: citation_map.clone(),
-                            citation_checks: citation_checks.clone(),
-                        }
-                    }
-                    Err(_) => {
-                        // Retry failed — return original answer
-                        LlmExecutionResult {
-                            llm_answer: Some(answer),
-                            llm_error: None,
-                            batches_processed: 1,
-                            citation_map: citation_map.clone(),
-                            citation_checks: citation_checks.clone(),
-        }
-                    }
-                }
-            } else {
-                tracing::info!("LLM intent-aware synthesis complete: {} chars (intent={})", answer.len(), intel.intent);
-                LlmExecutionResult {
-                    llm_answer: Some(answer),
-                    llm_error: None,
-                    batches_processed: 1,
-                    citation_map: citation_map.clone(),
-                    citation_checks: citation_checks.clone(),
-        }
-            }
-        }
-        Err(err) => {
-            tracing::error!("LLM call failed: {}", err);
-            LlmExecutionResult {
-                llm_answer: None,
-                llm_error: Some(format!("llm_error: {err}")),
-                batches_processed: 0,
-                ..Default::default()
-            }
-        }
-    }
-}
 
 // =============================================================================
 // ITERATIVE DEEP RESEARCH — Multi-batch synthesis for long-form reports
@@ -999,184 +807,6 @@ pub async fn summarize_direct_with_intent(
 //   4. Return final accumulated long-form report
 // =============================================================================
 
-pub async fn summarize_iterative(
-    query: &str,
-    llm_config: LlmConfig,
-    sources: &[SourceResult],
-    temp_db: Option<&crate::cache::TempDb>,
-    session_id: Option<&str>,
-) -> LlmExecutionResult {
-    if sources.is_empty() {
-        return LlmExecutionResult {
-            llm_answer: None,
-            llm_error: Some("llm_skipped: no scraped content available".to_string()),
-            batches_processed: 0,
-                    ..Default::default()
-        };
-    }
-
-    // Split sources into batches of 50
-    let batches: Vec<&[SourceResult]> = sources.chunks(BATCH_SIZE_RESEARCH).collect();
-    let total_batches = batches.len();
-
-    tracing::info!(
-        "LLM iterative research: {} total sources → {} batches of ≤{} each",
-        sources.len(),
-        total_batches,
-        BATCH_SIZE_RESEARCH
-    );
-
-    let timeout_ms = llm_config.timeout_ms.unwrap_or(RESEARCH_BATCH_TIMEOUT_MS);
-
-    let mut accumulated_report = String::new();
-    let mut global_source_offset = 0usize;
-
-    for (batch_idx, batch) in batches.iter().enumerate() {
-        let batch_num = batch_idx + 1;
-
-        tracing::info!(
-            "LLM research batch {}/{}: {} sources (offset {})",
-            batch_num,
-            total_batches,
-            batch.len(),
-            global_source_offset
-        );
-
-        // Update temp DB progress
-        if let (Some(db), Some(sid)) = (temp_db, session_id) {
-            let progress = format!("Batch {}/{}", batch_num, total_batches);
-            db.update_status(sid, &format!("llm_batch_{}", batch_num), &progress).await;
-        }
-
-        // Build context for this batch with global source IDs
-        let context = build_research_batch_context(query, batch, global_source_offset);
-        if context.is_empty() {
-            global_source_offset += batch.len();
-            continue;
-        }
-
-        let (system_prompt, user_prompt) = if batch_idx == 0 {
-            build_research_initial_prompts(query, &context, total_batches)
-        } else {
-            build_research_continuation_prompts(
-                query,
-                &context,
-                &accumulated_report,
-                batch_num,
-                total_batches,
-            )
-        };
-
-        let messages = vec![
-            ChatMessage::system(system_prompt),
-            ChatMessage::user(user_prompt),
-        ];
-
-        tracing::info!(
-            "LLM batch {}/{} calling model={} context_len={} prev_report_len={}",
-            batch_num,
-            total_batches,
-            llm_config.model,
-            context.len(),
-            accumulated_report.len()
-        );
-
-        let call_result = match tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            call_llm_retrying(&llm_config, &messages),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                tracing::warn!("LLM batch {}/{} timed out after {}ms", batch_num, total_batches, timeout_ms);
-                // If we already have a partial report, return it instead of failing
-                if !accumulated_report.is_empty() {
-                    tracing::info!("Returning partial report ({} chars) after timeout", accumulated_report.len());
-                    return LlmExecutionResult {
-                        llm_answer: Some(accumulated_report),
-                        llm_error: Some(format!(
-                            "partial_report: batch {}/{} timed out, showing results from {} batches",
-                            batch_num, total_batches, batch_idx
-                        )),
-                        batches_processed: batch_idx,
-                        ..Default::default()
-                    };
-                }
-                return LlmExecutionResult {
-                    llm_answer: None,
-                    llm_error: Some(format!("llm_timeout: batch {}/{} exceeded {}ms", batch_num, total_batches, timeout_ms)),
-                    batches_processed: batch_idx,
-                    ..Default::default()
-                };
-            }
-        };
-
-        match call_result {
-            Ok(answer) => {
-                let batch_answer = answer.trim().to_string();
-                if !batch_answer.is_empty() {
-                    accumulated_report = batch_answer;
-                    tracing::info!(
-                        "LLM batch {}/{} complete: report now {} chars",
-                        batch_num,
-                        total_batches,
-                        accumulated_report.len()
-                    );
-
-                    // Update partial answer in temp DB
-                    if let (Some(db), Some(sid)) = (temp_db, session_id) {
-                        db.update_partial_answer(sid, &accumulated_report).await;
-                    }
-                }
-            }
-            Err(err) => {
-                tracing::error!("LLM batch {}/{} error: {}", batch_num, total_batches, err);
-                // Return partial if we have it
-                if !accumulated_report.is_empty() {
-                    return LlmExecutionResult {
-                        llm_answer: Some(accumulated_report),
-                        llm_error: Some(format!(
-                            "partial_report: batch {}/{} failed ({}), showing partial results",
-                            batch_num, total_batches, err
-                        )),
-                        batches_processed: batch_idx,
-                        ..Default::default()
-                    };
-                }
-                return LlmExecutionResult {
-                    llm_answer: None,
-                    llm_error: Some(format!("llm_error: {err}")),
-                    batches_processed: batch_idx,
-                    ..Default::default()
-                };
-            }
-        }
-
-        global_source_offset += batch.len();
-    }
-
-    if accumulated_report.is_empty() {
-        LlmExecutionResult {
-            llm_answer: None,
-            llm_error: Some("llm_empty_response: all batches returned empty".to_string()),
-            batches_processed: total_batches,
-                    ..Default::default()
-        }
-    } else {
-        tracing::info!(
-            "LLM iterative research complete: {} chars across {} batches",
-            accumulated_report.len(),
-            total_batches
-        );
-        LlmExecutionResult {
-            llm_answer: Some(accumulated_report),
-            llm_error: None,
-            batches_processed: total_batches,
-                    ..Default::default()
-        }
-    }
-}
 
 // =============================================================================
 // CHANNEL-BASED SYNTHESIS — Used by stream.rs (SSE streaming path)
@@ -1230,7 +860,7 @@ impl BuiltContext {
 /// the sandwich reorder, but every index from 1 onward pointed at the wrong
 /// source. Citations were systematically misattributed.
 /// ═══════════════════════════════════════════════════════════════════════════
-fn build_ranked_context(sources: &[SourceResult], budget_chars: usize) -> BuiltContext {
+pub(crate) fn build_ranked_context(sources: &[SourceResult], budget_chars: usize) -> BuiltContext {
     if sources.is_empty() {
         return BuiltContext { text: String::new(), citation_map: Vec::new() };
     }
@@ -1314,39 +944,8 @@ fn lost_in_middle_order(len: usize) -> Vec<usize> {
 /// least relevant in the middle. This maximizes LLM attention on the best sources.
 ///
 
-/// Build context for a research batch using global source IDs.
-fn build_research_batch_context(
-    _query: &str,
-    sources: &[SourceResult],
-    global_offset: usize,
-) -> String {
-    if sources.is_empty() {
-        return String::new();
-    }
 
-    // v5.0: Pre-allocate + write!() — zero intermediate format!() allocations
-    let mut context = String::with_capacity(MAX_CONTEXT_CHARS_RESEARCH_BATCH.min(16_384));
-    for (idx, source) in sources.iter().enumerate() {
-        let global_id = global_offset + idx + 1;
-        let trimmed = source.extracted_text.trim();
-        let cred = credibility_tag(&source.url);
-
-        let est_len = 10 + cred.len() + source.title.len() + source.url.len() + trimmed.len();
-        if context.len() + est_len > MAX_CONTEXT_CHARS_RESEARCH_BATCH {
-            break;
-        }
-
-        let _ = write!(
-            context,
-            "[{}] {} {} ({})\n{}\n\n",
-            global_id, cred, source.title, source.url, trimmed
-        );
-    }
-
-    context
-}
-
-fn credibility_tag(url: &str) -> String {
+pub(crate) fn credibility_tag(url: &str) -> String {
     let host = url::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
@@ -1532,7 +1131,7 @@ fn ensure_trailing_slash(url: &str) -> String {
 // Prompt Builders — with time awareness via chrono
 // =============================================================================
 
-fn current_datetime_str() -> String {
+pub(crate) fn current_datetime_str() -> String {
     let now = chrono::Utc::now();
     format!(
         "{} (Year: {})",
@@ -1545,7 +1144,7 @@ fn current_datetime_str() -> String {
 // Answer Post-Processing — strip preamble, question echoing, thinking blocks
 // =============================================================================
 
-fn post_process_answer(raw: &str, _query: &str) -> String {
+pub(crate) fn post_process_answer(raw: &str, _query: &str) -> String {
     let mut answer = raw.trim().to_string();
 
     // 1. Strip <think>/<thought>/<thinking> blocks (various models emit internal reasoning)
@@ -1660,7 +1259,7 @@ pub fn verify_citations(
         let source_text = format!("{} {}", src.title, src.extracted_text).to_lowercase();
         let claim = sentence.to_lowercase();
         let claim_tokens: HashSet<&str> = claim
-            .split(|c: char| !c.is_alphanumeric())
+            .split(|c: char| !crate::util::is_word_char(c))
             .filter(|t| crate::util::char_len(t) > 3)
             .collect();
         if claim_tokens.is_empty() {
@@ -1741,148 +1340,16 @@ fn snap(s: &str, mut idx: usize) -> usize {
     idx
 }
 
-/// v6.1.0: Quality gate — check if an LLM answer is worth retrying.
-/// Returns true if the answer is too short or lacks citations.
-fn answer_quality_insufficient(answer: &str) -> bool {
-    let trimmed = answer.trim();
 
-    // Too short — likely a refusal or garbage
-    if trimmed.len() < 80 {
-        return true;
-    }
 
-    // Has content but no citations at all — likely hallucinated
-    // (Only flag if answer is substantial enough to warrant citations)
-    if trimmed.len() > 200 {
-        let has_citation = trimmed.contains("[1]")
-            || trimmed.contains("[2]")
-            || trimmed.contains("[3]");
-        if !has_citation {
-            return true;
-        }
-    }
 
-    false
-}
-
-fn build_lite_prompts(query: &str, context: &str) -> (String, String) {
-    let now = current_datetime_str();
-    let year = chrono::Utc::now().format("%Y").to_string();
-    let system = format!(
-        "You are a precise search synthesis engine. \
-         TODAY'S DATE: {}. \
-         CRITICAL RULES: \
-         1. STRICTLY answer the SPECIFIC question asked. Do NOT discuss unrelated topics. \
-         2. If the user asks about 'OpenAI', answer ONLY about OpenAI — NOT Google, NOT Anthropic. \
-         3. If the user asks about a specific product/company, focus ONLY on that entity. \
-         4. Use ONLY information from the provided sources — never hallucinate. \
-         5. Every factual statement MUST cite the source like [1], [2]. \
-         6. Prioritize [High Trust] sources. Flag outdated information. \
-         7. If no source directly answers the query, say so honestly. \
-         8. RECENCY IS CRITICAL: Today is {}. Always prefer the MOST RECENT information from sources. \
-            If a source mentions dates from {} or later, prioritize that over older data. \
-            If the user asks about 'latest', 'current', 'now', or 'today', always provide the MOST UP-TO-DATE answer possible. \
-            NEVER present old/outdated data as current unless explicitly noting it is historical.{}",
-        now, now, year, LANGUAGE_RULE
-    );
-
-    let user = format!(
-        "USER'S EXACT QUESTION: {}\n\n\
-         SOURCES (use ONLY relevant ones):\n{}\n\n\
-         Answer the user's EXACT question in 5-8 focused bullet points. \
-         Each bullet: 2-3 sentences with [n] citations. \
-         IGNORE sources that are not directly relevant to the question. \
-         If the question is about recent/current events, prioritize the NEWEST sources. \
-         End with: Sources Used: [n] <url>",
-        query, context
-    );
-
-    (system, user)
-}
-
-fn build_research_initial_prompts(query: &str, context: &str, total_batches: usize) -> (String, String) {
-    let system = format!(
-        "You are an expert research analyst producing a comprehensive, detailed research report. \
-         Current date: {}. \
-         You are processing batch 1 of {} total batches of source material. \
-         STRICT RULES: \
-         1. Use ONLY the provided source material — NEVER hallucinate or add unsourced claims. \
-         2. Every factual statement MUST have a citation like [1], [2], etc. \
-         3. Prioritize [High Trust] sources over forums and general web. \
-         4. Flag any information that appears outdated given today's date. \
-         5. Write in a structured, detailed, analytical style — NOT bullet points. \
-         6. Use clear section headings (## format). \
-         7. Be thorough — this is a deep research report, not a summary.{}",
-        current_datetime_str(),
-        total_batches,
-        LANGUAGE_RULE
-    );
-
-    let user = format!(
-        "RESEARCH QUERY:\n{}\n\n\
-         SOURCE MATERIAL (Batch 1/{}):\n{}\n\n\
-         Write a comprehensive, well-structured research report based ONLY on these sources. \
-         Include:\n\
-         - An overview/introduction section\n\
-         - Key findings organized by theme or topic\n\
-         - Important details, data points, and context from the sources\n\
-         - Analysis of source agreement/disagreement where relevant\n\
-         - A 'Sources Used' section at the end: [n] <url>\n\n\
-         Write at length. Be detailed and thorough. Do NOT summarize briefly — expand fully.",
-        query, total_batches, context
-    );
-
-    (system, user)
-}
-
-fn build_research_continuation_prompts(
-    query: &str,
-    new_context: &str,
-    previous_report: &str,
-    batch_num: usize,
-    total_batches: usize,
-) -> (String, String) {
-    let system = format!(
-        "You are an expert research analyst expanding a research report with new sources. \
-         Date: {}. Batch {} of {}. \
-         RULES: 1. Integrate new info into the report — do NOT restart. \
-         2. ADD new details and evidence. 3. KEEP existing content. \
-         4. Cite source numbers like [51], [52]. 5. NEVER hallucinate. \
-         6. Maintain structure. Add sections if warranted.{}",
-        current_datetime_str(),
-        batch_num,
-        total_batches,
-        LANGUAGE_RULE
-    );
-
-    // Truncate previous report to fit within model context limits
-    // ~3000 chars ≈ 750 tokens, leaves room for new sources + system
-    let max_prev = 3000;
-    let prev_truncated = if previous_report.len() > max_prev {
-        let start = previous_report.len().saturating_sub(max_prev);
-        // Find safe char boundary
-        let safe_start = (start..start+4).find(|&i| previous_report.is_char_boundary(i)).unwrap_or(start);
-        format!("[...truncated...] {}", &previous_report[safe_start..])
-    } else {
-        previous_report.to_string()
-    };
-
-    let user = format!(
-        "QUERY: {}\n\nEXISTING REPORT (summary):\n{}\n\n\
-         NEW SOURCES (Batch {}/{}):\n{}\n\n\
-         Expand the report with these new sources. Add new details, cite sources, keep existing content.",
-        query, prev_truncated, batch_num, total_batches, new_context
-    );
-
-    (system, user)
-}
 
 // =============================================================================
 // v5.2.0: INTENT-AWARE PROMPT BUILDER
 // Selects optimal system/user prompt template based on QueryIntelligence
 // =============================================================================
 
-fn build_intent_prompts(query: &str, context: &str, intel: &QueryIntelligence) -> (String, String) {
+pub(crate) fn build_intent_prompts(query: &str, context: &str, intel: &QueryIntelligence) -> (String, String) {
     let now = current_datetime_str();
     let year = chrono::Utc::now().format("%Y").to_string();
 
@@ -1988,61 +1455,6 @@ fn build_intent_prompts(query: &str, context: &str, intel: &QueryIntelligence) -
 // SSE Streaming Synthesis — Used by stream.rs
 // =============================================================================
 
-pub async fn summarize_from_stream_sse(
-    query: String,
-    llm_config: LlmConfig,
-    mut rx: mpsc::Receiver<SourceResult>,
-    tx_sse: mpsc::Sender<Result<Event, std::convert::Infallible>>,
-    research_mode: bool,
-) {
-    let max_chunks = if research_mode { BATCH_SIZE_RESEARCH } else { MAX_CONTEXT_CHUNKS_LITE };
-
-    let first = match tokio::time::timeout(Duration::from_millis(FIRST_BATCH_WAIT_MS), rx.recv()).await {
-        Ok(Some(source)) => source,
-        Ok(None) | Err(_) => {
-            let json = serde_json::json!({"type": "llm_error", "text": "llm_skipped: no scraped content available"}).to_string();
-            let _ = tx_sse.send(Ok(Event::default().data(json))).await;
-            return;
-        }
-    };
-
-    let mut batch = vec![first];
-    let collect_deadline = tokio::time::Instant::now() + Duration::from_millis(PIPELINE_ACCUMULATION_MS);
-    while batch.len() < max_chunks {
-        match tokio::time::timeout_at(collect_deadline, rx.recv()).await {
-            Ok(Some(source)) => batch.push(source),
-            Ok(None) | Err(_) => break,
-        }
-    }
-
-    let context = build_ranked_context(&batch, if research_mode { 12_000 } else { 48_000 }).text;
-    if context.is_empty() {
-        let json = serde_json::json!({"type": "llm_error", "text": "llm_skipped: relevance filter produced empty context"}).to_string();
-        let _ = tx_sse.send(Ok(Event::default().data(json))).await;
-        return;
-    }
-
-    let (system_prompt, user_prompt) = build_lite_prompts(&query, &context);
-
-    let messages = vec![
-        ChatMessage::system(system_prompt),
-        ChatMessage::user(user_prompt),
-    ];
-
-    match call_llm_stream(&llm_config, &messages, &tx_sse).await {
-        Ok(()) => {
-            let _ = tx_sse
-                .send(Ok(Event::default().data(
-                    serde_json::json!({"type": "llm_done"}).to_string(),
-                )))
-                .await;
-        }
-        Err(err) => {
-            let json = serde_json::json!({"type": "llm_error", "text": format!("llm_error: {err}")}).to_string();
-            let _ = tx_sse.send(Ok(Event::default().data(json))).await;
-        }
-    }
-}
 
 // =============================================================================
 // Dynamic Model Fetcher — GET /api/models
@@ -2373,6 +1785,72 @@ mod tests {
     fn max_output_tokens_is_never_the_v7_truncating_4096_for_big_models() {
         let b = ContextBudget::for_model_with_override("claude-opus-5", None);
         assert!(b.max_output_tokens() > 4096, "research reports were truncated at 4096");
+    }
+
+    fn cfg(provider: &str, model: &str, base: Option<&str>) -> crate::models::LlmConfig {
+        crate::models::LlmConfig {
+            provider: provider.into(),
+            api_key: "k".into(),
+            model: model.into(),
+            base_url: base.map(str::to_string),
+            timeout_ms: None,
+            max_output_tokens: None,
+        }
+    }
+
+    #[test]
+    fn detects_truncated_responses_across_providers() {
+        assert!(was_truncated(&serde_json::json!({"choices":[{"finish_reason":"length"}]})));
+        assert!(was_truncated(&serde_json::json!({"stop_reason":"max_tokens"})));
+        assert!(!was_truncated(&serde_json::json!({"choices":[{"finish_reason":"stop"}]})));
+        assert!(!was_truncated(&serde_json::json!({"stop_reason":"end_turn"})));
+        assert!(!was_truncated(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn local_servers_get_a_window_they_actually_have() {
+        // Measured: Ollama truncated a 15k-token prompt to 4,096 tokens.
+        let o = ContextBudget::for_config_with_override(&cfg("ollama", "qwen2.5-coder:7b", Some("http://localhost:11434/v1")), None, None);
+        assert_eq!(o.max_tokens, 4_096);
+        // Any loopback/private base URL is treated as a local server.
+        let lm = ContextBudget::for_config_with_override(&cfg("openai_compatible", "local-model", Some("http://127.0.0.1:1234/v1")), None, None);
+        assert_eq!(lm.max_tokens, 4_096);
+        // OLLAMA_CONTEXT_LENGTH is honoured, and CONTEXT_MAX_TOKENS wins over all.
+        let big = ContextBudget::for_config_with_override(&cfg("ollama", "m", None), None, Some(32_768));
+        assert_eq!(big.max_tokens, 32_768);
+        let forced = ContextBudget::for_config_with_override(&cfg("ollama", "m", None), Some(8_000), Some(32_768));
+        assert_eq!(forced.max_tokens, 8_000);
+        // Hosted providers keep their model-based budgets.
+        let hosted = ContextBudget::for_config_with_override(&cfg("anthropic", "claude-opus-5", None), None, None);
+        assert!(hosted.max_tokens >= 100_000);
+    }
+
+    #[test]
+    fn prompt_and_output_fit_inside_one_window() {
+        for w in [4_096usize, 8_000, 32_768, 150_000] {
+            let b = ContextBudget { max_tokens: w };
+            for requested in [600, 2_000, 4_000, 8_000] {
+                let out = b.fit_output(requested);
+                let ctx = b.context_tokens(out);
+                assert!(out + ctx + 900 <= w.max(out + 400 + 900), "window {w}, requested {requested}: {out}+{ctx} overflows");
+                assert!(out <= w / 3 || out == 128);
+            }
+            assert!(b.max_output_tokens() <= w / 3);
+        }
+        // The old fixed 2,048 floor would have taken half a 4k window.
+        assert!(ContextBudget { max_tokens: 4_096 }.max_output_tokens() <= 1_365);
+    }
+
+    #[test]
+    fn character_budget_follows_the_script_of_the_sources() {
+        let en = vec![src("https://a.test/1", "T", &"The quick brown fox jumps over the lazy dog. ".repeat(40))];
+        let hi = vec![src("https://b.test/1", "T", &"भारत और पाकिस्तान के बीच मुकाबला खेला जाएगा। ".repeat(40))];
+        let en_chars = chars_for_tokens(1_000, &en);
+        let hi_chars = chars_for_tokens(1_000, &hi);
+        assert!(en_chars >= 3_000, "English ~4 chars/token, got {en_chars}");
+        assert!(hi_chars < en_chars / 2, "Devanagari must get far fewer chars per token: {hi_chars} vs {en_chars}");
+        // No sources: falls back to English density instead of dividing by zero.
+        assert_eq!(chars_for_tokens(100, &[]), 400);
     }
 
     #[test]
