@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SearchWala</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='10' cy='10' r='7' fill='none' stroke='%2314b8a6' stroke-width='2.5'/%3E%3Cpath d='M15 15l6 6' stroke='%2314b8a6' stroke-width='2.5'/%3E%3C/svg%3E" />
   <meta name="description" content="Ultra-fast meta-search with deep research and AI synthesis" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
@@ -406,6 +407,34 @@
   </div>
 
   <script>
+    // Runs before the main script and does not depend on it, so a failure
+    // there cannot leave the page locked behind the history popup.
+    function showFatal(msg){
+      let b=document.getElementById('fatalBanner');
+      if(!b){b=document.createElement('div');b.id='fatalBanner';
+        b.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#7f1d1d;color:#fff;padding:10px 16px;font:13px/1.4 monospace;white-space:pre-wrap';
+        document.body.appendChild(b)}
+      b.textContent='SearchWala page error: '+msg;
+    }
+    window.addEventListener('error',e=>showFatal((e.message||'unknown')+(e.lineno?' (line '+e.lineno+')':'')));
+    window.addEventListener('unhandledrejection',e=>{const r=e.reason;if(r&&r.name==='AbortError')return;showFatal(String(r&&r.message||r))});
+    function closeHistoryModal(){
+      const m=document.getElementById('dbModal');
+      if(m)m.classList.add('hidden');
+      try{localStorage.setItem('ss_history_init','done')}catch(_){}
+      const q=document.getElementById('queryInput');if(q)q.focus();
+    }
+    (function(){
+      let done=false;try{done=localStorage.getItem('ss_history_init')==='done'}catch(_){}
+      const m=document.getElementById('dbModal');
+      if(!m)return;
+      if(done){m.classList.add('hidden');return}
+      // Clicking the backdrop or pressing Escape dismisses it (same as "No").
+      m.addEventListener('click',e=>{if(e.target===m)closeHistoryModal()});
+      document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!m.classList.contains('hidden'))closeHistoryModal()});
+    })();
+  </script>
+  <script>
     const $ = id => document.getElementById(id);
     const dom = {
       queryInput:$('queryInput'), runBtn:$('runBtn'), stopBtn:$('stopBtn'),
@@ -611,8 +640,7 @@
 
     // ═══ History ═══
     function initHistory(yes){
-      dom.dbModal.classList.add('hidden');
-      localStorage.setItem('ss_history_init','done');
+      closeHistoryModal();
       if(yes){historyEnabled=true;api('/api/history/enable','POST').catch(()=>{})}
     }
     function toggleHistory(){

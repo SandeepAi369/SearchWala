@@ -55,6 +55,13 @@ fn with_engine<F: FnOnce(&EngineHealth)>(engine: &str, f: F) {
     }
 }
 
+/// Register engines so `/health/engines` lists them before their first use.
+pub fn register_known(engines: &[String]) {
+    for e in engines {
+        with_engine(e, |_| {});
+    }
+}
+
 pub fn record_attempt(engine: &str) {
     with_engine(engine, |h| {
         h.attempts.fetch_add(1, Ordering::Relaxed);

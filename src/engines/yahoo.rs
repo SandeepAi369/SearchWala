@@ -25,6 +25,7 @@ const PAGES: usize = 3;
 
 static SEL_RESULT: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse(".algo-sr, .dd.algo, li.ov-a").unwrap());
+static SEL_H3: LazyLock<Selector> = LazyLock::new(|| Selector::parse("h3").unwrap());
 static SEL_TITLE: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("h3.title a, h3 a, .compTitle a, .title a, a.d-ib").unwrap()
 });
@@ -107,7 +108,7 @@ pub fn parse_yahoo_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
         if actual_url.is_empty() {
             continue;
         }
-        let title = link.text().collect::<String>().trim().to_string();
+        let title = yahoo_title(&link);
         if title.is_empty() {
             continue;
         }
@@ -129,6 +130,41 @@ pub fn parse_yahoo_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
     }
 
     results
+}
+
+/// The visible title of a Yahoo result link.
+///
+/// Yahoo's title anchor starts with a breadcrumb span (site name + display
+/// URL) before the title text, so `link.text()` produced
+/// "YouTubehttps://www.youtube.com › watchHow do solar panels work? - …" for
+/// every result (seen in the Reddit and YouTube modes, where it is the main
+/// engine). Yahoo serves two layouts (measured: alternating between requests):
+/// A puts the anchor inside `<h3>` with a clean `aria-label`; B wraps the
+/// breadcrumb and the `<h3>` inside the anchor. Use the label, then the inner
+/// `<h3>`, then the anchor's own text nodes.
+fn yahoo_title(link: &scraper::ElementRef) -> String {
+    if let Some(label) = link.value().attr("aria-label") {
+        let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !label.is_empty() {
+            return label;
+        }
+    }
+    // Layout B: the anchor wraps breadcrumb + <h3><span>title</span></h3>.
+    if let Some(h3) = link.select(&SEL_H3).next() {
+        let t = h3.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+        if !t.is_empty() {
+            return t;
+        }
+    }
+    let own: String = link
+        .children()
+        .filter_map(|n| n.value().as_text().map(|t| t.to_string()))
+        .collect();
+    let own = own.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !own.is_empty() {
+        return own;
+    }
+    link.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Yahoo wraps targets as `.../RU=<percent-encoded>/RK=...`.
@@ -181,5 +217,28 @@ mod tests {
         assert_eq!(r.len(), 2);
         assert_eq!(r[0].rank_position, 1);
         assert_eq!(parse_yahoo_html(html, 20)[0].rank_position, 21);
+    }
+
+    #[test]
+    fn title_skips_the_breadcrumb_span() {
+        // Yahoo's 2026 markup: breadcrumb span inside the title anchor.
+        let with_label = r#"<div class="algo-sr"><h3 class="title"><a href="https://www.youtube.com/watch?v=x"
+            aria-label="How do solar panels work? - YouTube"><span class="d-ib p-abs">YouTube<span
+            class="fc-pewter">https://www.youtube.com › watch</span></span>How do solar panels work? - YouTube</a></h3></div>"#;
+        assert_eq!(parse_yahoo_html(with_label, 0)[0].title, "How do solar panels work? - YouTube");
+
+        let no_label = with_label.replace(r#"aria-label="How do solar panels work? - YouTube""#, "");
+        assert_eq!(parse_yahoo_html(&no_label, 0)[0].title, "How do solar panels work? - YouTube");
+    }
+
+    #[test]
+    fn title_from_layout_where_the_anchor_wraps_the_heading() {
+        // Yahoo layout B (live, 2026-10-02): no aria-label, h3 inside the anchor.
+        let html = r#"<li><div class="dd algo algo-sr"><div class="compTitle options-toggle"><a class="d-ib"
+            href="https://www.reddit.com/r/laptops/comments/1/best/"><div><span>Reddit</span>https://www.reddit.com
+            <span> › r › laptops</span></div><h3 class="title"><span class="d-b">Best Laptop for college student? : r/laptops</span></h3></a></div>
+            <div class="compText"><p>snippet</p></div></div></li>"#;
+        let r = parse_yahoo_html(html, 0);
+        assert_eq!(r[0].title, "Best Laptop for college student? : r/laptops");
     }
 }

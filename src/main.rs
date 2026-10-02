@@ -292,8 +292,11 @@ async fn config_handler() -> impl IntoResponse {
 }
 
 /// GET / - Root endpoint
+///
+/// `no-store`: the page is compiled into the binary, so after an upgrade a
+/// cached copy would be a different UI talking to a newer API.
 async fn root_handler() -> impl IntoResponse {
-    Html(SEARCH_UI)
+    ([(axum::http::header::CACHE_CONTROL, "no-store")], Html(SEARCH_UI))
 }
 
 /// POST /api/models - Dynamic model fetcher
@@ -336,13 +339,24 @@ async fn models_handler(
 /// selectors have rotted, which is otherwise indistinguishable from "no
 /// results for this query". That blind spot is why 28 of 35 engines shipped
 /// broken in v7.0.
+///
+/// Every engine a mode can use is listed, even before its first search: an
+/// empty `{"engines":[],"summary":{}}` after a restart looked like a broken
+/// server rather than "no searches yet".
 async fn engine_health_handler() -> impl IntoResponse {
+    engines::health::register_known(&modes::all_roster_engines());
     let snap = engines::health::snapshot();
     let mut by_verdict: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for r in &snap {
         *by_verdict.entry(r.verdict).or_insert(0) += 1;
     }
+    let searched = snap.iter().any(|r| r.attempts > 0);
     Json(serde_json::json!({
+        "note": if searched {
+            "Counters since server start. 'unproven' = fewer than 8 attempts so far."
+        } else {
+            "No searches since server start; counters fill in as searches run."
+        },
         "summary": by_verdict,
         "engines": snap,
     }))
