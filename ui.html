@@ -2,409 +2,550 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>SearchWala</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='10' cy='10' r='7' fill='none' stroke='%2314b8a6' stroke-width='2.5'/%3E%3Cpath d='M15 15l6 6' stroke='%2314b8a6' stroke-width='2.5'/%3E%3C/svg%3E" />
-  <meta name="description" content="Ultra-fast meta-search with deep research and AI synthesis" />
+  <meta name="description" content="Private meta-search with cited AI answers" />
+  <meta name="color-scheme" content="dark light" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script>
+    // Apply the saved theme before first paint (no flash).
+    (function(){try{const t=localStorage.getItem('ss_theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch(_){}})();
+  </script>
   <style>
-    :root {
-      --bg: #191a1f;
-      --bg-2: #1e2025;
-      --bg-3: #232429;
-      --surface: #27282e;
-      --surface-2: #2c2e34;
-      --ink: #ececf1;
-      --ink-2: #c5c5d2;
-      --muted: #8e8ea0;
-      --border: rgba(255,255,255,.08);
-      --border-2: rgba(255,255,255,.12);
-      --accent: #20b2aa;
-      --accent-2: #5ac8c8;
-      --accent-bg: rgba(32,178,170,.08);
-      --blue: #528bff;
-      --r: 12px;
-      --r-sm: 8px;
+    /* ═══ Tokens ═══ */
+    :root{
+      --bg:#0b0d12; --bg-2:#10131a; --surface:#151922; --surface-2:#1b2030; --surface-3:#232a3b;
+      --ink:#eef1f7; --ink-2:#c3c9d6; --muted:#8a93a6; --faint:#5d6578;
+      --border:rgba(255,255,255,.07); --border-2:rgba(255,255,255,.12);
+      --accent:#2dd4bf; --accent-2:#5eead4; --accent-ink:#04211d; --accent-bg:rgba(45,212,191,.10);
+      --violet:#8b5cf6; --blue:#60a5fa; --good:#34d399; --warn:#fbbf24; --bad:#f87171;
+      --mark:rgba(45,212,191,.22);
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px -12px rgba(0,0,0,.55);
+      --shadow-lg:0 24px 64px -16px rgba(0,0,0,.7);
+      --glass:rgba(11,13,18,.72);
+      --r:16px; --r-sm:10px; --r-xs:7px;
+      --ease:cubic-bezier(.2,.8,.2,1);
     }
-    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    body{min-height:100vh;color:var(--ink);font-family:"Inter",system-ui,sans-serif;background:var(--bg);-webkit-font-smoothing:antialiased}
-    a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+    @media (prefers-color-scheme: light){
+      :root:not([data-theme="dark"]){
+        --bg:#f7f8fb; --bg-2:#ffffff; --surface:#ffffff; --surface-2:#f2f4f8; --surface-3:#e9edf4;
+        --ink:#0f172a; --ink-2:#334155; --muted:#64748b; --faint:#94a3b8;
+        --border:rgba(15,23,42,.08); --border-2:rgba(15,23,42,.14);
+        --accent:#0d9488; --accent-2:#14b8a6; --accent-ink:#ffffff; --accent-bg:rgba(13,148,136,.09);
+        --mark:rgba(13,148,136,.16);
+        --shadow:0 1px 2px rgba(15,23,42,.06),0 12px 32px -14px rgba(15,23,42,.18);
+        --shadow-lg:0 24px 64px -18px rgba(15,23,42,.28);
+        --glass:rgba(247,248,251,.78);
+      }
+    }
+    :root[data-theme="light"]{
+      --bg:#f7f8fb; --bg-2:#ffffff; --surface:#ffffff; --surface-2:#f2f4f8; --surface-3:#e9edf4;
+      --ink:#0f172a; --ink-2:#334155; --muted:#64748b; --faint:#94a3b8;
+      --border:rgba(15,23,42,.08); --border-2:rgba(15,23,42,.14);
+      --accent:#0d9488; --accent-2:#14b8a6; --accent-ink:#ffffff; --accent-bg:rgba(13,148,136,.09);
+      --mark:rgba(13,148,136,.16);
+      --shadow:0 1px 2px rgba(15,23,42,.06),0 12px 32px -14px rgba(15,23,42,.18);
+      --shadow-lg:0 24px 64px -18px rgba(15,23,42,.28);
+      --glass:rgba(247,248,251,.78);
+    }
 
-    @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html{-webkit-text-size-adjust:100%}
+    body{min-height:100vh;color:var(--ink);background:var(--bg);font-family:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans","Noto Sans Devanagari",sans-serif;font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;font-feature-settings:"cv11","ss01"}
+    a{color:var(--accent);text-decoration:none}
+    a:hover{text-decoration:underline}
+    button{font:inherit;color:inherit}
+    :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+    ::selection{background:var(--mark)}
+    .hidden{display:none!important}
+    .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+    svg.i{width:16px;height:16px;flex-shrink:0;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+    @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
     @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-    @keyframes scaleIn{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
-    @keyframes slideRight{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
-    @keyframes glowPulse{0%,100%{box-shadow:0 0 0 0 rgba(32,178,170,0)}50%{box-shadow:0 0 12px 3px rgba(32,178,170,.2)}}
     @keyframes spin{to{transform:rotate(360deg)}}
     @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
     @keyframes bounce3{0%,100%{transform:scaleY(.6)}50%{transform:scaleY(1.2)}}
-    .hidden{display:none!important}
+    @keyframes pulseDot{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
+    @keyframes slideIn{from{transform:translateX(100%)}to{transform:none}}
+    @keyframes glow{0%,100%{box-shadow:0 0 0 0 rgba(45,212,191,0)}50%{box-shadow:0 0 0 6px rgba(45,212,191,.10)}}
+    @media (prefers-reduced-motion: reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+    /* Ambient background */
+    .aurora{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+    .aurora::before,.aurora::after{content:"";position:absolute;width:60vw;height:60vw;border-radius:50%;filter:blur(90px);opacity:.16}
+    .aurora::before{background:radial-gradient(circle,#2dd4bf,transparent 60%);top:-30vw;left:-15vw}
+    .aurora::after{background:radial-gradient(circle,#8b5cf6,transparent 60%);top:-25vw;right:-20vw}
+    :root[data-theme="light"] .aurora::before,:root[data-theme="light"] .aurora::after{opacity:.10}
+    body.has-results .aurora{opacity:.5}
 
     /* ═══ Layout ═══ */
-    .app{display:flex;flex-direction:column;min-height:100vh}
-    .topbar{display:flex;align-items:center;justify-content:space-between;padding:10px 24px;border-bottom:1px solid var(--border);flex-shrink:0}
-    .topbar-brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;color:var(--ink);cursor:pointer}
-    .topbar-brand svg{width:22px;height:22px}
-    .topbar-actions{display:flex;align-items:center;gap:8px}
-    .icon-btn{background:transparent;border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 10px;color:var(--muted);font-size:12px;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:5px}
-    .icon-btn:hover{border-color:var(--border-2);color:var(--ink-2);background:var(--bg-3)}
-    .icon-btn svg{width:14px;height:14px}
+    .app{position:relative;z-index:1;display:flex;flex-direction:column;min-height:100vh}
+    .topbar{position:sticky;top:0;z-index:40;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px clamp(14px,3vw,28px);background:var(--glass);backdrop-filter:saturate(160%) blur(14px);-webkit-backdrop-filter:saturate(160%) blur(14px);border-bottom:1px solid var(--border)}
+    .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;letter-spacing:-.01em;cursor:pointer;color:var(--ink);background:none;border:none;padding:4px}
+    .brand-mark{width:28px;height:28px;border-radius:9px;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent),var(--violet));color:#fff;box-shadow:0 6px 18px -6px rgba(45,212,191,.6)}
+    .brand-mark svg{width:16px;height:16px;stroke:#fff}
+    .top-actions{display:flex;align-items:center;gap:6px}
+    .ghost-btn{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 12px;border-radius:var(--r-sm);border:1px solid var(--border);background:transparent;color:var(--ink-2);font-size:13px;font-weight:500;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
+    .ghost-btn:hover{background:var(--surface-2);border-color:var(--border-2);color:var(--ink)}
+    .ghost-btn.square{width:34px;padding:0;justify-content:center}
+    @media (max-width:560px){.ghost-btn .lbl{display:none}.ghost-btn{width:34px;padding:0;justify-content:center}}
 
-    /* ═══ Center ═══ */
-    .center-wrap{flex:1;display:flex;flex-direction:column;max-width:820px;width:100%;margin:0 auto;padding:0 20px}
+    .center-wrap{flex:1;width:100%;max-width:1180px;margin:0 auto;padding:0 clamp(14px,3vw,28px) 48px;display:flex;flex-direction:column}
+    .center-wrap.home-active{justify-content:center;padding-bottom:12vh}
 
     /* ═══ Home ═══ */
-    .home-hero{display:flex;flex-direction:column;align-items:center;padding:0}
-    .center-wrap.home-active{justify-content:center}
-    .home-title{font-size:28px;font-weight:800;letter-spacing:-.02em;margin-bottom:14px;color:var(--ink)}
+    .home-hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px;margin-bottom:22px;animation:fadeUp .5s var(--ease) both}
+    .hero-badge{display:inline-flex;align-items:center;gap:8px;padding:5px 12px;border-radius:999px;border:1px solid var(--border-2);background:var(--surface);color:var(--muted);font-size:12px;font-weight:500}
+    .hero-badge .dot{width:6px;height:6px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px rgba(52,211,153,.18)}
+    .home-title{font-size:clamp(28px,5vw,46px);font-weight:800;letter-spacing:-.035em;line-height:1.08;background:linear-gradient(180deg,var(--ink) 30%,color-mix(in srgb,var(--ink) 55%,var(--accent)));-webkit-background-clip:text;background-clip:text;color:transparent}
+    .home-sub{color:var(--muted);font-size:15px;max-width:520px}
+    .suggestions{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:18px;animation:fadeUp .6s var(--ease) .1s both}
+    .suggestion{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:var(--ink-2);font-size:13px;cursor:pointer;transition:all .15s}
+    .suggestion:hover{border-color:var(--accent);color:var(--ink);transform:translateY(-1px)}
+    .suggestion svg{width:13px;height:13px;color:var(--muted)}
 
-    /* ═══ Search box — always visible ═══ */
-    .search-wrap{width:100%;max-width:820px;margin:0 auto}
-    .search-row{display:flex;align-items:center;gap:12px}
-    .search-input{flex:1;padding:16px 20px;font-size:16px;font-family:inherit;font-weight:400;background:var(--surface);border:1px solid var(--border-2);border-radius:16px;color:var(--ink);outline:none;transition:border .25s,box-shadow .25s}
-    .search-input::placeholder{color:var(--muted)}
-    .search-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(32,178,170,.12)}
-    .search-submit{flex-shrink:0;background:linear-gradient(135deg,#3b82f6,#6366f1);border:none;border-radius:14px;width:50px;height:50px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .25s ease;box-shadow:0 2px 12px rgba(59,130,246,.25)}
-    .search-submit:hover{background:linear-gradient(135deg,#60a5fa,#818cf8);transform:scale(1.06);box-shadow:0 6px 28px rgba(59,130,246,.4)}
-    .search-submit:active{transform:scale(.95)}
-    .search-submit:disabled{opacity:.4;cursor:not-allowed;transform:none!important;box-shadow:none!important}
-    .search-submit svg{width:20px;height:20px;color:#fff}
+    /* ═══ Composer ═══ */
+    /* Own stacking layer, so composer menus sit above the hero and suggestions. */
+    .search-wrap{position:relative;z-index:5;width:100%;max-width:780px;margin:0 auto}
+    body.has-results .search-wrap{max-width:100%}
+    .composer{position:relative;background:var(--surface);border:1px solid var(--border-2);border-radius:20px;box-shadow:var(--shadow);transition:border-color .2s,box-shadow .2s}
+    .composer:focus-within{border-color:color-mix(in srgb,var(--accent) 60%,var(--border-2));box-shadow:var(--shadow),0 0 0 4px var(--accent-bg)}
+    .composer.searching{animation:glow 2s ease-in-out infinite}
+    .search-row{display:flex;align-items:center;gap:10px;padding:8px 8px 4px 16px}
+    .search-row>svg.i{color:var(--muted);width:18px;height:18px}
+    .search-input{flex:1;min-width:0;height:46px;border:none;outline:none;background:transparent;color:var(--ink);font-size:17px;font-family:inherit}
+    .search-input::placeholder{color:var(--faint)}
+    .kbd{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;padding:0 6px;border-radius:6px;border:1px solid var(--border-2);border-bottom-width:2px;background:var(--surface-2);color:var(--muted);font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    @media (max-width:560px){.search-row .kbd{display:none}}
+    .search-submit{flex-shrink:0;width:42px;height:42px;border:none;border-radius:14px;display:grid;place-items:center;cursor:pointer;color:var(--accent-ink);background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--accent) 55%,var(--violet)));box-shadow:0 8px 20px -8px rgba(45,212,191,.7);transition:transform .15s var(--ease),filter .15s}
+    .search-submit:hover{transform:translateY(-1px);filter:brightness(1.08)}
+    .search-submit:active{transform:scale(.96)}
+    .search-submit:disabled{opacity:.55;cursor:default;transform:none}
+    .search-submit svg{width:18px;height:18px;stroke:currentColor}
+    .search-submit.searching svg{display:none}
+    .search-submit.searching::after{content:"";width:16px;height:16px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+    #stopBtn{display:none;height:36px;padding:0 12px;border-radius:12px;cursor:pointer;font-size:13px;font-weight:600;color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent);border:1px solid color-mix(in srgb,var(--bad) 35%,transparent)}
+    #stopBtn.visible{display:inline-flex;align-items:center;gap:6px}
+    #stopBtn:hover{background:color-mix(in srgb,var(--bad) 20%,transparent)}
 
+    .composer-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 10px 10px 12px;flex-wrap:wrap}
+    .mode-pills{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+    .mode-pill{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:999px;border:1px solid transparent;background:transparent;color:var(--muted);font-size:13px;font-weight:500;cursor:pointer;transition:all .15s}
+    .mode-pill svg{width:14px;height:14px}
+    .mode-pill:hover{color:var(--ink);background:var(--surface-2)}
+    .mode-pill.active{color:var(--accent);background:var(--accent-bg);border-color:color-mix(in srgb,var(--accent) 30%,transparent)}
+    .foot-right{display:flex;align-items:center;gap:6px}
+    .dropdown{position:relative}
+    .chip-btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:var(--surface-2);color:var(--ink-2);font-size:12.5px;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap}
+    .chip-btn:hover{border-color:var(--border-2);color:var(--ink)}
+    .chip-btn.active-category{border-color:color-mix(in srgb,var(--violet) 55%,transparent);color:var(--ink);background:color-mix(in srgb,var(--violet) 16%,var(--surface-2))}
+    .chip-btn svg{width:13px;height:13px}
+    .menu{position:absolute;bottom:calc(100% + 8px);right:0;min-width:210px;padding:6px;border-radius:14px;border:1px solid var(--border-2);background:var(--bg-2);box-shadow:var(--shadow-lg);z-index:60;animation:fadeUp .16s var(--ease) both}
+    body.has-results .menu{bottom:auto;top:calc(100% + 8px)}
+    .menu-item{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:none;border-radius:9px;background:transparent;color:var(--ink-2);font-size:13px;text-align:left;cursor:pointer}
+    .menu-item:hover{background:var(--surface-2);color:var(--ink)}
+    .menu-item.active{background:var(--accent-bg);color:var(--accent)}
+    .menu-item small{display:block;color:var(--muted);font-size:11.5px;margin-top:1px}
+    .menu-item.active small{color:color-mix(in srgb,var(--accent) 70%,var(--muted))}
+    .menu-sep{height:1px;background:var(--border);margin:5px 6px}
 
-
-    /* ═══ Status bar ═══ */
-    .status-bar{display:flex;align-items:center;justify-content:center;gap:12px;padding:10px;margin-top:10px;font-size:12px;color:var(--muted);animation:fadeIn .3s ease-out both}
-    .status-bar .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:spin .6s linear infinite}
-    .status-item{display:flex;align-items:center;gap:4px}
-    .status-item svg{width:12px;height:12px}
-    .status-val{color:var(--accent);font-weight:600}
-
-    /* ═══ Progress ═══ */
-    .progress-track{width:100%;height:3px;background:var(--surface);border-radius:4px;overflow:hidden;margin-top:10px}
-    .progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));border-radius:4px;transition:width .5s ease-out;width:0}
+    /* ═══ Progress stepper ═══ */
+    .stage-bar{display:flex;align-items:center;gap:10px;margin-top:12px;padding:10px 14px;border:1px solid var(--border);border-radius:14px;background:var(--surface);font-size:12.5px;color:var(--muted);animation:fadeIn .2s both;flex-wrap:wrap}
+    .stages{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .stage{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;color:var(--faint);transition:all .2s}
+    .stage .sd{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.6}
+    .stage.active{color:var(--accent);background:var(--accent-bg)}
+    .stage.active .sd{animation:pulseDot 1s ease-in-out infinite;opacity:1}
+    .stage.done{color:var(--ink-2)}
+    .stage.done .sd{background:var(--good);opacity:1}
+    .stage-sep{width:14px;height:1px;background:var(--border-2)}
+    .stage-info{margin-left:auto;display:flex;align-items:center;gap:10px}
+    .stage-info .status-val{color:var(--ink-2);font-variant-numeric:tabular-nums;font-weight:600}
+    #statusText{color:var(--ink-2)}
+    .progress-track{height:2px;margin-top:-1px;border-radius:2px;overflow:hidden;background:transparent}
+    .progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--violet));transition:width .5s var(--ease)}
 
     /* ═══ Results ═══ */
-    .results-area{padding:20px 0 30px;animation:fadeUp .35s ease-out both}
+    .results-area{padding-top:22px;animation:fadeUp .35s var(--ease) both}
+    .q-head{margin-bottom:18px}
+    .q-title{font-size:clamp(22px,3vw,30px);font-weight:700;letter-spacing:-.025em;line-height:1.2;word-break:break-word}
+    .q-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+    .tag{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);color:var(--muted);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}
+    .tag svg{width:12px;height:12px}
+    .tag.accent{color:var(--accent);background:var(--accent-bg);border-color:transparent}
 
-    /* Sources strip */
-    .sources-strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:16px}
-    .sources-strip::-webkit-scrollbar{height:3px}
-    .sources-strip::-webkit-scrollbar-thumb{background:var(--border-2);border-radius:4px}
-    .src-chip{flex-shrink:0;display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);font-size:12px;color:var(--ink-2);text-decoration:none;transition:all .2s;max-width:200px}
-    .src-chip:hover{border-color:var(--accent);text-decoration:none;background:var(--bg-3)}
-    .src-chip img{width:16px;height:16px;border-radius:3px}
-    .src-chip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .src-num{color:var(--muted);font-size:10px;font-weight:600;min-width:16px}
+    .results-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:28px;align-items:start}
+    @media (max-width:1020px){.results-grid{grid-template-columns:1fr}}
+
+    /* Source strip (mobile / narrow) */
+    .sources-strip{display:none;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:6px;scrollbar-width:thin}
+    .src-chip{flex-shrink:0;display:flex;align-items:center;gap:8px;width:210px;padding:9px 11px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--ink-2);font-size:12.5px;text-decoration:none!important;transition:border-color .15s,transform .15s}
+    .src-chip:hover{border-color:var(--accent);transform:translateY(-1px)}
+    .src-chip img,.src-card img{width:16px;height:16px;border-radius:4px;flex-shrink:0;background:var(--surface-3)}
+    .src-chip span.t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .src-num{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 4px;border-radius:6px;background:var(--surface-3);color:var(--muted);font-size:10.5px;font-weight:700;font-variant-numeric:tabular-nums}
+
+    /* Side panel */
+    .side-panel{position:sticky;top:76px;max-height:calc(100vh - 96px);display:flex;flex-direction:column;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);overflow:hidden}
+    .side-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600}
+    .side-head .count{color:var(--muted);font-weight:500}
+    .side-list{overflow-y:auto;padding:6px;scrollbar-width:thin}
+    .src-card{display:block;padding:10px;border-radius:12px;color:inherit;text-decoration:none!important;transition:background .15s}
+    .src-card:hover{background:var(--surface-2)}
+    .src-card .row1{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+    .src-card .dom{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .src-card .title{margin-top:4px;font-size:13.5px;font-weight:600;color:var(--ink);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .src-snip{margin-top:4px;color:var(--muted);font-size:12.5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .consensus{margin-left:auto;flex-shrink:0;color:var(--good);background:color-mix(in srgb,var(--good) 13%,transparent);padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
+    .side-foot{padding:8px;border-top:1px solid var(--border)}
+    /* Narrow screens: the strip replaces the sidebar, and the answer comes first. */
+    @media (max-width:1020px){.sources-strip{display:flex}.side-col{display:none}}
+    .all-sources-toggle{width:100%;display:flex;align-items:center;justify-content:center;gap:6px;height:32px;border-radius:9px;border:1px solid var(--border);background:transparent;color:var(--ink-2);font-size:12.5px;font-weight:500;cursor:pointer}
+    .all-sources-toggle:hover{background:var(--surface-2)}
+    .all-sources-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+    @media (max-width:640px){.all-sources-grid{grid-template-columns:1fr}}
+    .all-src-card{padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:var(--surface);animation:fadeUp .3s var(--ease) both}
+    .all-src-card a{font-size:13px;font-weight:600;color:var(--ink);display:block;line-height:1.4}
+    .all-src-card .meta{font-size:11.5px;color:var(--muted);margin-top:4px;display:flex;gap:8px;flex-wrap:wrap}
+
+    /* Highlight (verbatim quick answer) */
+    .highlight-card{position:relative;margin-bottom:18px;padding:16px 18px 14px;border-radius:var(--r);border:1px solid color-mix(in srgb,var(--accent) 28%,var(--border));background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 7%,var(--surface)),var(--surface));animation:fadeUp .35s var(--ease) both}
+    .hl-label{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--accent)}
+    .hl-label svg{width:14px;height:14px}
+    .hl-text{margin-top:8px;font-size:17px;line-height:1.6;color:var(--ink)}
+    .hl-text mark{background:var(--mark);color:inherit;padding:0 2px;border-radius:3px}
+    .hl-src{display:inline-flex;align-items:center;gap:7px;margin-top:10px;font-size:12.5px;color:var(--muted)}
+    .hl-src img{width:14px;height:14px;border-radius:3px}
+    .hl-src a{color:var(--ink-2)}
 
     /* Answer */
-    .answer-area{animation:fadeUp .4s ease-out .1s both}
-    .answer-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-    .answer-label{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--accent)}
-    .answer-label svg{width:16px;height:16px}
-    .answer-content{font-size:15px;line-height:1.85;color:var(--ink);word-break:break-word}
-    .answer-content p{margin-bottom:12px}
-    .answer-content h2,.answer-content h3{font-size:16px;font-weight:600;margin:18px 0 8px;color:var(--ink)}
-    .answer-content ul,.answer-content ol{margin:6px 0 12px 20px}
-    .answer-content li{margin-bottom:4px}
-    .answer-content code{background:var(--bg-3);padding:1px 5px;border-radius:4px;font-size:13px}
-    .answer-loading{display:flex;align-items:center;gap:10px;padding:16px 0;color:var(--muted);font-size:14px}
-
-    /* TTS button */
-    .tts-btn{display:flex;align-items:center;gap:5px;padding:5px 12px;border-radius:20px;font-size:11px;font-weight:500;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;transition:all .2s}
-    .tts-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
-    .tts-btn.playing{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
-    .tts-btn svg{width:14px;height:14px}
+    .answer-card{border-radius:var(--r)}
+    .answer-header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+    .answer-label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--ink-2)}
+    .answer-label .ai-dot{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent),var(--violet))}
+    .answer-label .ai-dot svg{width:13px;height:13px;stroke:#fff}
+    .answer-actions{display:flex;gap:6px}
+    .tts-btn,.act-btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:999px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:12px;font-weight:500;cursor:pointer;transition:all .15s}
+    .tts-btn:hover,.act-btn:hover{border-color:var(--border-2);color:var(--ink);background:var(--surface-2)}
+    .tts-btn.playing{border-color:color-mix(in srgb,var(--accent) 40%,transparent);color:var(--accent);background:var(--accent-bg)}
+    .tts-btn svg,.act-btn svg{width:14px;height:14px}
     .eq-bars{display:flex;gap:2px;align-items:end;height:12px}
-    .eq-bar{width:2px;background:var(--accent);border-radius:1px;animation:bounce3 .5s ease-in-out infinite}
+    .eq-bar{width:2px;height:12px;background:var(--accent);border-radius:1px;animation:bounce3 .5s ease-in-out infinite}
     .eq-bar:nth-child(2){animation-delay:.1s;height:10px}
     .eq-bar:nth-child(3){animation-delay:.2s;height:6px}
 
-    /* All sources */
-    .all-sources{margin-top:20px}
-    .all-sources-toggle{display:flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 14px;color:var(--muted);font-size:12px;font-weight:500;cursor:pointer;transition:all .15s}
-    .all-sources-toggle:hover{border-color:var(--border-2);color:var(--ink-2)}
-    .all-sources-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
-    @media(max-width:640px){.all-sources-grid{grid-template-columns:1fr}}
-    .all-src-card{padding:10px;border:1px solid var(--border);border-radius:var(--r-sm);transition:all .15s}
-    .all-src-card:hover{border-color:var(--accent);background:var(--bg-3)}
-    .all-src-card a{font-size:13px;font-weight:500;color:var(--ink);display:block;line-height:1.4}
-    .all-src-card .meta{font-size:11px;color:var(--muted);margin-top:3px;display:flex;gap:6px}
+    .answer-content{font-size:16px;line-height:1.78;color:var(--ink);word-break:break-word}
+    .answer-content>*:first-child{margin-top:0}
+    .answer-content p{margin:0 0 14px}
+    .answer-content h2{font-size:19px;font-weight:700;letter-spacing:-.01em;margin:26px 0 10px}
+    .answer-content h3{font-size:16.5px;font-weight:650;margin:22px 0 8px}
+    .answer-content h4{font-size:15px;font-weight:600;margin:16px 0 6px;color:var(--ink-2)}
+    .answer-content ul,.answer-content ol{margin:6px 0 14px;padding-left:22px}
+    .answer-content li{margin-bottom:6px;padding-left:2px}
+    .answer-content li::marker{color:var(--muted)}
+    .answer-content strong{font-weight:650;color:var(--ink)}
+    .answer-content code{background:var(--surface-2);border:1px solid var(--border);padding:1px 6px;border-radius:6px;font-size:.88em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    .answer-content pre{margin:12px 0 16px;padding:14px;border-radius:12px;background:var(--surface-2);border:1px solid var(--border);overflow-x:auto}
+    .answer-content pre code{border:none;background:none;padding:0;font-size:13px;line-height:1.6}
+    .answer-content blockquote{margin:10px 0 14px;padding:4px 0 4px 14px;border-left:3px solid var(--border-2);color:var(--ink-2)}
+    .md-table{overflow-x:auto;margin:14px 0;border:1px solid var(--border);border-radius:12px}
+    .md-table table{border-collapse:collapse;width:100%;font-size:13.5px}
+    .md-table th,.md-table td{border-bottom:1px solid var(--border);padding:9px 12px;text-align:left;vertical-align:top}
+    .md-table tr:last-child td{border-bottom:none}
+    .md-table th{background:var(--surface-2);font-weight:600;color:var(--ink-2)}
+    .cite{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 4px;margin:0 1px;vertical-align:2px;border-radius:6px;font-size:10.5px;font-weight:700;line-height:1;color:var(--ink-2);background:var(--surface-3);text-decoration:none!important;transition:all .15s}
+    .cite:hover{color:var(--accent-ink);background:var(--accent)}
+    .cite-dead{color:var(--faint);background:var(--surface-2)}
+    .answer-loading{display:flex;align-items:center;gap:10px;padding:6px 0 14px;color:var(--muted);font-size:14px}
+    .answer-note{padding:14px 16px;border-radius:12px;border:1px dashed var(--border-2);color:var(--muted);font-size:14px;line-height:1.55}
+    .answer-note a{cursor:pointer}
+    .llm-err{margin-top:14px;padding:10px 14px;border-radius:12px;font-size:13px;color:var(--bad);background:color-mix(in srgb,var(--bad) 8%,transparent);border:1px solid color-mix(in srgb,var(--bad) 22%,transparent)}
+    .llm-err.note{color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,transparent);border-color:color-mix(in srgb,var(--warn) 25%,transparent)}
+    .tw-cursor::after{content:"";display:inline-block;width:7px;height:1.05em;margin-left:2px;vertical-align:-2px;border-radius:2px;background:var(--accent);animation:pulseDot .9s ease-in-out infinite}
 
-    .llm-err{margin-top:12px;padding:10px 14px;background:rgba(248,113,113,.06);border:1px solid rgba(248,113,113,.15);border-radius:var(--r-sm);font-size:12px;color:#f87171}
-
-    /* ═══ Settings Drawer ═══ */
-    .drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;animation:fadeIn .15s ease-out both}
-    .drawer{position:fixed;top:0;right:0;bottom:0;width:360px;max-width:90vw;background:var(--bg-2);border-left:1px solid var(--border);padding:20px;z-index:101;overflow-y:auto}
-    .drawer-title{font-size:16px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between}
-    .drawer-close{background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:18px;padding:4px}
-    .drawer-close:hover{color:var(--ink)}
-    .field{margin-bottom:12px}
-    .field label{display:block;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
-    .field input,.field select{width:100%;padding:8px 10px;font-size:13px;font-family:inherit;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--ink);outline:none}
-    .field input:focus,.field select:focus{border-color:var(--accent)}
-    .field-row{display:flex;gap:8px}
-    .field-row .field{flex:1}
-    .check-row{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--ink-2);cursor:pointer}
-    .check-row input{width:16px;height:16px;accent-color:var(--accent)}
-    .btn-fetch{padding:5px 10px;font-size:11px;background:var(--accent-bg);border:1px solid rgba(32,178,170,.2);border-radius:6px;color:var(--accent);cursor:pointer;transition:all .15s}
-    .btn-fetch:hover{background:rgba(32,178,170,.15)}
-
-    /* Modal */
-    .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;animation:fadeIn .2s ease-out both}
-    .modal-box{background:var(--bg-2);border:1px solid var(--border-2);border-radius:16px;padding:28px 32px;max-width:400px;width:90%;text-align:center;animation:fadeUp .25s ease-out both}
-    .modal-icon{font-size:32px;margin-bottom:10px}
-    .modal-title{font-size:17px;font-weight:700;margin-bottom:6px}
-    .modal-text{font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:18px}
-    .modal-actions{display:flex;gap:8px;justify-content:center}
-    .modal-btn{padding:9px 24px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;border:none}
-    .modal-btn-primary{background:var(--accent);color:#fff}
-    .modal-btn-primary:hover{background:var(--accent-2)}
-    .modal-btn-ghost{background:transparent;border:1px solid var(--border-2);color:var(--muted)}
-    .modal-btn-ghost:hover{color:var(--ink)}
-
-    /* Mode dropdown in topbar */
-    .mode-dropdown{position:relative;display:inline-block}
-    .mode-dropdown-btn{display:flex;align-items:center;gap:5px;padding:6px 12px;border:1px solid var(--border);border-radius:var(--r-sm);background:transparent;color:var(--muted);font-size:12px;cursor:pointer;transition:all .15s}
-    .mode-dropdown-btn:hover{border-color:var(--border-2);color:var(--ink-2);background:var(--bg-3)}
-    .mode-dropdown-btn .mode-label{color:var(--accent);font-weight:600}
-    .mode-menu{position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--bg-2);border:1px solid var(--border-2);border-radius:var(--r);padding:6px;min-width:180px;z-index:50;animation:fadeUp .15s ease-out both;box-shadow:0 8px 24px rgba(0,0,0,.4)}
-    .mode-menu-item{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:6px;font-size:13px;color:var(--ink-2);cursor:pointer;transition:all .1s;border:none;background:transparent;width:100%;text-align:left}
-    .mode-menu-item:hover{background:var(--surface);color:var(--ink)}
-    .mode-menu-item.active{background:var(--accent-bg);color:var(--accent)}
-    .mode-menu-item .mode-icon{font-size:14px;width:20px;text-align:center}
-
-    .skel{background:linear-gradient(90deg,var(--surface) 25%,var(--surface-2) 50%,var(--surface) 75%);background-size:400% 100%;animation:shimmer 1.8s linear infinite;border-radius:4px;height:14px;margin-bottom:8px}
+    .skel{background:linear-gradient(90deg,var(--surface-2) 25%,var(--surface-3) 50%,var(--surface-2) 75%);background-size:400% 100%;animation:shimmer 1.6s linear infinite;border-radius:6px;height:13px;margin-bottom:10px}
     .skel.w30{width:30%}.skel.w50{width:50%}.skel.w70{width:70%}.skel.w90{width:90%}
-    .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border-2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+    .spinner{display:inline-block;width:15px;height:15px;border:2px solid var(--border-2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
 
+    /* ═══ Drawers, modal, toasts ═══ */
+    .drawer-overlay{position:fixed;inset:0;z-index:100;background:rgba(3,6,12,.5);backdrop-filter:blur(3px);animation:fadeIn .15s both}
+    .drawer{position:fixed;top:0;right:0;bottom:0;z-index:101;width:400px;max-width:92vw;display:flex;flex-direction:column;background:var(--bg-2);border-left:1px solid var(--border-2);box-shadow:var(--shadow-lg);animation:slideIn .22s var(--ease) both}
+    .drawer-title{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);font-size:15px;font-weight:700}
+    .drawer-body{flex:1;overflow-y:auto;padding:16px 18px}
+    .drawer-close{width:32px;height:32px;display:grid;place-items:center;border-radius:9px;border:none;background:transparent;color:var(--muted);cursor:pointer}
+    .drawer-close:hover{background:var(--surface-2);color:var(--ink)}
+    .section-label{margin:4px 0 10px;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+    .field{margin-bottom:14px}
+    .field label{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;font-size:12.5px;font-weight:500;color:var(--ink-2)}
+    .field input,.field select{width:100%;height:38px;padding:0 11px;border-radius:10px;border:1px solid var(--border-2);background:var(--surface);color:var(--ink);font-size:13.5px;font-family:inherit;outline:none;transition:border-color .15s,box-shadow .15s}
+    .field input:focus,.field select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+    .field .hint{margin-top:5px;font-size:11.5px;color:var(--muted)}
+    .field-row{display:flex;gap:10px}
+    .field-row .field{flex:1;min-width:0}
+    .check-row{display:flex;align-items:center;gap:10px;margin:6px 0 4px;font-size:13.5px;color:var(--ink-2);cursor:pointer}
+    .check-row input{width:16px;height:16px;accent-color:var(--accent)}
+    .btn-fetch{height:24px;padding:0 9px;border-radius:7px;border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);background:var(--accent-bg);color:var(--accent);font-size:11.5px;cursor:pointer}
+    .drawer-foot{padding:14px 18px;border-top:1px solid var(--border)}
+    .btn-primary,.modal-btn-primary{height:40px;padding:0 18px;border:none;border-radius:11px;background:var(--accent);color:var(--accent-ink);font-size:13.5px;font-weight:600;cursor:pointer;transition:filter .15s}
+    .btn-primary:hover,.modal-btn-primary:hover{filter:brightness(1.08)}
+    .modal-btn{height:38px;padding:0 20px;border-radius:11px;font-size:13.5px;font-weight:600;cursor:pointer}
+    .modal-btn-ghost{background:transparent;border:1px solid var(--border-2);color:var(--ink-2)}
+    .modal-btn-ghost:hover{background:var(--surface-2)}
 
+    .modal-overlay{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(3,6,12,.55);backdrop-filter:blur(4px);animation:fadeIn .2s both}
+    .modal-box{width:100%;max-width:400px;padding:26px 26px 22px;border-radius:20px;border:1px solid var(--border-2);background:var(--bg-2);box-shadow:var(--shadow-lg);text-align:center;animation:fadeUp .25s var(--ease) both}
+    .modal-icon{width:48px;height:48px;margin:0 auto 12px;display:grid;place-items:center;border-radius:14px;background:var(--accent-bg);color:var(--accent)}
+    .modal-icon svg{width:22px;height:22px}
+    .modal-title{font-size:17px;font-weight:700;margin-bottom:6px}
+    .modal-text{font-size:13.5px;color:var(--muted);line-height:1.6;margin-bottom:18px}
+    .modal-text code{color:var(--accent);font-size:12px}
+    .modal-actions{display:flex;gap:8px;justify-content:center}
+    .modal-hint{margin-top:12px;font-size:11.5px;color:var(--faint)}
 
-    /* ═══ Category/Domain Selector (separate from mode) ═══ */
-    .category-dropdown{position:relative}
-    .category-dropdown-btn{display:flex;align-items:center;gap:5px;padding:5px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--ink-2);font-size:12px;cursor:pointer;transition:all .15s;white-space:nowrap}
-    .category-dropdown-btn:hover{border-color:var(--accent);color:var(--accent)}
-    .category-dropdown-btn.active-category{border-color:#6366f1;color:#fff;background:linear-gradient(135deg,#3b82f6,#6366f1);box-shadow:0 2px 8px rgba(99,102,241,.25)}
-    .category-menu{position:absolute;top:calc(100% + 6px);right:0;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:6px;min-width:150px;box-shadow:0 8px 30px rgba(0,0,0,.3);z-index:100}
-    .category-menu-item{display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:6px;font-size:13px;color:var(--ink-2);cursor:pointer;transition:all .1s;border:none;background:transparent;width:100%;text-align:left}
-    .category-menu-item:hover{background:var(--surface);color:var(--ink)}
-    .category-menu-item.active{background:var(--accent-bg);color:var(--accent)}
-    .category-menu-item .cat-icon{font-size:14px;width:20px;text-align:center}
-    /* ═══ Specialized Domain Selector ═══ */
-    .domain-pills{display:flex;gap:4px;padding:4px 6px;margin-top:4px;flex-wrap:wrap}
-    .domain-pill{padding:4px 10px;border-radius:12px;font-size:10px;font-weight:600;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;transition:all .15s;text-transform:uppercase;letter-spacing:.5px}
-    .domain-pill:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
-    .domain-pill.active{border-color:#6366f1;color:#fff;background:linear-gradient(135deg,#3b82f6,#6366f1)}
-    .mode-menu-divider{height:1px;background:var(--border);margin:4px 8px}
-    /* ═══ Searching Animation ═══ */
-    @keyframes searchPulse{0%,100%{box-shadow:0 0 0 0 rgba(59,130,246,0)}50%{box-shadow:0 0 20px 4px rgba(59,130,246,.18)}}
-    @keyframes orbitalSpin{to{transform:rotate(360deg)}}
-    @keyframes dotFade{0%,100%{opacity:.3;transform:scale(.7)}50%{opacity:1;transform:scale(1)}}
-    .search-input.searching{border-color:#6366f1;animation:searchPulse 2s ease-in-out infinite;box-shadow:0 0 0 3px rgba(99,102,241,.15)}
-    .search-submit.searching{background:linear-gradient(135deg,#6366f1,#3b82f6);animation:orbitalSpin 1.2s linear infinite;border-radius:50%;pointer-events:none}
-    .search-submit.searching svg{display:none}
-    .search-submit.searching::after{content:'';width:18px;height:18px;border:2.5px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
-    .search-orbital{position:absolute;top:50%;left:50%;width:62px;height:62px;margin:-31px 0 0 -31px;pointer-events:none;animation:orbitalSpin 3s linear infinite}
-    .search-orbital .orbital-dot{position:absolute;width:5px;height:5px;background:#60a5fa;border-radius:50%;animation:dotFade 1.5s ease-in-out infinite}
-    .search-orbital .orbital-dot:nth-child(1){top:0;left:50%;transform:translateX(-50%);animation-delay:0s}
-    .search-orbital .orbital-dot:nth-child(2){top:50%;right:0;transform:translateY(-50%);animation-delay:.375s}
-    .search-orbital .orbital-dot:nth-child(3){bottom:0;left:50%;transform:translateX(-50%);animation-delay:.75s}
-    .search-orbital .orbital-dot:nth-child(4){top:50%;left:0;transform:translateY(-50%);animation-delay:1.125s}
-    .search-btn-wrap{position:relative;flex-shrink:0}
-    
-    /* ── v8.0: clickable citations ── */
-    .cite{
-      display:inline-block; vertical-align:super; font-size:11px; line-height:1;
-      color:var(--accent); text-decoration:none; padding:1px 3px; border-radius:3px;
-      background:color-mix(in srgb, var(--accent) 12%, transparent);
-      transition:background .15s ease, transform .15s ease;
-    }
-    .cite:hover{ background:color-mix(in srgb, var(--accent) 28%, transparent); transform:translateY(-1px); }
-    .cite-dead{ color:var(--muted); background:none; cursor:default; }
-    .consensus{
-      color:#34d399; font-weight:600;
-      background:color-mix(in srgb, #34d399 14%, transparent);
-      padding:1px 6px; border-radius:999px; font-size:11px;
-    }
-    .src-snip{ color:var(--muted); font-size:12px; line-height:1.45; margin:6px 0 2px; }
-    #stopBtn{
-      display:none; margin-left:8px; padding:8px 14px; border-radius:10px; cursor:pointer;
-      background:color-mix(in srgb, #f87171 16%, transparent);
-      color:#f87171; border:1px solid color-mix(in srgb, #f87171 40%, transparent);
-      font-size:13px; font-weight:600;
-    }
-    #stopBtn:hover{ background:color-mix(in srgb, #f87171 26%, transparent); }
-    #stopBtn.visible{ display:inline-block; }
-    /* ── v8.1: rendered Markdown in answers ── */
-    .md-table{ overflow-x:auto; margin:12px 0; }
-    .md-table table{ border-collapse:collapse; width:100%; font-size:13px; }
-    .md-table th,.md-table td{ border:1px solid var(--border-2); padding:6px 10px; text-align:left; vertical-align:top; }
-    .md-table th{ background:var(--bg-2); font-weight:600; }
-    #answerContent h4{ font-size:14px; margin:12px 0 6px; }
-    #answerContent ol,#answerContent ul{ padding-left:22px; margin:8px 0; }
-    #answerContent code{ background:var(--bg-2); padding:1px 5px; border-radius:4px; font-size:.92em; }
+    .hist-item{display:block;width:100%;text-align:left;padding:11px 12px;margin-bottom:6px;border-radius:12px;border:1px solid var(--border);background:var(--surface);cursor:pointer;transition:border-color .15s,background .15s}
+    .hist-item:hover{border-color:var(--accent);background:var(--surface-2)}
+    .hist-q{font-size:13.5px;font-weight:600;color:var(--ink)}
+    .hist-meta{margin-top:3px;font-size:11.5px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap}
+    .hist-ans{margin-top:5px;font-size:12.5px;color:var(--ink-2);line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .empty{padding:28px 10px;text-align:center;color:var(--muted);font-size:13.5px;line-height:1.6}
+
+    .toasts{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:300;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
+    .toast{pointer-events:auto;padding:10px 16px;border-radius:12px;background:var(--ink);color:var(--bg);font-size:13px;font-weight:500;box-shadow:var(--shadow-lg);animation:fadeUp .2s var(--ease) both}
+    .toast.err{background:var(--bad);color:#fff}
+    .footer-note{margin-top:28px;text-align:center;font-size:12px;color:var(--faint)}
+    .footer-note .kbd{margin:0 2px}
+    /* Phones — kept last so it overrides the base rules above. */
+    @media (max-width:560px){.mode-pills{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;max-width:100%}.mode-pills::-webkit-scrollbar{display:none}.composer-foot{flex-direction:column;align-items:stretch}.foot-right{justify-content:flex-start}.dropdown .menu{left:0;right:auto}.mode-dropdown{position:static}.mode-dropdown .menu{left:12px}.menu{top:calc(100% + 8px);bottom:auto}}
   </style>
 </head>
 <body>
-  <div id="dbModal" class="modal-overlay">
+  <!-- SVG icon sprite -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-auto" viewBox="0 0 24 24"><path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4z"/><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></symbol>
+    <symbol id="i-fast" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
+    <symbol id="i-deep" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M8 11h6M11 8v6"/></symbol>
+    <symbol id="i-study" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M8 7h7M8 11h5"/></symbol>
+    <symbol id="i-academic" viewBox="0 0 24 24"><path d="m2 9 10-5 10 5-10 5z"/><path d="M6 11v5c0 1.5 2.7 3 6 3s6-1.5 6-3v-5"/></symbol>
+    <symbol id="i-reddit" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-12.5 6.6L3 20l1.4-5.5A8 8 0 1 1 21 12z"/></symbol>
+    <symbol id="i-youtube" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="4"/><path d="m10 9 5 3-5 3z"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></symbol>
+    <symbol id="i-quote" viewBox="0 0 24 24"><path d="M7 7h4v4c0 3-1.5 5-4 6M15 7h4v4c0 3-1.5 5-4 6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></symbol>
+  </svg>
+
+  <div id="dbModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dbModalTitle">
     <div class="modal-box">
-      <div class="modal-icon">🗄️</div>
-      <div class="modal-title">Enable Search History?</div>
-      <div class="modal-text">Save search queries and AI answers locally.<br><code style="color:var(--accent);font-size:11px">~/.searchwala/history.json</code></div>
+      <div class="modal-icon"><svg class="i"><use href="#i-db"/></svg></div>
+      <div class="modal-title" id="dbModalTitle">Enable search history?</div>
+      <div class="modal-text">Saves your queries and AI answers on this machine only.<br><code>~/.searchwala/history.json</code></div>
       <div class="modal-actions">
-        <button class="modal-btn modal-btn-primary" onclick="initHistory(true)">Yes</button>
-        <button class="modal-btn modal-btn-ghost" onclick="initHistory(false)">No</button>
+        <button class="modal-btn modal-btn-primary" onclick="initHistory(true)">Enable</button>
+        <button class="modal-btn modal-btn-ghost" onclick="initHistory(false)">Not now</button>
       </div>
+      <div class="modal-hint">Press <span class="kbd">Esc</span> to skip</div>
     </div>
   </div>
+
+  <div class="aurora" aria-hidden="true"></div>
 
   <div class="app">
     <header class="topbar">
-      <div class="topbar-brand" onclick="goHome()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <button class="brand" onclick="goHome()" aria-label="SearchWala home">
+        <span class="brand-mark"><svg class="i"><use href="#i-search"/></svg></span>
         SearchWala
-      </div>
-      <div class="topbar-actions">
-        <div class="category-dropdown">
-          <button id="categoryBtn" class="category-dropdown-btn" onclick="toggleCategoryMenu()" title="Domain Focus">
-            <span id="catIcon">🎯</span>
-            <span id="catLabelBtn">All</span>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
-          </button>
-          <div id="categoryMenu" class="category-menu hidden">
-            <button class="category-menu-item active" data-cat="" onclick="selectCategory(this)"><span class="cat-icon">🌐</span>All Domains</button>
-            <button class="category-menu-item" data-cat="tech" onclick="selectCategory(this)"><span class="cat-icon">💻</span>Tech</button>
-            <button class="category-menu-item" data-cat="science" onclick="selectCategory(this)"><span class="cat-icon">🧬</span>Science</button>
-            <button class="category-menu-item" data-cat="finance" onclick="selectCategory(this)"><span class="cat-icon">📊</span>Finance</button>
-            <button class="category-menu-item" data-cat="health" onclick="selectCategory(this)"><span class="cat-icon">🏥</span>Health</button>
-            <button class="category-menu-item" data-cat="news" onclick="selectCategory(this)"><span class="cat-icon">📰</span>News</button>
-          </div>
-        </div>
-        <div class="mode-dropdown">
-          <button class="mode-dropdown-btn" onclick="toggleModeMenu()">
-            <span id="modeIcon">🤖</span>
-            <span id="modeLabelBtn" class="mode-label">Auto</span>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
-          </button>
-          <div id="modeMenu" class="mode-menu hidden">
-            <button class="mode-menu-item active" data-mode="auto" onclick="selectMode(this)" title="Sizes the search to your question"><span class="mode-icon">🤖</span>Auto</button>
-            <button class="mode-menu-item" data-mode="fast" onclick="selectMode(this)" title="A few reliable engines, quick concise answer"><span class="mode-icon">⚡</span>Fast</button>
-            <button class="mode-menu-item" data-mode="deep" onclick="selectMode(this)" title="Every engine, many sub-queries, long cited report"><span class="mode-icon">🔬</span>Deep Research</button>
-            <button class="mode-menu-item" data-mode="study" onclick="selectMode(this)" title="Structured study notes with a self-test"><span class="mode-icon">📘</span>Study</button>
-            <button class="mode-menu-item" data-mode="academic" onclick="selectMode(this)" title="Scholarly papers (OpenAlex, arXiv) and a literature review"><span class="mode-icon">🎓</span>Academic</button>
-            <div class="mode-menu-divider"></div>
-            <button class="mode-menu-item" data-mode="reddit" onclick="selectMode(this)"><span class="mode-icon">💬</span>Reddit</button>
-            <button class="mode-menu-item" data-mode="youtube" onclick="selectMode(this)"><span class="mode-icon">▶</span>YouTube</button>
-          </div>
-        </div>
-        <button class="icon-btn" onclick="toggleHistory()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-          History
-        </button>
-        <button class="icon-btn" onclick="openSettings()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
-          Settings
-        </button>
+      </button>
+      <div class="top-actions">
+        <button id="themeBtn" class="ghost-btn square" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme"><svg class="i"><use href="#i-moon"/></svg></button>
+        <button class="ghost-btn" onclick="toggleHistory()" title="History"><svg class="i"><use href="#i-history"/></svg><span class="lbl">History</span></button>
+        <button class="ghost-btn" onclick="openSettings()" title="Settings"><svg class="i"><use href="#i-settings"/></svg><span class="lbl">Settings</span></button>
       </div>
     </header>
 
-    <div class="center-wrap home-active">
-      <!-- Home hero (only shown before first search) -->
+    <main class="center-wrap home-active">
       <section id="homeView" class="home-hero">
-        <div class="home-title">What do you want to know?</div>
+        <span class="hero-badge"><span class="dot"></span>Meta-search · cited answers · runs on your machine</span>
+        <h1 class="home-title">What do you want to know?</h1>
+        <p class="home-sub">Searches many engines at once, reads the pages, and answers with sources you can check.</p>
       </section>
 
-      <!-- SEARCH BOX — always visible, centered -->
-      <div id="searchSection" class="search-wrap" style="padding:24px 0 16px">
-        <div class="search-row">
-          <input id="queryInput" class="search-input" type="text" placeholder="Ask anything..." autofocus />
-          <div class="search-btn-wrap">
-            <button id="runBtn" class="search-submit" onclick="runSearch()" title="Search">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-            </button>
-            <div id="searchOrbital" class="search-orbital hidden"><div class="orbital-dot"></div><div class="orbital-dot"></div><div class="orbital-dot"></div><div class="orbital-dot"></div></div>
+      <div id="searchSection" class="search-wrap">
+        <div class="composer" id="composer">
+          <div class="search-row">
+            <svg class="i"><use href="#i-search"/></svg>
+            <input id="queryInput" class="search-input" type="text" placeholder="Ask anything…" autocomplete="off" spellcheck="false" autofocus aria-label="Search query" />
+            <span class="kbd" title="Press / to focus">/</span>
+            <button id="stopBtn" type="button" title="Stop this search (Esc)"><svg class="i"><use href="#i-stop"/></svg>Stop</button>
+            <button id="runBtn" class="search-submit" onclick="runSearch()" title="Search (Enter)" aria-label="Search"><svg class="i"><use href="#i-send"/></svg></button>
           </div>
-          <!-- v8.0: a search can now be stopped (Esc also works). -->
-          <button id="stopBtn" type="button" title="Stop this search (Esc)">Stop</button>
+          <div class="composer-foot">
+            <div class="mode-pills" id="modePills" role="radiogroup" aria-label="Search mode">
+              <button class="mode-pill active" data-mode="auto" onclick="selectMode(this)" title="Sizes the search to your question"><svg class="i"><use href="#i-auto"/></svg>Auto</button>
+              <button class="mode-pill" data-mode="fast" onclick="selectMode(this)" title="A few reliable engines, quick concise answer"><svg class="i"><use href="#i-fast"/></svg>Fast</button>
+              <button class="mode-pill" data-mode="deep" onclick="selectMode(this)" title="Every engine, many sub-queries, long cited report"><svg class="i"><use href="#i-deep"/></svg>Deep</button>
+              <button class="mode-pill" data-mode="study" onclick="selectMode(this)" title="Structured study notes with a self-test"><svg class="i"><use href="#i-study"/></svg>Study</button>
+              <button class="mode-pill" data-mode="academic" onclick="selectMode(this)" title="Scholarly papers (OpenAlex, arXiv) and a literature review"><svg class="i"><use href="#i-academic"/></svg>Academic</button>
+              <div class="dropdown mode-dropdown">
+                <button class="mode-pill" id="moreModesBtn" onclick="toggleModeMenu()" aria-haspopup="true" title="More modes"><svg class="i"><use href="#i-more"/></svg><span id="modeLabelBtn">More</span></button>
+                <div id="modeMenu" class="menu hidden" style="left:0;right:auto">
+                  <button class="menu-item mode-menu-item" data-mode="reddit" onclick="selectMode(this)"><svg class="i"><use href="#i-reddit"/></svg><span>Reddit<small>Discussions and opinions</small></span></button>
+                  <button class="menu-item mode-menu-item" data-mode="youtube" onclick="selectMode(this)"><svg class="i"><use href="#i-youtube"/></svg><span>YouTube<small>Videos on the topic</small></span></button>
+                </div>
+              </div>
+            </div>
+            <div class="foot-right">
+              <div class="dropdown category-dropdown">
+                <button id="categoryBtn" class="chip-btn" onclick="toggleCategoryMenu()" title="Domain focus" aria-haspopup="true">
+                  <svg class="i"><use href="#i-globe"/></svg><span id="catLabelBtn">All domains</span><svg class="i"><use href="#i-chev"/></svg>
+                </button>
+                <div id="categoryMenu" class="menu hidden">
+                  <button class="menu-item category-menu-item active" data-cat="" onclick="selectCategory(this)"><span>All domains<small>No preference</small></span></button>
+                  <div class="menu-sep"></div>
+                  <button class="menu-item category-menu-item" data-cat="tech" onclick="selectCategory(this)"><span>Tech<small>Docs, GitHub, engineering blogs</small></span></button>
+                  <button class="menu-item category-menu-item" data-cat="science" onclick="selectCategory(this)"><span>Science<small>Journals and scholarly indices</small></span></button>
+                  <button class="menu-item category-menu-item" data-cat="finance" onclick="selectCategory(this)"><span>Finance<small>Regulators and market sources</small></span></button>
+                  <button class="menu-item category-menu-item" data-cat="health" onclick="selectCategory(this)"><span>Health<small>WHO, NIH, CDC, NHS</small></span></button>
+                  <button class="menu-item category-menu-item" data-cat="news" onclick="selectCategory(this)"><span>News<small>Recent reporting, dated timeline</small></span></button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <!-- Status bar -->
-        <div id="statusBar" class="status-bar hidden">
-          <span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span>
-          <span id="statusText">Searching...</span>
-          <span class="status-item"><span id="statusTime" class="status-val">0s</span></span>
-          <span class="status-item"><span id="statusMode" class="status-val">auto</span></span>
+
+        <!-- Live progress -->
+        <div id="statusBar" class="stage-bar hidden" aria-live="polite">
+          <div class="stages" id="stages">
+            <span class="stage" data-stage="search"><span class="sd"></span>Search</span><span class="stage-sep"></span>
+            <span class="stage" data-stage="read"><span class="sd"></span>Read</span><span class="stage-sep"></span>
+            <span class="stage" data-stage="rank"><span class="sd"></span>Rank</span><span class="stage-sep"></span>
+            <span class="stage" data-stage="write"><span class="sd"></span>Write</span>
+          </div>
+          <span id="statusText">Searching…</span>
+          <span class="stage-info"><span id="statusMode" class="tag accent">Auto</span><span id="statusTime" class="status-val">0.0s</span></span>
         </div>
         <div id="progressTrack" class="progress-track hidden"><div id="progressFill" class="progress-fill"></div></div>
+
+        <div id="suggestions" class="suggestions" aria-label="Example questions"></div>
       </div>
 
-      <!-- RESULTS — appears below search box -->
-      <section id="resultsArea" class="results-area hidden">
+      <section id="resultsArea" class="results-area hidden" aria-live="polite">
+        <div class="q-head">
+          <h2 id="queryTitle" class="q-title"></h2>
+          <div id="resultMeta" class="q-meta"></div>
+        </div>
         <div id="sourcesStrip" class="sources-strip"></div>
-
-        <div class="answer-area">
-          <div class="answer-header">
-            <div class="answer-label">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 017 7c0 2.38-1.19 4.47-3 5.74V17a2 2 0 01-2 2h-4a2 2 0 01-2-2v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 017-7z"/><line x1="9" y1="21" x2="15" y2="21"/></svg>
-              Answer
+        <div class="results-grid">
+          <div class="main-col">
+            <div id="highlightCard" class="highlight-card hidden"></div>
+            <div class="answer-card answer-area">
+              <div class="answer-header">
+                <div class="answer-label"><span class="ai-dot"><svg class="i"><use href="#i-spark"/></svg></span><span id="answerLabel">Answer</span></div>
+                <div class="answer-actions">
+                  <button id="copyBtn" class="act-btn hidden" onclick="copyAnswer()" title="Copy answer"><svg class="i"><use href="#i-copy"/></svg>Copy</button>
+                  <button id="ttsBtn" class="tts-btn hidden" onclick="toggleTTS()"><svg class="i"><use href="#i-volume"/></svg><span id="ttsLabel">Listen</span></button>
+                </div>
+              </div>
+              <div id="answerContent" class="answer-content"></div>
+              <div id="llmError" class="llm-err hidden"></div>
             </div>
-            <button id="ttsBtn" class="tts-btn hidden" onclick="toggleTTS()">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
-              <span id="ttsLabel">Listen</span>
-            </button>
+            <div class="all-sources hidden" id="allSourcesWrap">
+              <div id="allSourcesGrid" class="all-sources-grid hidden"></div>
+            </div>
           </div>
-          <div id="answerContent" class="answer-content"></div>
-          <div id="llmError" class="llm-err hidden"></div>
+          <aside class="side-col">
+            <div class="side-panel">
+              <div class="side-head"><span>Sources</span><span class="count" id="allSourcesCount">0</span></div>
+              <div class="side-list" id="sideList"></div>
+              <div class="side-foot"><button class="all-sources-toggle" onclick="toggleAllSources()"><svg class="i"><use href="#i-layers"/></svg><span id="allToggleLabel">Show all sources</span></button></div>
+            </div>
+          </aside>
         </div>
-
-        <div class="all-sources" id="allSourcesWrap">
-          <button class="all-sources-toggle" onclick="toggleAllSources()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            View all sources <span id="allSourcesCount">0</span>
-          </button>
-          <div id="allSourcesGrid" class="all-sources-grid hidden"></div>
-        </div>
+        <p class="footer-note">Press <span class="kbd">/</span> to search again · <span class="kbd">Esc</span> to stop</p>
       </section>
-    </div>
+    </main>
   </div>
 
-  <!-- Settings Drawer -->
+  <!-- Settings -->
   <div id="drawerOverlay" class="drawer-overlay hidden" onclick="closeSettings()"></div>
-  <div id="settingsDrawer" class="drawer hidden">
-    <div class="drawer-title">Settings <button class="drawer-close" onclick="closeSettings()">✕</button></div>
-    <div class="field">
-      <label>Provider</label>
-      <select id="provider">
-        <option value="cerebras">Cerebras</option>
-        <option value="groq">Groq</option>
-        <option value="openai">OpenAI</option>
-        <option value="openai_compatible">OpenAI Compatible</option>
-        <option value="anthropic">Anthropic</option>
-        <option value="gemini">Gemini</option>
-        <option value="xai">xAI (Grok)</option>
-        <option value="deepseek">DeepSeek</option>
-        <option value="ollama">Ollama</option>
-        <option value="openrouter">OpenRouter</option>
-        <option value="together">Together AI</option>
-        <option value="fireworks">Fireworks AI</option>
-        <option value="sambanova">SambaNova</option>
-        <option value="nvidia_nim">NVIDIA NIM</option>
-      </select>
-    </div>
-    <div class="field"><label>API Key</label><input id="apiKey" type="password" placeholder="sk-..." /></div>
-    <div class="field-row">
-      <div class="field"><label>Base URL</label><input id="baseUrl" type="text" placeholder="auto" /></div>
+  <div id="settingsDrawer" class="drawer hidden" role="dialog" aria-label="Settings">
+    <div class="drawer-title">Settings <button class="drawer-close" onclick="closeSettings()" aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></div>
+    <div class="drawer-body">
+      <div class="section-label">AI model</div>
       <div class="field">
-        <label>Model <button class="btn-fetch" id="fetchBtn" onclick="fetchModels()">⟳ Fetch</button></label>
+        <label for="provider">Provider</label>
+        <select id="provider">
+          <option value="cerebras">Cerebras</option>
+          <option value="groq">Groq</option>
+          <option value="openai">OpenAI</option>
+          <option value="openai_compatible">OpenAI compatible</option>
+          <option value="anthropic">Anthropic</option>
+          <option value="gemini">Gemini</option>
+          <option value="xai">xAI (Grok)</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="ollama">Ollama (local)</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="together">Together AI</option>
+          <option value="fireworks">Fireworks AI</option>
+          <option value="sambanova">SambaNova</option>
+          <option value="nvidia_nim">NVIDIA NIM</option>
+        </select>
+      </div>
+      <div class="field"><label for="apiKey">API key</label><input id="apiKey" type="password" placeholder="sk-…" autocomplete="off" /><div class="hint">Stored in this browser only; sent to your provider with each search.</div></div>
+      <div class="field"><label for="baseUrl">Base URL</label><input id="baseUrl" type="text" placeholder="auto" /></div>
+      <div class="field">
+        <label for="modelInput">Model <button class="btn-fetch" id="fetchBtn" onclick="fetchModels()">Fetch list</button></label>
         <input id="modelInput" type="text" placeholder="model" />
-        <select id="modelSelect" class="hidden" style="margin-top:4px"></select>
+        <select id="modelSelect" class="hidden" style="margin-top:6px"></select>
+      </div>
+      <label class="check-row"><input id="enableLlm" type="checkbox" checked /> Write an AI answer from the sources</label>
+      <div class="section-label" style="margin-top:20px">Search</div>
+      <div class="field">
+        <label for="maxResults">Max sources</label>
+        <input id="maxResults" type="number" value="" min="3" max="300" placeholder="Let each mode decide" />
+        <div class="hint">Leave blank: Fast reads ~10 pages, Deep ~150.</div>
+      </div>
+      <div class="section-label" style="margin-top:20px">Appearance</div>
+      <div class="field">
+        <label for="themeSelect">Theme</label>
+        <select id="themeSelect" onchange="setTheme(this.value)"><option value="system">Match system</option><option value="dark">Dark</option><option value="light">Light</option></select>
       </div>
     </div>
-    <label class="check-row"><input id="enableLlm" type="checkbox" checked /> Enable AI Synthesis</label>
-    <div class="field" style="margin-top:12px">
-      <label>Max sources <span style="color:var(--muted);font-weight:400">(blank = let each mode decide)</span></label>
-      <input id="maxResults" type="number" value="" min="3" max="300" placeholder="mode default" />
-    </div>
-    <button class="modal-btn modal-btn-primary" style="width:100%;margin-top:12px" onclick="saveSettings();closeSettings()">Save & Close</button>
+    <div class="drawer-foot"><button class="btn-primary" style="width:100%" onclick="saveSettings();closeSettings();toast('Settings saved')">Save</button></div>
   </div>
+
+  <!-- History -->
+  <div id="historyOverlay" class="drawer-overlay hidden" onclick="closeHistory()"></div>
+  <div id="historyDrawer" class="drawer hidden" role="dialog" aria-label="History">
+    <div class="drawer-title">History
+      <span style="display:flex;gap:4px">
+        <button class="drawer-close" onclick="clearHistory()" title="Clear history" aria-label="Clear history"><svg class="i"><use href="#i-trash"/></svg></button>
+        <button class="drawer-close" onclick="closeHistory()" aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
+      </span>
+    </div>
+    <div class="drawer-body" id="historyList"></div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script>
     // Runs before the main script and does not depend on it, so a failure
@@ -437,19 +578,21 @@
   <script>
     const $ = id => document.getElementById(id);
     const dom = {
-      queryInput:$('queryInput'), runBtn:$('runBtn'), stopBtn:$('stopBtn'),
-      homeView:$('homeView'), resultsArea:$('resultsArea'),
-      sourcesStrip:$('sourcesStrip'),
-      answerContent:$('answerContent'), llmError:$('llmError'),
-      allSourcesCount:$('allSourcesCount'), allSourcesGrid:$('allSourcesGrid'),
+      queryInput:$('queryInput'), runBtn:$('runBtn'), stopBtn:$('stopBtn'), composer:$('composer'),
+      homeView:$('homeView'), resultsArea:$('resultsArea'), suggestions:$('suggestions'),
+      queryTitle:$('queryTitle'), resultMeta:$('resultMeta'),
+      sourcesStrip:$('sourcesStrip'), sideList:$('sideList'), highlightCard:$('highlightCard'),
+      answerContent:$('answerContent'), answerLabel:$('answerLabel'), llmError:$('llmError'),
+      allSourcesWrap:$('allSourcesWrap'), allSourcesCount:$('allSourcesCount'), allSourcesGrid:$('allSourcesGrid'),
       statusBar:$('statusBar'), statusText:$('statusText'),
       statusTime:$('statusTime'), statusMode:$('statusMode'),
       progressTrack:$('progressTrack'), progressFill:$('progressFill'),
-      ttsBtn:$('ttsBtn'), ttsLabel:$('ttsLabel'),
+      ttsBtn:$('ttsBtn'), ttsLabel:$('ttsLabel'), copyBtn:$('copyBtn'),
       provider:$('provider'), apiKey:$('apiKey'), baseUrl:$('baseUrl'),
       modelInput:$('modelInput'), modelSelect:$('modelSelect'),
       enableLlm:$('enableLlm'), maxResults:$('maxResults'),
       drawerOverlay:$('drawerOverlay'), settingsDrawer:$('settingsDrawer'),
+      historyOverlay:$('historyOverlay'), historyDrawer:$('historyDrawer'), historyList:$('historyList'),
       dbModal:$('dbModal'),
     };
 
@@ -457,8 +600,7 @@
     let historyEnabled = false;
     let searchTimer = null;
     let searchStartTime = 0;
-    let progressInterval = null;
-    let currentAnswer = '';      // For TTS
+    let currentAnswer = '';      // For TTS and copy
     let ttsPlaying = false;
 
     // Presets
@@ -479,7 +621,8 @@
       nvidia_nim:{base:'https://integrate.api.nvidia.com/v1',model:'meta/llama-3.1-70b-instruct'},
     };
 
-    function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+    function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+    function escRe(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
     function cleanAnswer(s){
       return String(s||'')
         .replace(/<think>[\s\S]*?<\/think>/gi,'')       // Standard <think>...</think>
@@ -492,8 +635,16 @@
         .replace(/^\s*>\s*Internal:.*$/gim,'')             // > Internal: notes
         .trim()
     }
-    function domain(url){try{return new URL(url).hostname.replace('www.','')}catch{return url}}
-    function favicon(url){return `https://www.google.com/s2/favicons?domain=${domain(url)}&sz=32`}
+    function domain(url){try{return new URL(url).hostname.replace(/^www\./,'')}catch{return url}}
+    function favicon(url){return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain(url))}&sz=32`}
+    function icon(name){return `<svg class="i"><use href="#i-${name}"/></svg>`}
+
+    function toast(msg,isErr){
+      const t=document.createElement('div');
+      t.className='toast'+(isErr?' err':'');t.textContent=msg;
+      $('toasts').appendChild(t);
+      setTimeout(()=>{t.style.transition='opacity .3s';t.style.opacity='0';setTimeout(()=>t.remove(),300)},2400);
+    }
 
     function apiBase(){
       if(location.origin && location.origin!=='null')return location.origin;
@@ -507,11 +658,32 @@
       return res.json();
     }
 
+    // ═══ Theme ═══
+    function currentTheme(){
+      const t=document.documentElement.dataset.theme;
+      if(t)return t;
+      return matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';
+    }
+    function syncThemeIcon(){$('themeBtn').innerHTML=icon(currentTheme()==='light'?'moon':'sun')}
+    function setTheme(v){
+      try{
+        if(v==='light'||v==='dark'){document.documentElement.dataset.theme=v;localStorage.setItem('ss_theme',v)}
+        else{delete document.documentElement.dataset.theme;localStorage.removeItem('ss_theme')}
+      }catch(_){}
+      $('themeSelect').value=(v==='light'||v==='dark')?v:'system';
+      syncThemeIcon();
+    }
+    function toggleTheme(){setTheme(currentTheme()==='light'?'dark':'light')}
+
     // ═══ Navigation ═══
     function goHome(){
+      cancelIfRunning();
+      document.body.classList.remove('has-results');
       document.querySelector('.center-wrap').classList.add('home-active');
       dom.homeView.classList.remove('hidden');
+      dom.suggestions.classList.remove('hidden');
       dom.resultsArea.classList.add('hidden');
+      dom.queryInput.value='';
       dom.queryInput.focus();
     }
 
@@ -525,6 +697,7 @@
       localStorage.setItem('ss_model',dom.modelInput.value);
       localStorage.setItem('ss_llm_on',dom.enableLlm.checked?'1':'0');
       localStorage.setItem('ss_max_sources_v81',dom.maxResults.value);
+      localStorage.setItem('ss_mode',focusMode);
     }
     function loadSettings(){
       const p=localStorage.getItem('ss_provider');
@@ -535,7 +708,7 @@
       // New key: the old 'ss_max_results' was almost always the forced default
       // of 50, which would now pin every mode to 50 sources. Ignore it.
       const r=localStorage.getItem('ss_max_sources_v81');
-      if(p)dom.provider.value=p;
+      if(p&&presets[p])dom.provider.value=p;
       if(k)dom.apiKey.value=k;
       if(u)dom.baseUrl.value=u;
       if(m)dom.modelInput.value=m;
@@ -544,6 +717,14 @@
       const pr=presets[dom.provider.value]||presets.cerebras;
       if(!dom.modelInput.value)dom.modelInput.value=pr.model;
       if(!dom.baseUrl.value&&pr.base)dom.baseUrl.value=pr.base;
+      const savedMode=localStorage.getItem('ss_mode');
+      if(savedMode&&modeLabels[savedMode]){
+        const el=document.querySelector(`[data-mode="${savedMode}"]`);
+        if(el)selectMode(el,true);
+      }
+      let t=null;try{t=localStorage.getItem('ss_theme')}catch(_){}
+      $('themeSelect').value=t||'system';
+      syncThemeIcon();
     }
     dom.provider.addEventListener('change',()=>{
       const pr=presets[dom.provider.value]||{};
@@ -557,8 +738,8 @@
     async function fetchModels(){
       const key=dom.apiKey.value.trim();
       const base=dom.baseUrl.value.trim()||(presets[dom.provider.value]||{}).base;
-      if(!key||!base){alert('Enter API Key & Base URL');return}
-      $('fetchBtn').textContent='...';
+      if(!key||!base){toast('Enter an API key and base URL first',true);return}
+      $('fetchBtn').textContent='Loading…';
       try{
         const data=await api('/api/models','POST',{api_key:key,base_url:base});
         if(data?.models?.length){
@@ -566,131 +747,175 @@
           dom.modelSelect.classList.remove('hidden');
           dom.modelSelect.onchange=()=>{dom.modelInput.value=dom.modelSelect.value;saveSettings()};
           dom.modelInput.value=data.models[0];saveSettings();
+          toast(`${data.models.length} models loaded`);
+        }else{
+          toast(data?.error||'No models returned',true);
         }
-      }catch(e){alert('Failed: '+e.message)}
-      $('fetchBtn').textContent='⟳ Fetch';
+      }catch(e){toast('Failed: '+e.message,true)}
+      $('fetchBtn').textContent='Fetch list';
     }
 
-    // ═══ Mode dropdown (topbar) ═══
-    // ═══ Mode dropdown (search modes) ═══
+    // ═══ Modes ═══
     const modeLabels={auto:'Auto',fast:'Fast',deep:'Deep Research',study:'Study',academic:'Academic',reddit:'Reddit',youtube:'YouTube'};
-    const modeIcons={auto:'🤖',fast:'⚡',deep:'🔬',study:'📘',academic:'🎓',reddit:'💬',youtube:'▶'};
-    // What the user is waiting for, per mode (no more "querying 90+ engines").
+    const modeIconNames={auto:'auto',fast:'fast',deep:'deep',study:'study',academic:'academic',reddit:'reddit',youtube:'youtube'};
+    // What the user is waiting for, per mode.
     const modeStatus={
       auto:'Analysing your question…',
-      fast:'Fast search: a few reliable engines…',
-      deep:'Deep research: every engine and several sub-queries — this takes a while…',
-      study:'Study mode: gathering educational sources…',
-      academic:'Academic mode: searching OpenAlex and arXiv…',
+      fast:'Checking a few reliable engines…',
+      deep:'Deep research: every engine and several sub-queries…',
+      study:'Gathering educational sources…',
+      academic:'Searching OpenAlex and arXiv…',
       reddit:'Searching Reddit discussions…',
       youtube:'Searching YouTube…'
     };
     // LLM timeout per mode: Deep runs several calls (evidence extraction, then
     // the report), study notes and literature reviews are long single calls.
     const modeTimeoutMs={fast:30000,auto:60000,deep:240000,study:120000,academic:120000,reddit:60000,youtube:60000};
+    const modeExamples={
+      auto:['How does mRNA vaccine technology work?','Rust vs Go for backend services','भारत की राजधानी क्या है'],
+      fast:['Boiling point of water at sea level','Who invented the telephone?','Population of Japan'],
+      deep:['Impact of AI on software engineering jobs','Solid-state batteries: state of the art','Causes of the 2008 financial crisis'],
+      study:['Photosynthesis explained simply','Newton\'s laws of motion','How does TCP work?'],
+      academic:['Transformer architecture efficiency','CRISPR off-target effects','Microplastics in drinking water'],
+      reddit:['Best mechanical keyboard for programming','Is a CS degree worth it in 2026?'],
+      youtube:['How do solar panels work','Learn Rust in one video'],
+    };
     function toggleModeMenu(){$('modeMenu').classList.toggle('hidden');$('categoryMenu').classList.add('hidden')}
-    function selectMode(el){
+    function selectMode(el,silent){
       focusMode=el.dataset.mode;
-      $('modeMenu').querySelectorAll('.mode-menu-item').forEach(i=>i.classList.remove('active'));
+      document.querySelectorAll('[data-mode]').forEach(i=>i.classList.remove('active'));
       el.classList.add('active');
       $('modeMenu').classList.add('hidden');
       syncModeUI();
       dom.statusMode.textContent=modeSummary();
+      if(!silent){try{localStorage.setItem('ss_mode',focusMode)}catch(_){}}
+      renderSuggestions();
     }
     function syncModeUI(){
-      $('modeLabelBtn').textContent=modeLabels[focusMode]||'Auto';
-      $('modeIcon').textContent=modeIcons[focusMode]||'🤖';
+      const extra=focusMode==='reddit'||focusMode==='youtube';
+      const more=$('moreModesBtn');
+      more.classList.toggle('active',extra);
+      more.innerHTML=extra?`${icon(modeIconNames[focusMode])}<span id="modeLabelBtn">${modeLabels[focusMode]}</span>`:`${icon('more')}<span id="modeLabelBtn">More</span>`;
+      dom.queryInput.placeholder=focusMode==='fast'?'Ask a quick question…':focusMode==='deep'?'What should I research in depth?':focusMode==='study'?'What do you want to learn?':'Ask anything…';
     }
 
-    // ═══ Category dropdown (domain specialization) ═══
-    const catLabels={'':'All',tech:'Tech',science:'Science',finance:'Finance',health:'Health',news:'News'};
-    const catIcons={'':'🌐',tech:'💻',science:'🧬',finance:'📊',health:'🏥',news:'📰'};
+    // ═══ Domain focus ═══
+    const catLabels={'':'All domains',tech:'Tech',science:'Science',finance:'Finance',health:'Health',news:'News'};
     let selectedCategory='';
-
     function toggleCategoryMenu(){$('categoryMenu').classList.toggle('hidden');$('modeMenu').classList.add('hidden')}
     function selectCategory(el){
       selectedCategory=el.dataset.cat||'';
       $('categoryMenu').querySelectorAll('.category-menu-item').forEach(i=>i.classList.remove('active'));
       el.classList.add('active');
       $('categoryMenu').classList.add('hidden');
-      $('catLabelBtn').textContent=catLabels[selectedCategory]||'All';
-      $('catIcon').textContent=catIcons[selectedCategory]||'🌐';
-      // Visual: highlight button when a domain is active
-      const btn=$('categoryBtn');
-      if(selectedCategory){btn.classList.add('active-category')}else{btn.classList.remove('active-category')}
+      $('catLabelBtn').textContent=catLabels[selectedCategory]||'All domains';
+      $('categoryBtn').classList.toggle('active-category',!!selectedCategory);
       dom.statusMode.textContent=modeSummary();
     }
 
     // v8.1: mode and domain are sent SEPARATELY. v8.0 returned
-    // 'specialized_'+category here, discarding the selected mode — choosing
-    // Deep Research and then Health silently produced a non-deep search.
-    function getEffectiveFocus(){
-      return focusMode;
-    }
+    // 'specialized_'+category here, discarding the selected mode.
+    function getEffectiveFocus(){return focusMode}
     function modeSummary(){
       const m=modeLabels[focusMode]||'Auto';
       return selectedCategory?`${m} · ${catLabels[selectedCategory]}`:m;
     }
 
-    // Close all dropdowns on click outside
+    // Close menus on click outside
     document.addEventListener('click',e=>{
       if(!e.target.closest('.mode-dropdown'))$('modeMenu').classList.add('hidden');
       if(!e.target.closest('.category-dropdown'))$('categoryMenu').classList.add('hidden');
     });
 
+    function renderSuggestions(){
+      const list=modeExamples[focusMode]||modeExamples.auto;
+      dom.suggestions.innerHTML=list.map(q=>`<button class="suggestion" data-q="${esc(q)}">${icon('search')}${esc(q)}</button>`).join('');
+      dom.suggestions.querySelectorAll('.suggestion').forEach(b=>b.addEventListener('click',()=>{dom.queryInput.value=b.dataset.q;runSearch()}));
+    }
+
     // ═══ History ═══
     function initHistory(yes){
       closeHistoryModal();
-      if(yes){historyEnabled=true;api('/api/history/enable','POST').catch(()=>{})}
+      try{localStorage.setItem('ss_history_on',yes?'1':'0')}catch(_){}
+      if(yes){historyEnabled=true;api('/api/history/enable','POST').catch(()=>{});toast('History enabled')}
     }
+    function closeHistory(){dom.historyOverlay.classList.add('hidden');dom.historyDrawer.classList.add('hidden')}
     function toggleHistory(){
-      api('/api/history','GET').then(data=>{
-        if(!data?.entries?.length){alert('No history entries yet.');return}
-        const text=data.entries.slice(0,10).map(e=>`• ${e.query} (${e.sources_count} sources, ${e.timestamp})`).join('\n');
-        alert('Recent History:\n\n'+text);
-      }).catch(()=>alert('History not available'));
+      if(!dom.historyDrawer.classList.contains('hidden')){closeHistory();return}
+      dom.historyOverlay.classList.remove('hidden');dom.historyDrawer.classList.remove('hidden');
+      dom.historyList.innerHTML='<div class="empty"><span class="spinner"></span></div>';
+      fetch(apiBase()+'/api/history').then(r=>r.json()).then(data=>{
+        const entries=(data?.entries||[]).slice().sort((a,b)=>String(b.timestamp).localeCompare(String(a.timestamp)));
+        if(!entries.length){
+          dom.historyList.innerHTML=`<div class="empty">${data?.enabled?'No searches saved yet.':'History is off.<br><a href="#" id="enableHistLink">Enable history</a> to keep your searches on this machine.'}</div>`;
+          const l=$('enableHistLink');if(l)l.onclick=e=>{e.preventDefault();initHistory(true);closeHistory()};
+          return;
+        }
+        dom.historyList.innerHTML=entries.slice(0,100).map(e=>`
+          <button class="hist-item" data-q="${esc(e.query)}" data-mode="${esc(e.focus_mode||'')}">
+            <div class="hist-q">${esc(e.query)}</div>
+            <div class="hist-meta"><span>${esc(e.focus_mode||'')}</span><span>${e.sources_count||0} sources</span><span>${esc(String(e.timestamp||'').replace('T',' ').slice(0,16))}</span></div>
+            ${e.answer?`<div class="hist-ans">${esc(cleanAnswer(e.answer).replace(/[#*\[\]]/g,'').slice(0,220))}</div>`:''}
+          </button>`).join('');
+        dom.historyList.querySelectorAll('.hist-item').forEach(b=>b.addEventListener('click',()=>{
+          closeHistory();dom.queryInput.value=b.dataset.q;runSearch();
+        }));
+      }).catch(()=>{dom.historyList.innerHTML='<div class="empty">History is not available.</div>'});
+    }
+    function clearHistory(){
+      if(!confirm('Delete all saved searches?'))return;
+      fetch(apiBase()+'/api/history',{method:'DELETE'}).then(()=>{toast('History cleared');dom.historyList.innerHTML='<div class="empty">No searches saved yet.</div>'}).catch(()=>toast('Could not clear history',true));
     }
 
-    // ═══ Status bar ═══
+    // ═══ Progress ═══
+    const STAGES=['search','read','rank','write'];
+    function setStage(name){
+      const idx=STAGES.indexOf(name);
+      document.querySelectorAll('#stages .stage').forEach(el=>{
+        const i=STAGES.indexOf(el.dataset.stage);
+        el.classList.toggle('done',i<idx);
+        el.classList.toggle('active',i===idx);
+      });
+      const pct=[12,40,68,85][idx]??92;
+      dom.progressFill.style.width=Math.max(parseFloat(dom.progressFill.style.width)||0,pct)+'%';
+    }
     function startStatus(){
       searchStartTime=Date.now();
       dom.statusBar.classList.remove('hidden');
       dom.progressTrack.classList.remove('hidden');
-      dom.progressFill.style.width='0%';
-      dom.statusMode.textContent=focusMode;
-      let pct=0;
+      dom.progressFill.style.width='4%';
+      dom.statusMode.textContent=modeSummary();
+      setStage('search');
+      clearInterval(searchTimer);
       searchTimer=setInterval(()=>{
-        const elapsed=((Date.now()-searchStartTime)/1000).toFixed(1);
-        dom.statusTime.textContent=elapsed+'s';
-        pct+=Math.random()*4;if(pct>92)pct=92;
-        dom.progressFill.style.width=pct+'%';
-      },400);
+        dom.statusTime.textContent=((Date.now()-searchStartTime)/1000).toFixed(1)+'s';
+        const w=parseFloat(dom.progressFill.style.width)||0;
+        if(w<90)dom.progressFill.style.width=(w+0.4)+'%';
+      },200);
     }
     function updateStatus(text){dom.statusText.textContent=text}
     function stopStatus(){
       clearInterval(searchTimer);
-      const elapsed=((Date.now()-searchStartTime)/1000).toFixed(1);
-      dom.statusTime.textContent=elapsed+'s';
+      dom.statusTime.textContent=((Date.now()-searchStartTime)/1000).toFixed(1)+'s';
+      document.querySelectorAll('#stages .stage').forEach(el=>{el.classList.remove('active');el.classList.add('done')});
       dom.statusText.textContent='Done';
       dom.progressFill.style.width='100%';
       setTimeout(()=>{
+        if(inflight)return;
         dom.statusBar.classList.add('hidden');
         dom.progressTrack.classList.add('hidden');
-      },1500);
+      },1200);
     }
 
     // ═══ TTS — Cached Chunked Edge Neural Voice (en-US-AvaNeural) ═══
-    // Smart 10-word progressive streaming + aggressive text cleaning + no double voice
     let ttsAudio=null;
     let ttsChunks=[];
     let ttsChunkIdx=0;
     let ttsAbort=false;
     let ttsSessionId=0; // Session guard: prevents double voice from race conditions
-    // Global cache: text→blobURL (persists across replays)
     const ttsCache=new Map();
     const TTS_CACHE_MAX=100;
-
-    const TTS_ICON=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>`;
+    const TTS_ICON=icon('volume');
 
     function ttsReset(){
       ttsAbort=true;
@@ -715,7 +940,6 @@
       if(!res.ok)throw new Error('TTS '+res.status);
       const blob=await res.blob();
       const url=URL.createObjectURL(blob);
-      // LRU eviction
       if(ttsCache.size>=TTS_CACHE_MAX){
         const oldest=ttsCache.keys().next().value;
         URL.revokeObjectURL(ttsCache.get(oldest));
@@ -725,86 +949,69 @@
       return url;
     }
 
-    // ═══ Aggressive TTS Text Cleaner ═══
-    // Strips ALL non-speech artifacts: markdown, sources, URLs, references, metadata
+    // Strips all non-speech artifacts: markdown, sources, URLs, references.
     function ttsCleanText(raw){
       return raw
-        // Strip source references: [1], [2,3], [1][2], (Source 1), etc.
         .replace(/\[\d+(?:,\s*\d+)*\]/g,'')
         .replace(/\[\d+\]\[\d+\]/g,'')
         .replace(/\(Source\s*\d+\)/gi,'')
         .replace(/Source:\s*\S+/gi,'')
-        // Strip ALL URLs (http, https, www)
         .replace(/https?:\/\/\S+/g,'')
         .replace(/www\.\S+/g,'')
-        // Strip markdown formatting
-        .replace(/\*\*\*(.*?)\*\*\*/g,'$1')  // bold+italic
-        .replace(/\*\*(.*?)\*\*/g,'$1')       // bold
-        .replace(/\*(.*?)\*/g,'$1')           // italic
-        .replace(/#{1,6}\s*/g,'')             // headers
-        .replace(/^[-*+]\s+/gm,'')            // list bullets
-        .replace(/^\d+\.\s+/gm,'')            // numbered lists
-        .replace(/[`]/g,'')                   // code ticks
-        .replace(/\[([^\]]+)\]\([^)]+\)/g,'$1') // markdown links [text](url) → text
-        .replace(/[\[\]]/g,'')                // remaining brackets
-        // Strip common LLM artifacts
+        .replace(/\*\*\*(.*?)\*\*\*/g,'$1')
+        .replace(/\*\*(.*?)\*\*/g,'$1')
+        .replace(/\*(.*?)\*/g,'$1')
+        .replace(/#{1,6}\s*/g,'')
+        .replace(/^[-*+]\s+/gm,'')
+        .replace(/^\d+\.\s+/gm,'')
+        .replace(/[`]/g,'')
+        .replace(/\[([^\]]+)\]\([^)]+\)/g,'$1')
+        .replace(/[\[\]]/g,'')
         .replace(/^Based on the provided sources[:,.]?/gim,'')
         .replace(/^According to the sources[:,.]?/gim,'')
         .replace(/^Here are the (?:focused )?bullet points[^:]*:/gim,'')
         .replace(/^Here is a (?:comprehensive |detailed )?(?:summary|answer)[^:]*:/gim,'')
-        // Strip special characters that TTS reads literally
         .replace(/[•·▪▸►→←↓↑|~^]/g,'')
-        .replace(/\s*[—–]\s*/g,', ')          // em/en dashes → comma pause
-        // Normalize whitespace
-        .replace(/\n{2,}/g,'. ')              // double newlines → sentence break
-        .replace(/\n/g,' ')                   // single newlines → space
-        .replace(/\s{2,}/g,' ')               // collapse multiple spaces
-        .replace(/\.{2,}/g,'.')               // collapse dots
-        .replace(/^[\s.,:;\-!?]+/,'')         // strip leading punctuation
+        .replace(/\s*[—–]\s*/g,', ')
+        .replace(/\n{2,}/g,'. ')
+        .replace(/\n/g,' ')
+        .replace(/\s{2,}/g,' ')
+        .replace(/\.{2,}/g,'.')
+        .replace(/^[\s.,:;\-!?]+/,'')
         .trim();
     }
 
-    // Split into smart 10-word chunks for progressive TTS streaming
+    // Split into 10-word chunks for progressive TTS streaming
     function ttsSplit(text){
       const words=text.split(/\s+/).filter(w=>w.length>0);
       if(!words.length)return [text];
       const chunks=[];
-      const CHUNK_SIZE=10;
-      for(let i=0;i<words.length;i+=CHUNK_SIZE){
-        const chunk=words.slice(i,i+CHUNK_SIZE).join(' ');
+      for(let i=0;i<words.length;i+=10){
+        const chunk=words.slice(i,i+10).join(' ');
         if(chunk.length>3) chunks.push(chunk);
       }
       return chunks.length?chunks:[text];
     }
 
-    // Play chunk with session guard to prevent double voice
     async function ttsPlayChunk(idx){
-      const mySession=ttsSessionId; // capture session
+      const mySession=ttsSessionId;
       if(ttsAbort||idx>=ttsChunks.length){ttsReset();return}
       ttsChunkIdx=idx;
       const total=ttsChunks.length;
       dom.ttsBtn.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">${idx+1}/${total}</span>`;
-
       try{
         const url=await ttsFetchChunk(ttsChunks[idx]);
-        // Double voice guard: if session changed during fetch, abort
         if(ttsAbort||mySession!==ttsSessionId)return;
-
-        // Kill any existing audio before creating new one
         if(ttsAudio){
           ttsAudio.onended=null;
           ttsAudio.onerror=null;
           ttsAudio.pause();
           ttsAudio.src='';
         }
-
         ttsAudio=new Audio(url);
-
-        // Prefetch next 3 chunks while current plays
         for(let p=1;p<=3;p++){
           if(idx+p<ttsChunks.length)ttsFetchChunk(ttsChunks[idx+p]).catch(()=>{});
         }
-
         ttsAudio.onended=()=>{
           if(ttsAbort||mySession!==ttsSessionId)return;
           ttsPlayChunk(idx+1);
@@ -821,68 +1028,92 @@
     function toggleTTS(){
       if(ttsPlaying){ttsReset();return}
       if(!currentAnswer)return;
-
-      // Use aggressive cleaner — strips ALL sources, markdown, artifacts
       const text=ttsCleanText(currentAnswer).slice(0,5000);
       if(!text||text.length<5)return;
-
       ttsAbort=false;
-      ttsSessionId++; // New session
+      ttsSessionId++;
       ttsPlaying=true;
       ttsChunks=ttsSplit(text);
       dom.ttsBtn.classList.add('playing');
       dom.ttsBtn.innerHTML=`<span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span><span id="ttsLabel">1/${ttsChunks.length}</span>`;
-
-      // Prefetch first 5 chunks immediately
       const prefetchCount=Math.min(5,ttsChunks.length);
       for(let i=0;i<prefetchCount;i++)ttsFetchChunk(ttsChunks[i]).catch(()=>{});
-
-      // Start first chunk
       ttsPlayChunk(0);
     }
 
-    // ═══ Rendering ═══
+    function copyAnswer(){
+      if(!currentAnswer)return;
+      const text=currentAnswer.replace(/\[(\d+)\]/g,(m,n)=>{const s=citationSources[parseInt(n,10)-1];return s?.url?`[${n}](${s.url})`:m});
+      (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject()).then(()=>{
+        dom.copyBtn.innerHTML=icon('check')+'Copied';toast('Answer copied');
+        setTimeout(()=>{dom.copyBtn.innerHTML=icon('copy')+'Copy'},1600);
+      }).catch(()=>toast('Copy is not available here',true));
+    }
+
+    // ═══ Rendering: sources ═══
+    let lastSources=[];
+    function consensusBadge(s){
+      // found_by_families is the honest "N engines agree" number: aliases and
+      // Bing-derived engines are collapsed into one family.
+      const fam=s.found_by_families||0;
+      return fam>1?`<span class="consensus" title="Found by ${fam} independent search indexes">${fam}× agree</span>`:'';
+    }
     function renderSourceStrip(items){
-      if(!items?.length){dom.sourcesStrip.innerHTML='';return}
+      lastSources=items||[];
+      if(!items?.length){dom.sourcesStrip.innerHTML='';dom.sideList.innerHTML='<div class="empty">No sources.</div>';return}
       dom.sourcesStrip.innerHTML=items.slice(0,10).map((s,i)=>`
-        <a class="src-chip" href="${esc(s.url)}" target="_blank" rel="noopener" style="animation-delay:${i*40}ms">
+        <a class="src-chip" href="${esc(s.url)}" target="_blank" rel="noopener" style="animation:fadeUp .3s var(--ease) ${i*30}ms both">
           <span class="src-num">${i+1}</span>
-          <img src="${favicon(s.url)}" onerror="this.style.display='none'" />
-          <span>${esc(s.title||domain(s.url))}</span>
-        </a>
-      `).join('');
+          <img src="${favicon(s.url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" />
+          <span class="t">${esc(s.title||domain(s.url))}</span>
+        </a>`).join('');
+      dom.sideList.innerHTML=items.slice(0,12).map((s,i)=>`
+        <a class="src-card" href="${esc(s.url)}" target="_blank" rel="noopener" style="animation:fadeUp .3s var(--ease) ${i*25}ms both">
+          <div class="row1"><span class="src-num">${i+1}</span><img src="${favicon(s.url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /><span class="dom">${esc(domain(s.url))}</span>${consensusBadge(s)}</div>
+          <div class="title">${esc(s.title||s.url)}</div>
+          ${s.snippet?`<div class="src-snip">${esc(s.snippet.slice(0,200))}</div>`:''}
+        </a>`).join('');
     }
     function renderAllSources(items){
-      if(!items?.length)return;
+      if(!items?.length){dom.allSourcesCount.textContent='0';return}
       dom.allSourcesCount.textContent=items.length;
       dom.allSourcesGrid.innerHTML=items.map((s,i)=>{
-        // found_by_families is the honest "N engines agree" number: engine
-        // aliases and Bing-derived engines are collapsed into one family, so
-        // this cannot be inflated by 15 Bing variants the way v7.0's RRF was.
-        const fam=s.found_by_families||0;
-        const consensus = fam>1
-          ? `<span class="consensus" title="Found by ${fam} independent search indexes">${fam}× agree</span>`
-          : '';
         const engines=(s.engine||'').split(',').filter(Boolean);
         const engLabel=engines.length>2?`${engines.slice(0,2).join(', ')} +${engines.length-2}`:engines.join(', ');
         const snip=s.snippet?`<div class="src-snip">${esc(s.snippet.slice(0,180))}</div>`:'';
         return `
-        <div class="all-src-card" style="animation:fadeUp .3s ease-out ${i*20}ms both">
+        <div class="all-src-card" style="animation-delay:${Math.min(i,30)*15}ms">
           <a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title||s.url)}</a>
           ${snip}
-          <div class="meta"><span>#${i+1}</span>${consensus}<span>${esc(engLabel)}</span><span>${esc(domain(s.url))}</span></div>
+          <div class="meta"><span>#${i+1}</span>${consensusBadge(s)}<span>${esc(engLabel)}</span><span>${esc(domain(s.url))}</span></div>
         </div>`;
       }).join('');
     }
-    function toggleAllSources(){dom.allSourcesGrid.classList.toggle('hidden')}
+    function toggleAllSources(){
+      dom.allSourcesWrap.classList.remove('hidden');
+      const open=dom.allSourcesGrid.classList.toggle('hidden')===false;
+      $('allToggleLabel').textContent=open?'Hide full list':'Show all sources';
+      if(open)dom.allSourcesWrap.scrollIntoView({behavior:'smooth',block:'start'});
+    }
+
+    // ═══ Rendering: highlight ═══
+    function renderHighlight(h){
+      if(!h||!h.text){dom.highlightCard.classList.add('hidden');return}
+      let html=esc(h.text);
+      const terms=(h.terms||[]).filter(t=>t&&t.length>1).sort((a,b)=>b.length-a.length);
+      if(terms.length){
+        const re=new RegExp('('+terms.map(t=>escRe(esc(t.length>=6?t.slice(0,-2):t))).join('|')+')[\\p{L}\\p{M}\\p{N}]*','giu');
+        html=html.replace(re,'<mark>$&</mark>');
+      }
+      dom.highlightCard.innerHTML=`
+        <div class="hl-label">${icon('quote')}Quick answer · verbatim from a source</div>
+        <div class="hl-text">${html}</div>
+        <div class="hl-src"><img src="${favicon(h.url)}" alt="" onerror="this.style.visibility='hidden'" /><a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.title||domain(h.url))}</a><span>· ${esc(domain(h.url))}</span></div>`;
+      dom.highlightCard.classList.remove('hidden');
+    }
 
     // ═══ Request cancellation ═══
-    // v7.0 had no AbortController anywhere (grep -c returned 0), so a search
-    // taking 15-60s could not be stopped: starting a new query left the old
-    // one running, and the server kept scraping hundreds of URLs for a
-    // response nobody would read.
     let inflight=null;
-
     function beginRequest(){
       if(inflight) inflight.abort();
       inflight=new AbortController();
@@ -893,45 +1124,43 @@
       inflight=null;
       dom.stopBtn?.classList.remove('visible');
     }
+    function setSearchingUI(on){
+      dom.runBtn.disabled=on;
+      dom.runBtn.classList.toggle('searching',on);
+      dom.composer.classList.toggle('searching',on);
+    }
     function cancelRequest(){
       if(inflight){ inflight.abort(); }
       typewriterAbort=true;
       stopStatus();
       endRequest();
-      dom.runBtn.disabled=false;
-      dom.queryInput.classList.remove('searching');
-      dom.runBtn.classList.remove('searching');
-      $('searchOrbital')?.classList.add('hidden');
-      dom.answerContent.innerHTML='<div style="color:var(--muted);padding:20px 0">Search cancelled.</div>';
+      setSearchingUI(false);
+      if(!currentAnswer)dom.answerContent.innerHTML='<div class="answer-note">Search stopped.</div>';
     }
+    function cancelIfRunning(){if(inflight)cancelRequest()}
 
-    // ═══ Typewriter Engine ═══
+    // ═══ Markdown ═══
     let typewriterAbort=false;
     let typewriterTimer=null;
-
-    // Citation number -> source, from the backend's citation_map. v7.0 rendered
-    // [n] as a non-clickable <sup> with cursor:default — decorative only — and
-    // the mapping was wrong anyway (numbers referred to the reordered context
-    // but were resolved against the unordered source list).
+    // Citation number -> source, from the backend's citation_map.
     let citationSources=[];
 
-    // Inline Markdown: bold, inline code, and [n] citations as real links.
     function mdInline(s){
       return s
         .replace(/`([^`]+)`/g,'<code>$1</code>')
         .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
+        .replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g,'$1<em>$2</em>')
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,(m,t,u)=>`<a href="${u}" target="_blank" rel="noopener">${t}</a>`)
         .replace(/\[(\d+)\]/g,(m,n)=>{
           const src=citationSources[parseInt(n,10)-1];
-          if(!src||!src.url) return `<sup class="cite cite-dead">[${n}]</sup>`;
-          const t=(src.title||src.url).replace(/"/g,'&quot;');
-          return `<a class="cite" href="${esc(src.url)}" target="_blank" rel="noopener" title="${t}">[${n}]</a>`;
+          if(!src||!src.url) return `<sup class="cite cite-dead">${n}</sup>`;
+          const t=esc(src.title||src.url)+' — '+esc(domain(src.url));
+          return `<a class="cite" href="${esc(src.url)}" target="_blank" rel="noopener" title="${t}">${n}</a>`;
         });
     }
 
-    // Line-based Markdown renderer. v8.1 answers use headings, bullet and
-    // numbered lists, and (Deep comparisons) tables — the previous regex
-    // renderer showed tables as raw pipes and emitted <li> with no list.
-    // Input is escaped first, so no source text can inject HTML.
+    // Line-based Markdown renderer: headings, lists, tables, fenced code,
+    // quotes. Input is escaped first, so no source text can inject HTML.
     function formatMarkdownToHtml(text){
       const lines=esc(text).split('\n');
       const out=[];
@@ -943,7 +1172,13 @@
       const cells=l=>l.trim().replace(/^\||\|$/g,'').split('|').map(c=>mdInline(c.trim()));
       for(let i=0;i<lines.length;i++){
         const line=lines[i];
-        // Table: header row, separator row, body rows.
+        if(/^\s*```/.test(line)){
+          flushPara(); closeList();
+          const code=[]; i++;
+          while(i<lines.length && !/^\s*```/.test(lines[i])){ code.push(lines[i]); i++; }
+          out.push('<pre><code>'+code.join('\n')+'</code></pre>');
+          continue;
+        }
         if(isRow(line) && i+1<lines.length && isSep(lines[i+1])){
           flushPara(); closeList();
           const head=cells(line); i+=2;
@@ -955,10 +1190,14 @@
           continue;
         }
         let m;
-        if((m=line.match(/^(#{2,4})\s+(.*)$/))){
+        if((m=line.match(/^(#{1,4})\s+(.*)$/))){
           flushPara(); closeList();
-          const lvl=Math.min(m[1].length,4);
+          const lvl=Math.min(Math.max(m[1].length,2),4);
           out.push(`<h${lvl}>${mdInline(m[2])}</h${lvl}>`); continue;
+        }
+        if((m=line.match(/^\s*&gt;\s?(.*)$/))){
+          flushPara(); closeList();
+          out.push(`<blockquote>${mdInline(m[1])}</blockquote>`); continue;
         }
         if((m=line.match(/^\s*[-*•]\s+(.*)$/))){
           flushPara(); if(list!=='ul'){ closeList(); out.push('<ul>'); list='ul'; }
@@ -975,107 +1214,137 @@
       return out.join('');
     }
 
-    function renderAnswer(text){
-      dom.answerContent.innerHTML=formatMarkdownToHtml(text);
-    }
+    function renderAnswer(text){dom.answerContent.innerHTML=formatMarkdownToHtml(text)}
 
+    // Reveals the answer progressively. Faster for long answers, so a Deep
+    // report does not take a minute to "type".
     function typewriterRender(text){
-      // Stop any previous typewriter
       typewriterAbort=true;
       if(typewriterTimer)clearTimeout(typewriterTimer);
-
-      // Split text into words (preserve whitespace/newlines between them)
       const words=text.match(/\S+|\n+/g)||[];
       if(!words.length){renderAnswer(text);return}
-
       typewriterAbort=false;
-      let wordIndex=0;
-      let accumulated='';
-
-      // Add blinking cursor CSS if not already present
-      if(!document.getElementById('twCursorStyle')){
-        const style=document.createElement('style');
-        style.id='twCursorStyle';
-        style.textContent=`
-          .tw-cursor::after{content:'▎';color:var(--accent);animation:twBlink .8s step-end infinite;font-weight:300}
-          @keyframes twBlink{0%,100%{opacity:1}50%{opacity:0}}
-        `;
-        document.head.appendChild(style);
-      }
-
+      const perTick=Math.max(1,Math.ceil(words.length/220));
+      let wordIndex=0, accumulated='';
       function typeNext(){
         if(typewriterAbort||wordIndex>=words.length){
-          // Done — render final without cursor
           dom.answerContent.innerHTML=formatMarkdownToHtml(text);
           return;
         }
-
-        // Add next word
-        const word=words[wordIndex];
-        if(word.match(/^\n+$/)){
-          accumulated+=word;
-        }else{
-          accumulated+=(accumulated&&!accumulated.endsWith('\n')?' ':'')+word;
+        for(let k=0;k<perTick&&wordIndex<words.length;k++){
+          const word=words[wordIndex++];
+          if(/^\n+$/.test(word)) accumulated+=word;
+          else accumulated+=(accumulated&&!accumulated.endsWith('\n')?' ':'')+word;
         }
-        wordIndex++;
-
-        // Render with cursor
         dom.answerContent.innerHTML=formatMarkdownToHtml(accumulated)+'<span class="tw-cursor"></span>';
-
-        // Auto-scroll page so new content is always visible
-        // Scroll the WINDOW (not answerContent — it's not the scrollable container)
-        const cursor=dom.answerContent.querySelector('.tw-cursor');
-        if(cursor){
-          cursor.scrollIntoView({behavior:'smooth',block:'end'});
-        }else{
-          window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
-        }
-
-        // Calculate delay: faster for short words, slight pause at sentence ends
-        let delay=22; // base speed: ~45 words/sec
-        if(word.match(/[.!?:;]$/)) delay=80;  // pause at sentence end
-        else if(word.match(/[,]$/)) delay=45;  // short pause at comma
-        else if(wordIndex<15) delay=35;        // slightly slower at start (dramatic effect)
-
-        typewriterTimer=setTimeout(typeNext,delay);
+        const last=words[wordIndex-1]||'';
+        typewriterTimer=setTimeout(typeNext,/[.!?:]$/.test(last)?45:16);
       }
-
       typeNext();
     }
 
-    // ═══ Main Search ═══
+    // ═══ Search ═══
+    function metaTags(data){
+      const tags=[];
+      tags.push(`<span class="tag accent">${icon(modeIconNames[data.mode]||'auto')}${esc(modeLabels[data.mode]||data.mode||'Auto')}</span>`);
+      if(data.tier&&data.tier!==data.mode)tags.push(`<span class="tag">${icon('layers')}${esc(data.tier.replace(/^auto:/,'auto · '))}</span>`);
+      if(data.domain&&data.domain!=='general')tags.push(`<span class="tag">${icon('globe')}${esc(data.domain)}</span>`);
+      if(data.sources_extracted!=null)tags.push(`<span class="tag">${icon('file')}${data.sources_extracted} pages read</span>`);
+      // Measured here: a cached server response reports 0s.
+      const ms=Date.now()-searchStartTime;
+      tags.push(`<span class="tag">${icon('clock')}${ms<1000?ms+' ms':(ms/1000).toFixed(1)+'s'}</span>`);
+      return tags.join('');
+    }
+
+    // Reads the SSE stream from /search/stream; calls onEvent per JSON event.
+    async function readStream(payload,signal,onEvent){
+      const res=await fetch(apiBase()+'/search/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal});
+      if(!res.ok||!res.body)throw new Error('stream unavailable ('+res.status+')');
+      const reader=res.body.getReader();
+      const dec=new TextDecoder();
+      let buf='', final=null;
+      for(;;){
+        const {value,done}=await reader.read();
+        if(done)break;
+        buf+=dec.decode(value,{stream:true});
+        let idx;
+        while((idx=buf.indexOf('\n\n'))>=0){
+          const block=buf.slice(0,idx); buf=buf.slice(idx+2);
+          const data=block.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).replace(/^ /,'')).join('\n');
+          if(!data)continue;
+          let ev; try{ev=JSON.parse(data)}catch(_){continue}
+          if(ev.type==='result')final=ev.response;
+          else if(ev.type==='error')throw new Error(ev.error||'search failed');
+          else onEvent(ev);
+        }
+      }
+      if(!final)throw new Error('stream ended without a result');
+      return final;
+    }
+
+    function onProgress(ev){
+      switch(ev.type){
+        case 'plan':
+          setStage('search');
+          updateStatus(`Searching ${ev.engines} engines${ev.sub_queries?.length>1?` with ${ev.sub_queries.length} queries`:''}…`);
+          break;
+        case 'engines':
+          setStage('read');
+          updateStatus(`${ev.raw_results} results from ${ev.families} independent indexes — reading pages…`);
+          break;
+        case 'sources':
+          renderSourceStrip(ev.results||[]);
+          renderAllSources(ev.results||[]);
+          break;
+        case 'extracted':
+          setStage('rank');
+          updateStatus(`Read ${ev.sources} pages (${Math.round((ev.chars||0)/1000)}k characters) — ranking passages…`);
+          break;
+        case 'highlight':
+          renderHighlight(ev.highlight);
+          break;
+        case 'synthesizing':
+          setStage('write');
+          updateStatus('Writing the answer…');
+          break;
+      }
+    }
+
     async function runSearch(){
       const query=dom.queryInput.value.trim();
       if(!query)return;
 
-      // Stop any TTS and typewriter
       ttsReset();
       typewriterAbort=true;
       if(typewriterTimer)clearTimeout(typewriterTimer);
 
-      // Hide home hero, show results
+      document.body.classList.add('has-results');
       document.querySelector('.center-wrap').classList.remove('home-active');
       dom.homeView.classList.add('hidden');
+      dom.suggestions.classList.add('hidden');
       dom.resultsArea.classList.remove('hidden');
       dom.llmError.classList.add('hidden');
+      dom.llmError.classList.remove('note');
       dom.allSourcesGrid.classList.add('hidden');
+      dom.allSourcesWrap.classList.add('hidden');
+      $('allToggleLabel').textContent='Show all sources';
       dom.ttsBtn.classList.add('hidden');
+      dom.copyBtn.classList.add('hidden');
+      dom.highlightCard.classList.add('hidden');
       currentAnswer='';
+      citationSources=[];
 
-      // Loading states
-      dom.sourcesStrip.innerHTML=Array(5).fill(0).map(()=>'<div class="src-chip" style="min-width:120px"><div class="skel" style="height:12px;width:80px;margin:0"></div></div>').join('');
-      dom.answerContent.innerHTML=`<div class="answer-loading"><span class="spinner"></span> Searching and analyzing sources...</div><div class="skel w90"></div><div class="skel w70"></div><div class="skel w50"></div>`;
-      dom.runBtn.disabled=true;
-      dom.queryInput.classList.add('searching');
-      dom.runBtn.classList.add('searching');
-      $('searchOrbital').classList.remove('hidden');
+      dom.queryTitle.textContent=query;
+      dom.resultMeta.innerHTML=`<span class="tag accent">${icon(modeIconNames[focusMode]||'auto')}${esc(modeSummary())}</span>`;
+      dom.sourcesStrip.innerHTML=Array(4).fill(0).map(()=>'<div class="src-chip"><div class="skel" style="height:12px;width:140px;margin:0"></div></div>').join('');
+      dom.sideList.innerHTML=Array(5).fill(0).map(()=>'<div class="src-card"><div class="skel w50"></div><div class="skel w90"></div></div>').join('');
+      dom.answerContent.innerHTML=`<div class="answer-loading"><span class="spinner"></span>Reading sources…</div><div class="skel w90"></div><div class="skel w70"></div><div class="skel w90"></div><div class="skel w50"></div>`;
+      setSearchingUI(true);
+      window.scrollTo({top:0,behavior:'smooth'});
 
-      // Compute effective focus ONCE at the start (mode + category combined)
       const effectiveFocus=getEffectiveFocus();
-
       saveSettings();
       startStatus();
-      dom.statusMode.textContent=modeSummary();
       updateStatus(modeStatus[effectiveFocus]||modeStatus.auto);
 
       const prov=dom.provider.value;
@@ -1083,39 +1352,42 @@
       const model=dom.modelInput.value.trim();
       const base=dom.baseUrl.value.trim()||(presets[prov]||{}).base||'';
       const useLlm=dom.enableLlm.checked;
+      const llmConfigured=useLlm&&!!key&&!!model;
 
       // Each mode sizes itself on the server. "Max sources" is only sent when
       // the user set it explicitly; the server clamps it to the mode's range.
-      // (v8.0 forced Deep to >=200 and silently raised any saved value below 50.)
       const payload={query,focus_mode:effectiveFocus};
       if(selectedCategory) payload.domain=selectedCategory;
       const userMax=parseInt(dom.maxResults.value);
       if(userMax>0) payload.max_results=userMax;
-
-      if(useLlm&&key&&model){
+      if(llmConfigured){
         payload.llm={provider:prov,api_key:key,model,base_url:base,timeout_ms:modeTimeoutMs[effectiveFocus]||60000};
       }
 
-      // One endpoint for every mode; the legacy /search/*-llm routes remain
-      // for API clients.
-      const endpoint='/search';
-
-      beginRequest();
+      const ctl=beginRequest();
       try{
-        const data=await api(endpoint,'POST',payload);
+        // Streaming gives real progress and shows sources and the quick
+        // answer before the AI answer; plain POST /search is the fallback.
+        let data;
+        try{
+          data=await readStream(payload,ctl.signal,onProgress);
+        }catch(e){
+          if(e?.name==='AbortError')throw e;
+          console.warn('stream failed, falling back to /search:',e);
+          data=await api('/search','POST',payload);
+        }
+        if(ctl!==inflight)return; // a newer search replaced this one
         stopStatus();
-        // Show how the server sized this search (e.g. "Auto · auto:light").
-        if(data.tier) dom.statusMode.textContent=`${modeSummary()} — ${data.tier}, ${data.sources_extracted||0} pages read`;
+        dom.resultMeta.innerHTML=metaTags(data);
 
         const sources=data.search_results||[];
-        // The source list is now RRF-ordered by the backend (v7.0 rendered it
-        // in whatever order engines happened to finish).
         renderSourceStrip(sources);
         renderAllSources(sources);
+        renderHighlight(data.highlight);
 
-        // Resolve [n] through the backend's citation_map when present, so a
-        // citation links to the source the model actually saw as [n].
-        if(Array.isArray(data.citation_map) && Array.isArray(data.results)){
+        // Resolve [n] through the backend's citation_map, so a citation links
+        // to the source the model actually saw as [n].
+        if(Array.isArray(data.citation_map) && data.citation_map.length && Array.isArray(data.results)){
           citationSources=data.citation_map.map(i=>data.results[i]).filter(Boolean);
         }else{
           citationSources=sources;
@@ -1123,55 +1395,69 @@
 
         if(data.llm_answer){
           currentAnswer=cleanAnswer(data.llm_answer);
+          dom.answerLabel.textContent='Answer';
           typewriterRender(currentAnswer);
           dom.ttsBtn.classList.remove('hidden');
+          dom.copyBtn.classList.remove('hidden');
           // An answer can arrive WITH a caveat (cut off at the output limit,
-          // or some Deep evidence batches failed). Show it rather than hide it.
+          // or some Deep evidence batches failed). Show it.
           if(data.llm_error&&String(data.llm_error).startsWith('partial')){
             dom.llmError.textContent=String(data.llm_error).replace(/^partial:\s*/,'Note: ');
+            dom.llmError.classList.add('note');
             dom.llmError.classList.remove('hidden');
           }
+        }else if(!sources.length){
+          dom.answerContent.innerHTML=`<div class="answer-note">${esc(data.error||'No results found. The search engines may be rate-limiting this connection — try again in a minute, or try another mode.')}</div>`;
         }else if(data.llm_error){
-          dom.answerContent.innerHTML='<div style="color:var(--muted);padding:20px 0">AI could not generate an answer. Browse sources above.</div>';
+          dom.answerContent.innerHTML='<div class="answer-note">The AI could not write an answer for this search. The sources and the quick answer above are still available.</div>';
           dom.llmError.textContent=data.llm_error;
           dom.llmError.classList.remove('hidden');
-        }else{
+        }else if(!llmConfigured){
+          dom.answerLabel.textContent='Answer';
           dom.answerContent.innerHTML=useLlm
-            ?'<div style="color:var(--muted);padding:20px 0">No AI answer returned.</div>'
-            :'<div style="color:var(--muted);padding:20px 0">AI disabled. Browse sources above.</div>';
+            ?`<div class="answer-note">${data.highlight?'The quick answer above is quoted word for word from one of the sources.':'The sources are listed alongside.'} For a full written answer with citations, <a id="openSettingsLink">add an AI model in Settings</a>.</div>`
+            :'<div class="answer-note">AI answers are turned off. Browse the sources, or turn them on in Settings.</div>';
+          const l=$('openSettingsLink');if(l)l.onclick=openSettings;
+        }else{
+          dom.answerContent.innerHTML='<div class="answer-note">No AI answer was returned.</div>';
         }
 
         if(historyEnabled)api('/api/history','GET').catch(()=>{});
-
       }catch(err){
         stopStatus();
-        if(err?.name==='AbortError'){
-          // Cancelled by the user — cancelRequest() already rendered a notice.
-          return;
-        }
-        dom.answerContent.innerHTML=`<div style="color:#f87171;padding:20px 0">Error: ${esc(err.message)}</div>`;
+        if(err?.name==='AbortError')return; // cancelRequest() already rendered a notice
+        dom.answerContent.innerHTML=`<div class="answer-note" style="color:var(--bad)">Error: ${esc(err.message)}</div>`;
       }finally{
-        endRequest();
-        dom.runBtn.disabled=false;
-        dom.queryInput.classList.remove('searching');
-        dom.runBtn.classList.remove('searching');
-        $('searchOrbital').classList.add('hidden');
+        if(ctl===inflight){endRequest();setSearchingUI(false)}
       }
     }
 
-    // ═══ Events ═══
-    dom.queryInput.addEventListener('keydown',e=>{if(e.key==='Enter')runSearch()});
+    // ═══ Keyboard ═══
+    dom.queryInput.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();runSearch()}});
     dom.stopBtn?.addEventListener('click',cancelRequest);
-    // Escape cancels an in-flight search.
-    document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&inflight) cancelRequest(); });
+    document.addEventListener('keydown',e=>{
+      const typing=/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName||'');
+      if(e.key==='Escape'){
+        if(!dom.settingsDrawer.classList.contains('hidden')){closeSettings();return}
+        if(!dom.historyDrawer.classList.contains('hidden')){closeHistory();return}
+        if(inflight){cancelRequest();return}
+      }
+      if((e.key==='/'&&!typing)||((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k')){
+        e.preventDefault();dom.queryInput.focus();dom.queryInput.select();
+      }
+    });
 
     // ═══ Init ═══
+    renderSuggestions();
     loadSettings();
-    if(localStorage.getItem('ss_history_init')==='done'){
-      dom.dbModal.classList.add('hidden');
-      historyEnabled=!!localStorage.getItem('ss_api_key');
-      if(historyEnabled)api('/api/history/enable','POST').catch(()=>{});
-    }
+    try{
+      if(localStorage.getItem('ss_history_init')==='done'){
+        dom.dbModal.classList.add('hidden');
+        const on=localStorage.getItem('ss_history_on');
+        historyEnabled=on==='1'||(on===null&&!!localStorage.getItem('ss_api_key'));
+        if(historyEnabled)api('/api/history/enable','POST').catch(()=>{});
+      }
+    }catch(_){}
   </script>
 </body>
 </html>

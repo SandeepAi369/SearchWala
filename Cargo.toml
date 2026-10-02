@@ -49,6 +49,9 @@ serde_json = "1"
 
 # HTML parsing & text extraction
 scraper = "0.27"
+# Node ids for the deep reader's one-pass text-density scoring (already a
+# scraper dependency; declared to name its types).
+ego-tree = "0.11"
 
 # Charset-aware HTML decoding — replaces bare String::from_utf8_lossy, which
 # mangles windows-1252 / ISO-8859-1 / GBK / Shift_JIS pages (v8.0 P0-1).

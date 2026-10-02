@@ -76,6 +76,10 @@ pub enum Progress {
     Synthesizing {
         synthesis: String,
     },
+    /// Best verbatim answer sentence(s), before synthesis starts.
+    Highlight {
+        highlight: crate::highlight::Highlight,
+    },
 }
 
 async fn emit(tx: &Option<tokio::sync::mpsc::Sender<Progress>>, p: Progress) {
@@ -122,6 +126,53 @@ struct Candidate {
     /// Text supplied by the engine itself (paper abstracts).
     full_text: Option<String>,
 }
+
+/// The page title to show and cite.
+///
+/// Trafilatura's title for Wikipedia is the article's short description, so
+/// "Bain-marie" was cited as "type of heated bath" and "Boiling" as "type of
+/// vaporization; bulk phenomenon". When the extracted title shares no word
+/// with the search engine's title, the engine's is kept.
+fn pick_title(url: &str, engine_title: &str, extracted: String) -> String {
+    // Wikipedia: the article title is in the URL, exactly.
+    if let Some(t) = wikipedia_title(url) {
+        return t;
+    }
+    if extracted.trim().is_empty() {
+        return engine_title.to_string();
+    }
+    if engine_title.trim().is_empty() {
+        return extracted;
+    }
+    // Content words only: "the" shared by "The Legend of Tennessee
+    // Moltisanti" and "episode of The Sopranos" is not agreement.
+    let words = |s: &str| -> std::collections::HashSet<String> {
+        crate::ranking::query_terms(s).into_iter().map(|w| crate::highlight::stem(&w)).collect()
+    };
+    if words(engine_title).is_disjoint(&words(&extracted)) {
+        engine_title.to_string()
+    } else {
+        extracted
+    }
+}
+
+/// "https://en.wikipedia.org/wiki/Invention_of_the_telephone" ->
+/// "Invention of the telephone".
+fn wikipedia_title(url: &str) -> Option<String> {
+    let u = url::Url::parse(url).ok()?;
+    if !u.host_str()?.ends_with("wikipedia.org") {
+        return None;
+    }
+    let slug = u.path().strip_prefix("/wiki/")?;
+    if slug.is_empty() || slug.contains(':') {
+        return None; // Special:, Talk:, File: pages
+    }
+    let title = urlencoding::decode(slug).ok()?.replace('_', " ");
+    (!title.trim().is_empty()).then_some(title)
+}
+
+/// The highest-ranked pages a scrape early exit must wait for.
+const MUST_FINISH_TOP: usize = 3;
 
 /// The whole pipeline. Every mode-dependent decision is read from the
 /// `ModeProfile` — see `modes.rs` for why that matters.
@@ -395,10 +446,21 @@ pub async fn execute_search_full(
 
     let stage_start = std::time::Instant::now();
     let mut join_set = JoinSet::new();
-    for c in ranked {
+    // Early exit used to take whichever pages finished FIRST. In Fast mode
+    // (exit at 6 sources) that dropped the #1 and #3 ranked pages for "boiling
+    // point of water" — Wikipedia's "Boiling point", found by two engines —
+    // and kept "Bain-marie", which then supplied the top passage. The
+    // top-ranked pages must finish (or fail) before an early exit; the stage
+    // deadline still caps the wait.
+    let must_finish = MUST_FINISH_TOP.min(ranked.len());
+    let mut pending_top: std::collections::HashSet<usize> = (0..must_finish).collect();
+    let selection_rank: HashMap<String, usize> =
+        ranked.iter().enumerate().map(|(i, c)| (c.url.clone(), i)).collect();
+    for (rank_idx, c) in ranked.into_iter().enumerate() {
         let sem = semaphore.clone();
         let client = scrape_client.clone();
         join_set.spawn(async move {
+          let result = async move {
             let engine_name = c.engines.join(",");
 
             // Engine-supplied text (OpenAlex / arXiv abstracts): no fetch.
@@ -420,7 +482,7 @@ pub async fn execute_search_full(
             if let Some(cached) = crate::cache_layer::get_page(&c.url).await {
                 return Some(SourceResult {
                     url: c.url.clone(),
-                    title: cached.title.clone(),
+                    title: pick_title(&c.url, &c.title, cached.title.clone()),
                     extracted_text: cached.text.clone(),
                     char_count: crate::util::char_len(&cached.text),
                     engine: engine_name,
@@ -438,10 +500,11 @@ pub async fn execute_search_full(
             match scraped {
                 Some(e) => {
                     crate::cache_layer::put_page(&c.url, e.clone()).await;
+                    let title = pick_title(&c.url, &c.title, e.title);
                     Some(SourceResult {
                         char_count: crate::util::char_len(&e.text),
                         url: c.url,
-                        title: if e.title.is_empty() { c.title } else { e.title },
+                        title,
                         extracted_text: e.text,
                         engine: engine_name,
                         published: e.published.or(c.published),
@@ -470,6 +533,9 @@ pub async fn execute_search_full(
                 }
                 None => None,
             }
+          }
+          .await;
+          (rank_idx, result)
         });
     }
 
@@ -494,7 +560,10 @@ pub async fn execute_search_full(
         if done >= total_tasks {
             break;
         }
-        if raw_scraped_results.len() >= want_sources && scraped_chars >= want_chars {
+        if raw_scraped_results.len() >= want_sources
+            && scraped_chars >= want_chars
+            && pending_top.is_empty()
+        {
             tracing::info!(
                 "Scrape early-exit: {} sources / {} chars ({}/{} tasks)",
                 raw_scraped_results.len(), scraped_chars, done, total_tasks
@@ -516,12 +585,16 @@ pub async fn execute_search_full(
             }
         };
         match next {
-            Some(Ok(Some(r))) => {
+            Some(Ok((idx, Some(r)))) => {
+                pending_top.remove(&idx);
                 scraped_chars += r.char_count;
                 raw_scraped_results.push(r);
                 done += 1;
             }
-            Some(Ok(None)) => done += 1,
+            Some(Ok((idx, None))) => {
+                pending_top.remove(&idx);
+                done += 1;
+            }
             Some(Err(e)) => {
                 if !e.is_cancelled() {
                     tracing::debug!("Scrape task error: {}", e);
@@ -532,7 +605,7 @@ pub async fn execute_search_full(
         }
     }
     while let Some(j) = join_set.join_next().await {
-        if let Ok(Some(r)) = j {
+        if let Ok((_, Some(r))) = j {
             scraped_chars += r.char_count;
             raw_scraped_results.push(r);
         }
@@ -573,6 +646,17 @@ pub async fn execute_search_full(
     );
     let rank_ms = stage_start.elapsed().as_millis();
     tracing::info!("⏱ Stage [rank]: {}ms — {} chunks from {} sources", rank_ms, results.len(), scraped_count);
+
+    // The verbatim answer sentence is known as soon as passages are ranked;
+    // streaming clients show it while the LLM is still writing. The opening
+    // of the best-ranked pages is considered too: ranked passages favour
+    // sentences dense in query words, and the lead is where an article
+    // states its answer.
+    let leads = crate::highlight::leads(&raw_scraped_results, |url| selection_rank.get(url).copied());
+    let highlight = crate::highlight::extract(&effective_query, &intel, &results, &leads);
+    if let Some(h) = &highlight {
+        emit(&progress, Progress::Highlight { highlight: h.clone() }).await;
+    }
 
     // ── Synthesis ──
     let session_id = match temp_db {
@@ -643,6 +727,7 @@ pub async fn execute_search_full(
         llm_error: llm_result.llm_error,
         citation_map: llm_result.citation_map,
         citation_checks: llm_result.citation_checks,
+        highlight,
         elapsed_seconds: elapsed,
         engine_stats: EngineStats {
             engines_queried: engine_list,
@@ -970,6 +1055,10 @@ async fn scrape_url_inner(
     // New Reddit is a JavaScript shell; old.reddit serves real HTML. Applied in
     // every mode, since Reddit threads surface in ordinary searches too.
     let target_url = reddit_to_old(url);
+    if !url::Url::parse(&target_url).is_ok_and(|u| crate::ssrf::scrape_url_allowed(&u)) {
+        tracing::warn!("Refusing to scrape non-public URL: {}", target_url);
+        return ScrapeResult::Skip;
+    }
 
     // Accept-Encoding is NOT set by hand: reqwest advertises exactly what it
     // can decode (the Phase-1 zstd fix), and a manual header would override it.
@@ -1054,6 +1143,10 @@ async fn scrape_url_inner(
     // Extraction is CPU-bound (trafilatura ~40 ms/page, 140 ms on a large
     // Wikipedia article). Running it inline blocked tokio worker threads and
     // stalled every other in-flight fetch; the blocking pool is the right home.
+    // The AMP variant is server-rendered with minimal markup, so it often
+    // reads where the canonical page (a JS shell, a consent wall) does not.
+    // One extra fetch, never in Fast mode.
+    let amp = if mode == modes::Mode::Fast { None } else { crate::deep_reader::amp_url(&html, &target_url) };
     let page_url = target_url.clone();
     let extracted = match tokio::task::spawn_blocking(move || extractor::extract(&html, &page_url)).await {
         Ok(e) => e,
@@ -1063,9 +1156,47 @@ async fn scrape_url_inner(
         }
     };
     if !extractor::is_usable(&extracted) {
+        if let Some(amp_url) = amp {
+            if let Some(mut e) = fetch_and_extract(client, &amp_url, timeout, max_bytes).await {
+                tracing::debug!("AMP fallback read {} chars for {}", e.text.len(), target_url);
+                e.source = "amp";
+                return ScrapeResult::Ok(e);
+            }
+        }
         return ScrapeResult::Skip;
     }
     ScrapeResult::Ok(extracted)
+}
+
+/// Plain fetch + extract for a secondary URL (the AMP variant). No retries.
+async fn fetch_and_extract(
+    client: &reqwest::Client,
+    url: &str,
+    timeout: Duration,
+    max_bytes: usize,
+) -> Option<crate::extractor::Extracted> {
+    if !url::Url::parse(url).is_ok_and(|u| crate::ssrf::scrape_url_allowed(&u)) {
+        return None;
+    }
+    let mut req = client
+        .get(url)
+        .header("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8");
+    req = config::apply_browser_headers(req, url);
+    if !timeout.is_zero() {
+        req = req.timeout(timeout);
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let bytes = resp.bytes().await.ok()?;
+    let html = crate::fetcher::decode_body(&bytes[..bytes.len().min(max_bytes)]);
+    if crate::engines::health::looks_like_blocked_page(&html) {
+        return None;
+    }
+    let page_url = url.to_string();
+    let e = tokio::task::spawn_blocking(move || extractor::extract(&html, &page_url)).await.ok()?;
+    extractor::is_usable(&e).then_some(e)
 }
 
 /// Rewrite any reddit.com URL to old.reddit.com.
@@ -1144,7 +1275,8 @@ fn build_scrape_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(crate::ssrf::scrape_redirect_policy(5))
+        .dns_resolver(std::sync::Arc::new(crate::ssrf::PublicOnlyResolver))
         .pool_max_idle_per_host(12)
         .user_agent(config::random_user_agent())
         .tcp_nodelay(true)
@@ -1178,5 +1310,38 @@ mod tests {
         assert_eq!(reddit_to_old("https://i.reddit.com/x.png"), "https://i.reddit.com/x.png");
         assert_eq!(reddit_to_old("https://example.com/reddit.com/x"), "https://example.com/reddit.com/x");
         assert_eq!(reddit_to_old("not a url"), "not a url");
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::{pick_title, wikipedia_title};
+
+    #[test]
+    fn keeps_engine_title_when_extracted_title_is_unrelated() {
+        assert_eq!(pick_title("https://x.test/a", "Bain-marie", "type of heated bath".into()), "Bain-marie");
+        assert_eq!(
+            pick_title("https://x.test/p", "Paris - Travel guide", "Paris".into()),
+            "Paris",
+            "a related extracted title (site suffix stripped) is preferred"
+        );
+        assert_eq!(pick_title("https://x.test/e", "", "Extracted".into()), "Extracted");
+        assert_eq!(pick_title("https://x.test/e", "Engine", "".into()), "Engine");
+        // Shared stopwords are not agreement.
+        assert_eq!(
+            pick_title("https://x.test/s", "The Legend of Tennessee Moltisanti", "episode of The Sopranos (S1 E8)".into()),
+            "The Legend of Tennessee Moltisanti"
+        );
+    }
+
+    #[test]
+    fn wikipedia_titles_come_from_the_url() {
+        assert_eq!(
+            pick_title("https://en.wikipedia.org/wiki/Invention_of_the_telephone", "", "aspect of history relating to telephones".into()),
+            "Invention of the telephone"
+        );
+        assert_eq!(wikipedia_title("https://hi.wikipedia.org/wiki/%E0%A4%AD%E0%A4%BE%E0%A4%B0%E0%A4%A4").as_deref(), Some("भारत"));
+        assert_eq!(wikipedia_title("https://en.wikipedia.org/wiki/Special:Search"), None);
+        assert_eq!(wikipedia_title("https://example.org/wiki/X"), None);
     }
 }

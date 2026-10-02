@@ -90,6 +90,10 @@ pub struct SearchResponse {
     /// Per-citation support check (token overlap with the cited source).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub citation_checks: Vec<crate::llm::CitationCheck>,
+    /// The best verbatim answer sentence(s) from the top passages — shown
+    /// immediately, and the only "answer" when no LLM is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<crate::highlight::Highlight>,
     pub elapsed_seconds: f64,
     pub engine_stats: EngineStats,
 }

@@ -140,7 +140,17 @@ fn wants_second_opinion(primary: &Extracted, html_len: usize) -> bool {
 // ============================================================================
 
 /// Extract readable content from a page.
+///
+/// DOM extraction (trafilatura, then Readability as a second opinion) runs on
+/// the page with any declarative shadow roots unwrapped. Structured sources
+/// then compete with the DOM result (see `deep_reader`): JSON-LD
+/// `articleBody` and microdata are authoritative and win when clearly longer
+/// (paywalled pages show a teaser in the DOM and the full text there);
+/// hydration data wins on JS shells; text density is a last resort.
 pub fn extract(html: &str, url: &str) -> Extracted {
+    let unwrapped = crate::deep_reader::unwrap_shadow_templates(html);
+    let html = unwrapped.as_deref().unwrap_or(html);
+
     let mut best = trafilatura_extract(html, url).unwrap_or_default();
 
     if wants_second_opinion(&best, html.len()) {
@@ -159,15 +169,42 @@ pub fn extract(html: &str, url: &str) -> Extracted {
         best.title = extract_title_from_html(html);
     }
 
-    // Last resort: JSON-LD articleBody. Rare now, but it is ground truth when
-    // present and costs one DOM pass.
-    if crate::util::char_len(&best.text) < min_text_chars() {
+    let dom_chars = crate::util::char_len(&best.text);
+    let min = min_text_chars();
+    let adopt = |best: &mut Extracted, text: String, source: &'static str, confidence: f64, factor: f64| {
+        let n = crate::util::char_len(&text);
+        let current = crate::util::char_len(&best.text);
+        if n >= min && n as f64 >= current as f64 * factor {
+            best.text = text;
+            best.source = source;
+            best.confidence = best.confidence.max(confidence);
+        }
+    };
+
+    // Ground truth when present. 1.3x: a full body beats a teaser, but a
+    // slightly longer JSON copy is not worth losing the DOM's structure.
+    if html.contains("articleBody") {
         if let Some(body) = json_ld_article_body(html) {
-            if crate::util::char_len(&body) > crate::util::char_len(&best.text) {
-                best.text = body;
-                best.source = "json-ld";
-                best.confidence = best.confidence.max(0.85);
-            }
+            adopt(&mut best, body, "json-ld", 0.85, 1.3);
+        }
+        if let Some(body) = crate::deep_reader::microdata_body(&Html::parse_document(html)) {
+            adopt(&mut best, body, "microdata", 0.8, 1.3);
+        }
+    }
+
+    // JS shells (Next.js, Nuxt, Remix, Redux/Apollo state): the DOM is nearly
+    // empty and the article is data in a script. Only consulted when the DOM
+    // result is thin, and only adopted when it is at least twice as long.
+    if dom_chars < 2_000 {
+        if let Some(text) = crate::deep_reader::hydration_text(html) {
+            adopt(&mut best, text, "hydration", 0.7, 2.0);
+        }
+    }
+
+    // Last resort: densest text block.
+    if crate::util::char_len(&best.text) < min {
+        if let Some(text) = crate::deep_reader::density_text(html) {
+            adopt(&mut best, text, "density", 0.55, 1.0);
         }
     }
 
@@ -526,5 +563,68 @@ mod tests {
         assert_eq!(hindi.len(), 150);
         let e = Extracted { text: hindi, ..Default::default() };
         assert!(!is_usable(&e), "50 chars must not pass a 120-char gate");
+    }
+
+    // ── Deep reader: page shapes the DOM extractors returned nothing for ──
+
+    fn prose(tag: &str, n: usize) -> String {
+        (0..n)
+            .map(|i| format!("{tag} paragraph {i}: The reactor cooling loop transfers heat from the core to the steam generators, and engineers monitor its pressure continuously."))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn reads_declarative_shadow_dom() {
+        let html = format!(
+            "<html><head><title>S</title></head><body><main><div><template shadowrootmode=\"open\"><p>{}</p><p>{}</p></template></div></main></body></html>",
+            prose("SHADOW", 3),
+            prose("ROOT", 3)
+        );
+        let e = extract(&html, "https://example.org/s");
+        assert!(e.text.contains("SHADOW paragraph 2") && e.text.contains("ROOT paragraph 0"), "{}", e.text);
+    }
+
+    #[test]
+    fn reads_next_js_shells() {
+        let pages = format!(
+            r#"<html><head><title>N</title></head><body><div id="__next"></div><script id="__NEXT_DATA__" type="application/json">{{"props":{{"pageProps":{{"post":{{"body":"{}"}}}}}}}}</script></body></html>"#,
+            prose("NEXT", 5)
+        );
+        let e = extract(&pages, "https://example.org/n");
+        assert_eq!(e.source, "hydration");
+        assert!(e.text.contains("NEXT paragraph 4"));
+
+        let flight = serde_json::to_string(&format!(r#"5:["$","p",null,{{"children":"{}"}}]"#, prose("RSC", 4))).unwrap();
+        let app = format!(r#"<html><head><title>R</title></head><body><div></div><script>self.__next_f.push([1,{flight}])</script></body></html>"#);
+        let e = extract(&app, "https://example.org/r");
+        assert!(e.text.contains("RSC paragraph 3"), "{}", e.text);
+    }
+
+    #[test]
+    fn json_ld_full_body_beats_a_dom_teaser() {
+        let body = prose("FULL", 8);
+        let html = format!(
+            r#"<html><head><title>P</title><script type="application/ld+json">{{"@type":"NewsArticle","headline":"P","articleBody":"{body}"}}</script></head>
+            <body><article><p>{}</p><div class="paywall">Subscribe to read more</div></article></body></html>"#,
+            prose("TEASER", 1)
+        );
+        let e = extract(&html, "https://example.org/p");
+        assert!(e.text.contains("FULL paragraph 7"), "via {}: {}", e.source, e.text);
+    }
+
+    #[test]
+    fn ordinary_articles_are_not_replaced_by_hydration_noise() {
+        // A normal article page that also ships a small state blob.
+        let html = format!(
+            r#"<html><head><title>A</title></head><body><article><p>{}</p><p>{}</p></article>
+            <script>window.__INITIAL_STATE__ = {{"related":"{}"}};</script></body></html>"#,
+            prose("REAL", 6),
+            prose("ALSO", 6),
+            prose("RELATED", 1)
+        );
+        let e = extract(&html, "https://example.org/a");
+        assert_ne!(e.source, "hydration");
+        assert!(e.text.contains("REAL paragraph 5"));
     }
 }

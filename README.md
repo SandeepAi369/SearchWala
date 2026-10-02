@@ -175,6 +175,34 @@ date, language and a quality score. Readability wins on 6 of 10 pages though,
 sometimes by 2× — so it runs as a second opinion when the primary output looks
 thin for the page, and the longer result wins.
 
+**Deep reader** (`src/deep_reader.rs`). Both extractors read the DOM, and
+some pages keep their text elsewhere. Measured on synthetic pages, they
+returned nothing for declarative Shadow DOM (`<template shadowrootmode>`),
+Next.js `__NEXT_DATA__` pages and Next.js App Router (RSC `self.__next_f`)
+pages. Those are now handled:
+
+| page shape | how |
+|---|---|
+| Declarative Shadow DOM | shadow-root templates are unwrapped before extraction |
+| JS shells: Next.js, Nuxt, Remix, Redux/Apollo state, Astro islands | prose strings harvested from the hydration data (nested RSC payloads decoded) |
+| paywall teaser in the DOM, full text in JSON-LD / microdata | `articleBody` wins when it is clearly longer |
+| everything thin | text-density / link-density block scoring |
+| canonical page unreadable (non-Fast modes) | one fetch of the page's AMP variant |
+
+`<noscript>`, `hidden`, `display:none` and `<details>` content was already
+extracted and still is. On the 10-page corpus the output is unchanged
+(+5% time).
+
+### Quick answer
+
+Every search returns a `highlight`: one or two sentences quoted verbatim from
+the sources, chosen by query-term coverage, page leads, redundancy across
+sources (the name or number most sources agree on), and penalties for
+filler, restated questions and navigation debris. It streams before the AI
+answer and is the answer when no model is configured. It is a quotation, so
+it cannot be hallucinated, but it can be the wrong sentence: treat it like a
+featured snippet.
+
 ### Non-Latin scripts
 
 Sentence segmentation recognises 13 terminators including `।` (Devanagari
@@ -286,6 +314,11 @@ so a few things are deliberate:
 - **API keys are never logged** — `LlmConfig`'s `Debug` redacts them.
 - **`/api/tts` is concurrency-capped** and cleans up its temp file on every
   path.
+- **Scraping never reaches local addresses.** Result URLs are
+  attacker-influenced (anyone can publish a page that ranks and redirects).
+  Page fetches use a resolver that drops private, loopback, link-local and
+  metadata addresses (which also defeats DNS rebinding), and every redirect
+  hop is re-checked. Before v8.1 the scraper had no such guard.
 
 CORS is still permissive for local UI convenience. If you expose this service,
 put it behind a reverse proxy with authentication.
