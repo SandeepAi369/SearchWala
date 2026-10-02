@@ -2499,3 +2499,71 @@ took 84 s and 13 of 15 citations were supported by the cited source.
 - **Wikipedia's full-text search is weak for shopping queries**: "best budget
   phone 2026" surfaces "Mercy (2026 film)". There is no commercial intent to
   route on; left as is rather than adding a speculative rule.
+
+---
+
+## v8.1 (2) — Fast accuracy, deep reader, UI
+
+Constraint for this round: minimal live search traffic. Extraction was
+developed against the committed corpus and synthetic page shapes; the
+complete live verification used about a dozen queries.
+
+### Fast mode: the right pages, and a quoted answer
+
+- **Early exit kept the fastest pages, not the best.** Fast stops scraping
+  at 6 sources. For "boiling point of water at sea level" that dropped the #1
+  (Wikipedia "Boiling point", 2 engine families) and #3 results and kept
+  "Bain-marie", which then supplied the top passage. An early exit now also
+  requires the top 3 ranked pages to have finished or failed (the stage
+  deadline still caps it). Fast: 6 → 9–10 pages read, still about 2–4 s.
+- **Wrong titles.** Trafilatura's title for Wikipedia is the short
+  description ("type of heated bath" for Bain-marie). Wikipedia titles now
+  come from the URL; elsewhere the engine title is kept when the extracted
+  one shares no content word with it (stopwords like "the" were counting as
+  agreement). The page-cache path skipped the fix at first.
+- **Quick answer (`src/highlight.rs`).** Fast had no answer without an LLM.
+  Every response now carries a verbatim `highlight`, streamed before
+  synthesis. Live: boiling point → "The normal boiling point of water is
+  100 °C, 212 °F…"; who invented the telephone → "…Alexander Graham Bell was
+  an inventor… patented the first practical telephone". Defects found while
+  tuning it live, each with a regression test: the passage-only version
+  quoted "Thomas Edison invented the carbon microphone…" (fixed by page
+  leads and cross-source name consensus); a Hindi SEO page that restated the
+  question won (restatement/filler penalties, Hindi function words dropped
+  from the terms); a navbox year list won (debris filter); headings glued to
+  sentences and "patent.In 1887" splits (splitter fixes).
+- **Known limit:** for "भारत की राजधानी क्या है" the quote is on-topic but
+  not the direct answer ("New Delhi"): the consensus step only knows Latin
+  capitalised names.
+
+### Deep reader (`src/deep_reader.rs`)
+
+Measured first: trafilatura + Readability already extract `<noscript>`,
+`hidden`, `display:none` and `<details>` content, and return **nothing** for
+declarative Shadow DOM, `__NEXT_DATA__` and RSC flight payloads. Added:
+shadow-template unwrapping; hydration-data prose harvesting (JSON string
+literals, recursively decoded for RSC, HTML bodies split into paragraphs,
+URL/CSS/code rejected by a prose filter); microdata `articleBody`; JSON-LD
+`articleBody` now competes with a DOM teaser (1.3×) instead of being a
+last resort; text-density scoring as a rescue; one AMP refetch in non-Fast
+modes. Corpus output unchanged, +5% time.
+
+### Security bug found on the way
+
+The scrape client had **no SSRF protection**: a result URL, or a redirect
+from one, pointing at 127.0.0.1, a LAN host or 169.254.169.254 was fetched.
+Added `ssrf::PublicOnlyResolver` (filters resolved addresses, so DNS
+rebinding is covered too), a per-hop redirect check, and a literal-IP /
+`localhost` / `.internal` pre-check.
+
+### UI
+
+Rebuilt `ui.html` with all element IDs, function names and API calls kept.
+Search now uses `/search/stream` (falls back to `POST /search`), so the
+page shows the real stages, the ranked sources and the quick answer before
+the AI answer. Added: mode pills, a sources sidebar with agreement
+badges, a history panel (it was `alert()`), copy-with-links, light/dark/system
+themes, toasts instead of alerts, `/` and Ctrl+K shortcuts, mobile layout.
+Two layout bugs were found by testing at 390 px, both CSS source-order
+mistakes of mine: the sources sidebar showed above the answer on phones, and
+the "More" menu was clipped inside the scrolling pill row.

@@ -155,6 +155,69 @@ pub fn is_ip_allowed_with(ip: IpAddr, allow_local: bool) -> bool {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Page scraping
+//
+// Search-result URLs are attacker-influenced: anyone can publish a page that
+// ranks, and that page can redirect anywhere. Until v8.1 the scrape client
+// had no guard at all, so a result (or a redirect from one) pointing at
+// 127.0.0.1, a LAN address or 169.254.169.254 was fetched and its body fed
+// into the results. Local addresses are never allowed for scraping — the
+// ALLOW_LOCAL_LLM opt-in is for the LLM endpoint only.
+// ----------------------------------------------------------------------------
+
+/// May a scraped URL (or a redirect target) be fetched? Checks scheme and
+/// literal-IP hosts; hostnames are checked at DNS time by
+/// [`PublicOnlyResolver`].
+pub fn scrape_url_allowed(u: &Url) -> bool {
+    if !matches!(u.scheme(), "http" | "https") {
+        return false;
+    }
+    match u.host() {
+        Some(url::Host::Ipv4(ip)) => is_ip_allowed_with(IpAddr::V4(ip), false),
+        Some(url::Host::Ipv6(ip)) => is_ip_allowed_with(IpAddr::V6(ip), false),
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            !(d == "localhost" || d.ends_with(".localhost") || d.ends_with(".internal") || d.ends_with(".local"))
+        }
+        None => false,
+    }
+}
+
+/// DNS resolver that drops private, loopback, link-local and metadata
+/// addresses, so a public hostname that resolves (or rebinds) to one cannot
+/// be reached.
+pub struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await?
+                .filter(|a| is_ip_allowed_with(a.ip(), false))
+                .collect();
+            if addrs.is_empty() {
+                return Err(format!("{host}: no public address").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// Redirect policy for scraping: at most `max` hops, each re-checked.
+pub fn scrape_redirect_policy(max: usize) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= max {
+            attempt.error("too many redirects")
+        } else if !scrape_url_allowed(attempt.url()) {
+            attempt.stop()
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +341,24 @@ mod tests {
     fn ipv4_mapped_ipv6_loopback_is_caught() {
         // ::ffff:127.0.0.1 must not slip past the v6 branch.
         assert!(validate_base_url_with("http://[::ffff:127.0.0.1]/v1", DENY).is_err());
+    }
+
+    #[test]
+    fn scraping_never_reaches_local_or_metadata_hosts() {
+        for u in [
+            "http://127.0.0.1:8000/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.5/",
+            "http://192.168.1.1/admin",
+            "http://[::1]/",
+            "http://localhost:3000/",
+            "http://metadata.google.internal/",
+            "file:///etc/passwd",
+        ] {
+            assert!(!scrape_url_allowed(&Url::parse(u).unwrap()), "{u} must be blocked");
+        }
+        for u in ["https://en.wikipedia.org/wiki/Paris", "http://93.184.216.34/"] {
+            assert!(scrape_url_allowed(&Url::parse(u).unwrap()), "{u} must be allowed");
+        }
     }
 }

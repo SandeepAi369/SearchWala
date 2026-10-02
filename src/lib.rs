@@ -16,6 +16,8 @@ pub mod host_gate;
 pub mod eval;
 pub mod extractor;
 pub mod llm;
+pub mod deep_reader;
+pub mod highlight;
 pub mod modes;
 pub mod models;
 pub mod query_intel;
