@@ -114,9 +114,14 @@
     .composer{position:relative;background:var(--surface);border:1px solid var(--border-2);border-radius:20px;box-shadow:var(--shadow);transition:border-color .2s,box-shadow .2s}
     .composer:focus-within{border-color:color-mix(in srgb,var(--accent) 60%,var(--border-2));box-shadow:var(--shadow),0 0 0 4px var(--accent-bg)}
     .composer.searching{animation:glow 2s ease-in-out infinite}
-    .search-row{display:flex;align-items:center;gap:10px;padding:8px 8px 4px 16px}
-    .search-row>svg.i{color:var(--muted);width:18px;height:18px}
-    .search-input{flex:1;min-width:0;height:46px;border:none;outline:none;background:transparent;color:var(--ink);font-size:17px;font-family:inherit}
+    /* Buttons stay on the last line as the query grows. */
+    .search-row{display:flex;align-items:flex-end;gap:10px;padding:8px 8px 4px 16px}
+    .search-row>svg.i{color:var(--muted);width:18px;height:18px;margin-bottom:14px}
+    .search-row .kbd{margin-bottom:12px}
+    .search-row #stopBtn{margin-bottom:3px}
+    /* Grows with the query up to max-height, then scrolls inside. */
+    .search-input{flex:1;min-width:0;display:block;min-height:46px;max-height:200px;padding:11px 0;border:none;outline:none;resize:none;overflow-y:hidden;background:transparent;color:var(--ink);font-size:17px;line-height:24px;font-family:inherit;scrollbar-width:thin}
+    @media (max-width:560px){.search-input{max-height:160px}}
     .search-input::placeholder{color:var(--faint)}
     .kbd{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;padding:0 6px;border-radius:6px;border:1px solid var(--border-2);border-bottom-width:2px;background:var(--surface-2);color:var(--muted);font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     @media (max-width:560px){.search-row .kbd{display:none}}
@@ -393,7 +398,7 @@
         <div class="composer" id="composer">
           <div class="search-row">
             <svg class="i"><use href="#i-search"/></svg>
-            <input id="queryInput" class="search-input" type="text" placeholder="Ask anything…" autocomplete="off" spellcheck="false" autofocus aria-label="Search query" />
+            <textarea id="queryInput" class="search-input" rows="1" placeholder="Ask anything…" autocomplete="off" spellcheck="false" autofocus aria-label="Search query" enterkeyhint="search"></textarea>
             <span class="kbd" title="Press / to focus">/</span>
             <button id="stopBtn" type="button" title="Stop this search (Esc)"><svg class="i"><use href="#i-stop"/></svg>Stop</button>
             <button id="runBtn" class="search-submit" onclick="runSearch()" title="Search (Enter)" aria-label="Search"><svg class="i"><use href="#i-send"/></svg></button>
@@ -510,7 +515,7 @@
           <option value="nvidia_nim">NVIDIA NIM</option>
         </select>
       </div>
-      <div class="field"><label for="apiKey">API key</label><input id="apiKey" type="password" placeholder="sk-…" autocomplete="off" /><div class="hint">Stored in this browser only; sent to your provider with each search.</div></div>
+      <div class="field"><label for="apiKey">API key</label><input id="apiKey" type="password" placeholder="sk-…" autocomplete="off" /><div class="hint">Stored in this browser only; sent to your provider with each search. Not needed for Ollama or other local servers.</div></div>
       <div class="field"><label for="baseUrl">Base URL</label><input id="baseUrl" type="text" placeholder="auto" /></div>
       <div class="field">
         <label for="modelInput">Model <button class="btn-fetch" id="fetchBtn" onclick="fetchModels()">Fetch list</button></label>
@@ -684,6 +689,7 @@
       dom.suggestions.classList.remove('hidden');
       dom.resultsArea.classList.add('hidden');
       dom.queryInput.value='';
+      autosizeQuery();
       dom.queryInput.focus();
     }
 
@@ -692,6 +698,7 @@
     function closeSettings(){dom.drawerOverlay.classList.add('hidden');dom.settingsDrawer.classList.add('hidden')}
     function saveSettings(){
       localStorage.setItem('ss_provider',dom.provider.value);
+      dom.apiKey.value=dom.apiKey.value.trim();
       localStorage.setItem('ss_api_key',dom.apiKey.value);
       localStorage.setItem('ss_base_url',dom.baseUrl.value);
       localStorage.setItem('ss_model',dom.modelInput.value);
@@ -737,11 +744,15 @@
     // ═══ Model Fetcher ═══
     async function fetchModels(){
       const key=dom.apiKey.value.trim();
-      const base=dom.baseUrl.value.trim()||(presets[dom.provider.value]||{}).base;
-      if(!key||!base){toast('Enter an API key and base URL first',true);return}
+      const prov=dom.provider.value;
+      // An empty base URL means the provider's built-in endpoint (OpenAI,
+      // Anthropic and Gemini presets have none).
+      const base=dom.baseUrl.value.trim()||(presets[prov]||{}).base||'';
+      if(!key&&!isLocalModel(prov,base)){toast('Enter your API key first',true);return}
+      if(!base&&prov==='openai_compatible'){toast('Enter the base URL of your server first',true);return}
       $('fetchBtn').textContent='Loading…';
       try{
-        const data=await api('/api/models','POST',{api_key:key,base_url:base});
+        const data=await api('/api/models','POST',{api_key:key,base_url:base,provider:prov});
         if(data?.models?.length){
           dom.modelSelect.innerHTML=data.models.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
           dom.modelSelect.classList.remove('hidden');
@@ -753,6 +764,12 @@
         }
       }catch(e){toast('Failed: '+e.message,true)}
       $('fetchBtn').textContent='Fetch list';
+    }
+
+    // Local servers (Ollama, LM Studio, llama.cpp) need no API key.
+    function isLocalModel(prov,base){
+      if(prov==='ollama')return true;
+      try{const h=new URL(base).hostname;return h==='localhost'||h==='127.0.0.1'||h==='[::1]'||/^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\./.test(h)||h.endsWith('.local')}catch{return false}
     }
 
     // ═══ Modes ═══
@@ -1311,8 +1328,12 @@
     }
 
     async function runSearch(){
-      const query=dom.queryInput.value.trim();
+      // Line breaks (Shift+Enter, pasted text) are layout, not query syntax.
+      const query=dom.queryInput.value.replace(/\s+/g,' ').trim();
       if(!query)return;
+      // The query is shown as the results heading; clear the box for the next one.
+      dom.queryInput.value='';
+      autosizeQuery();
 
       ttsReset();
       typewriterAbort=true;
@@ -1352,7 +1373,7 @@
       const model=dom.modelInput.value.trim();
       const base=dom.baseUrl.value.trim()||(presets[prov]||{}).base||'';
       const useLlm=dom.enableLlm.checked;
-      const llmConfigured=useLlm&&!!key&&!!model;
+      const llmConfigured=useLlm&&!!model&&(!!key||isLocalModel(prov,base));
 
       // Each mode sizes itself on the server. "Max sources" is only sent when
       // the user set it explicitly; the server clamps it to the mode's range.
@@ -1432,8 +1453,20 @@
       }
     }
 
+    // ═══ Query box: grows with the text, Enter sends, Shift+Enter = new line ═══
+    const QUERY_MAX_PX=()=>parseFloat(getComputedStyle(dom.queryInput).maxHeight)||200;
+    function autosizeQuery(){
+      const el=dom.queryInput;
+      el.style.height='auto';
+      const max=QUERY_MAX_PX();
+      el.style.height=Math.min(el.scrollHeight,max)+'px';
+      el.style.overflowY=el.scrollHeight>max?'auto':'hidden';
+    }
+    dom.queryInput.addEventListener('input',autosizeQuery);
+    window.addEventListener('resize',autosizeQuery);
+
     // ═══ Keyboard ═══
-    dom.queryInput.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();runSearch()}});
+    dom.queryInput.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();runSearch()}});
     dom.stopBtn?.addEventListener('click',cancelRequest);
     document.addEventListener('keydown',e=>{
       const typing=/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName||'');

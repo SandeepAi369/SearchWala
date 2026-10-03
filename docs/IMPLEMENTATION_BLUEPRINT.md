@@ -2567,3 +2567,48 @@ themes, toasts instead of alerts, `/` and Ctrl+K shortcuts, mobile layout.
 Two layout bugs were found by testing at 390 px, both CSS source-order
 mistakes of mine: the sources sidebar showed above the answer on phones, and
 the "More" menu was clipped inside the scrolling pill row.
+
+---
+
+## v8.1 (3) — Query box and API-key sweep
+
+**Query box.** The single-line `<input>` scrolled long queries sideways out
+of view. It is now a `<textarea>` that grows with the text (46 px → 200 px,
+160 px on phones) and then scrolls inside; Enter sends, Shift+Enter adds a
+line, line breaks are collapsed to spaces before sending, and the box is
+cleared on send (the query is the results heading).
+
+**API-key handling — bugs found and fixed**, each with a unit test:
+
+1. **Key sent to the wrong provider.** A rejected custom `base_url` fell back
+   to the provider's default endpoint; for "OpenAI compatible" that is
+   api.openai.com, so a key meant for a LAN/custom server went to OpenAI.
+   Unknown provider names without a `base_url` did the same. Both are now
+   errors reported in `llm_error`.
+2. **Anthropic could never have worked.** The chat URL was built as
+   `base.trim_end_matches('/') + "v1/messages"` →
+   `https://api.anthropic.comv1/messages`. Same defect in the unused native
+   Gemini branch.
+3. Keys pasted with a trailing newline/space failed header parsing and the
+   auth header was silently dropped (a bare 401). Keys are now trimmed, a
+   pasted `Bearer ` prefix removed, and keys with inner whitespace,
+   control or non-ASCII characters (e.g. a zero-width space from a web page)
+   are rejected with a reason.
+4. Padded model names (" gpt-4o-mini") 404'd; trimmed.
+5. Base URLs pasted with the endpoint (`…/v1/chat/completions`,
+   Anthropic `…/v1`) produced doubled paths; normalised.
+6. The LLM and model-list clients followed redirects, so a validated
+   base_url could redirect to an address validation refuses. Redirects off.
+7. Provider error messages that echo the submitted key are redacted.
+8. `timeout_ms` had no upper bound; clamped to 1 s–10 min.
+9. Ollama/local servers needed a dummy key in the UI and sent `Bearer `;
+   the key is now optional for local endpoints and no header is sent.
+10. "Fetch list" could not run for OpenAI, Anthropic or Gemini (their
+    presets have no base URL) and sent Bearer auth to Anthropic (the UI never
+    sent `provider`). The handler now uses the provider's built-in endpoint
+    and Anthropic's `/v1/models` path.
+11. Multiple system messages overwrote each other for Anthropic/Gemini.
+
+Verified live: each error case returns a clear `llm_error`; Ollama answers
+with no key, a pasted `/chat/completions` suffix and a padded model name;
+Anthropic `/api/models` now reaches the real API (401 for a fake key).

@@ -244,7 +244,7 @@ struct ProviderInfo {
     base_url: String,
 }
 
-fn resolve_provider(config: &LlmConfig) -> ProviderInfo {
+fn resolve_provider(config: &LlmConfig) -> Result<ProviderInfo, String> {
     let provider = config.provider.trim().to_lowercase();
 
     // If the user provided a custom base_url, VALIDATE it first (v8.0 P1-12a).
@@ -254,10 +254,11 @@ fn resolve_provider(config: &LlmConfig) -> ProviderInfo {
         let url = base_url.trim();
         if !url.is_empty() {
             if let Err(e) = crate::ssrf::validate_llm_base_url(url) {
+                // v8.1: this used to fall back to the provider's DEFAULT
+                // endpoint. For "openai_compatible" that is api.openai.com, so
+                // a key meant for a custom/LAN endpoint was sent to OpenAI.
                 tracing::warn!("Rejected caller-supplied base_url: {}", e);
-                // Fall through to the provider default rather than failing the
-                // whole search; the user still gets an answer.
-                return default_provider_for(&provider);
+                return Err(format!("base_url rejected: {e}"));
             }
             let format = if provider == "anthropic" {
                 ApiFormat::Anthropic
@@ -265,14 +266,96 @@ fn resolve_provider(config: &LlmConfig) -> ProviderInfo {
                 // All other providers (including Gemini) use OpenAI-compatible format
                 ApiFormat::OpenAiCompatible
             };
-            return ProviderInfo {
+            return Ok(ProviderInfo {
                 format,
-                base_url: ensure_trailing_slash(url),
-            };
+                base_url: ensure_trailing_slash(&normalize_base_url(url, &provider)),
+            });
         }
     }
 
-    default_provider_for(&provider)
+    Ok(default_provider_for(&provider))
+}
+
+/// Trim endpoint paths users paste along with the base URL. The chat path is
+/// appended later, so ".../v1/chat/completions" became
+/// ".../v1/chat/completions/chat/completions", and an Anthropic base of
+/// "https://api.anthropic.com/v1" became ".../v1/v1/messages".
+pub(crate) fn normalize_base_url(raw: &str, provider: &str) -> String {
+    let mut u = raw.trim().trim_end_matches('/').to_string();
+    for suffix in ["/chat/completions", "/completions", "/v1/messages", "/messages", "/models"] {
+        if let Some(stripped) = u.strip_suffix(suffix) {
+            u = stripped.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    if provider == "anthropic" {
+        if let Some(stripped) = u.strip_suffix("/v1") {
+            u = stripped.to_string();
+        }
+    }
+    u
+}
+
+/// Normalise and validate a caller-supplied LLM config once, where the
+/// request enters the pipeline. Every later stage can then trust it.
+///
+/// Fixes, each a real failure mode:
+///   * keys pasted with a trailing newline/space failed `HeaderValue`
+///     parsing, the auth header was silently dropped, and the provider
+///     answered 401 with no hint why;
+///   * a pasted "Bearer sk-…" became "Bearer Bearer sk-…";
+///   * " gpt-4o-mini" (leading space) is a 404 "model not found";
+///   * an empty key was sent as "Bearer " instead of being reported;
+///   * a rejected base_url fell back to another provider's endpoint;
+///   * `timeout_ms` had no upper bound.
+pub fn prepare_config(mut c: LlmConfig) -> Result<LlmConfig, String> {
+    c.provider = c.provider.trim().to_lowercase();
+    c.model = c.model.trim().to_string();
+    let mut key = c.api_key.trim();
+    for prefix in ["Bearer ", "bearer ", "BEARER "] {
+        if let Some(rest) = key.strip_prefix(prefix) {
+            key = rest.trim();
+        }
+    }
+    c.api_key = key.to_string();
+    c.base_url = c.base_url.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+
+    if c.model.is_empty() {
+        return Err("llm_config: no model name was given".into());
+    }
+    if c.api_key.chars().any(|ch| ch.is_whitespace() || ch.is_control() || !ch.is_ascii()) {
+        return Err("llm_config: the API key contains spaces, line breaks or non-ASCII characters; copy it again from your provider".into());
+    }
+    if c.api_key.is_empty() && !is_local_llm(&c) {
+        return Err("llm_config: the API key is empty".into());
+    }
+    if let Some(b) = &c.base_url {
+        crate::ssrf::validate_llm_base_url(b).map_err(|e| format!("llm_config: base_url rejected: {e}"))?;
+    } else if !KNOWN_PROVIDERS.contains(&c.provider.as_str()) {
+        // Unknown names fell through to api.openai.com — the key went to a
+        // provider the user never chose.
+        return Err(format!(
+            "llm_config: provider {:?} needs a base_url (the endpoint of your OpenAI-compatible server)",
+            c.provider
+        ));
+    }
+    c.timeout_ms = c.timeout_ms.map(|t| t.clamp(1_000, 600_000));
+    Ok(c)
+}
+
+/// Provider names with a built-in endpoint (see `default_provider_for`).
+const KNOWN_PROVIDERS: &[&str] = &[
+    "gemini", "google", "anthropic", "openai", "groq", "together", "openrouter", "cerebras", "deepseek", "xai",
+    "ollama", "cohere", "fireworks", "perplexity", "mistral_api", "mistral", "sambanova", "nvidia_nim",
+];
+
+/// Remove the caller's key from any text that may be shown or logged.
+/// Some providers echo the submitted key in their 401 message.
+pub(crate) fn redact_key(text: &str, key: &str) -> String {
+    if key.len() < 8 {
+        return text.to_string();
+    }
+    text.replace(key, "<redacted>")
 }
 
 /// Built-in endpoint for a known provider name.
@@ -366,10 +449,13 @@ fn build_chat_url(info: &ProviderInfo, model: &str, stream: bool) -> String {
         ApiFormat::Gemini => {
             // Native Gemini API (only used when no base_url override)
             let action = if stream { "streamGenerateContent?alt=sse" } else { "generateContent" };
-            format!("{}v1beta/models/{}:{}", info.base_url.trim_end_matches('/'), model, action)
+            format!("{}v1beta/models/{}:{}", ensure_trailing_slash(&info.base_url), model, action)
         }
         ApiFormat::Anthropic => {
-            format!("{}v1/messages", info.base_url.trim_end_matches('/'))
+            // v8.1: this was `base.trim_end_matches('/')` + "v1/messages",
+            // i.e. "https://api.anthropic.comv1/messages" — Anthropic calls
+            // could never have succeeded.
+            format!("{}v1/messages", ensure_trailing_slash(&info.base_url))
         }
     }
 }
@@ -392,6 +478,9 @@ fn build_auth_headers(config: &LlmConfig, info: &ProviderInfo) -> HeaderMap {
                 headers.insert("x-api-key", val);
             }
             headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        }
+        ApiFormat::OpenAiCompatible if config.api_key.is_empty() => {
+            // Local servers (Ollama, llama.cpp) need no auth.
         }
         ApiFormat::OpenAiCompatible => {
             // Bearer token auth
@@ -449,7 +538,12 @@ fn build_request_body(
             for msg in messages {
                 match msg.role.as_str() {
                     "system" => {
-                        system_text = msg.content.clone();
+                        // Join, don't overwrite: a second system message
+                        // replaced the first.
+                        if !system_text.is_empty() {
+                            system_text.push_str("\n\n");
+                        }
+                        system_text.push_str(&msg.content);
                     }
                     "user" => {
                         contents.push(serde_json::json!({
@@ -492,7 +586,12 @@ fn build_request_body(
             for msg in messages {
                 match msg.role.as_str() {
                     "system" => {
-                        system_text = msg.content.clone();
+                        // Join, don't overwrite: a second system message
+                        // replaced the first.
+                        if !system_text.is_empty() {
+                            system_text.push_str("\n\n");
+                        }
+                        system_text.push_str(&msg.content);
                     }
                     "user" | "assistant" => {
                         msgs.push(serde_json::json!({
@@ -652,6 +751,10 @@ pub(crate) fn http_client() -> &'static reqwest::Client {
         reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(300))
+            // A validated base_url must not be able to redirect us to an
+            // address validation would have refused (169.254.169.254, LAN).
+            // LLM APIs do not redirect POSTs.
+            .redirect(reqwest::redirect::Policy::none())
             .pool_max_idle_per_host(8)
             .tcp_nodelay(true)
             .build()
@@ -714,7 +817,7 @@ pub(crate) async fn call_llm(
     config: &LlmConfig,
     messages: &[ChatMessage],
 ) -> Result<String, String> {
-    let info = resolve_provider(config);
+    let info = resolve_provider(config)?;
     let url = build_chat_url(&info, &config.model, false);
     let headers = build_auth_headers(config, &info);
     let body = build_request_body(messages, &config.model, &info, false, output_tokens_for(config));
@@ -731,7 +834,7 @@ pub(crate) async fn call_llm(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("http_request_failed: {e}"))?;
+        .map_err(|e| redact_key(&format!("http_request_failed: {e}"), &config.api_key))?;
 
     let status = resp.status();
     let resp_text = resp.text().await.map_err(|e| format!("response_read_error: {e}"))?;
@@ -741,7 +844,7 @@ pub(crate) async fn call_llm(
             Ok(json) => extract_error_message(&json, &info.format),
             Err(_) => resp_text.chars().take(500).collect(),
         };
-        return Err(format!("http_{}: {}", status.as_u16(), error_msg));
+        return Err(redact_key(&format!("http_{}: {}", status.as_u16(), error_msg), &config.api_key));
     }
 
     let json: serde_json::Value = serde_json::from_str(&resp_text)
@@ -1469,22 +1572,45 @@ pub async fn fetch_provider_models(
     base_url: &str,
     provider: &str,
 ) -> Result<Vec<String>, String> {
-    if api_key.is_empty() || base_url.is_empty() {
-        return Err("api_key and base_url are required".to_string());
+    let provider = provider.trim().to_lowercase();
+    let api_key = api_key.trim().trim_start_matches("Bearer ").trim();
+    // No base_url: use the provider's own endpoint. The UI presets for
+    // OpenAI, Anthropic and Gemini have none, so "Fetch list" used to refuse
+    // to run for exactly the most common providers.
+    let base = if base_url.trim().is_empty() {
+        default_provider_for(&provider).base_url
+    } else {
+        normalize_base_url(base_url, &provider)
+    };
+    let probe = LlmConfig {
+        provider: provider.clone(),
+        api_key: api_key.to_string(),
+        model: String::new(),
+        base_url: Some(base.clone()),
+        timeout_ms: None,
+        max_output_tokens: None,
+    };
+    if api_key.is_empty() && !is_local_llm(&probe) {
+        return Err("an API key is required".to_string());
+    }
+    if api_key.chars().any(|c| c.is_whitespace() || c.is_control() || !c.is_ascii()) {
+        return Err("the API key contains spaces, line breaks or non-ASCII characters".to_string());
     }
 
-    // base_url already includes the version path (e.g. /v1 or /v1beta/openai)
-    // Just append /models
-    let models_url = format!("{}models", ensure_trailing_slash(base_url.trim()));
+    let is_anthropic = provider == "anthropic";
+    let models_url = if is_anthropic {
+        format!("{}v1/models", ensure_trailing_slash(base.trim_end_matches("/v1")))
+    } else {
+        format!("{}models", ensure_trailing_slash(&base))
+    };
     tracing::info!("Fetching models from: {}", models_url);
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("client_error: {e}"))?;
 
-    // Use provider-specific auth headers
-    let is_anthropic = provider.eq_ignore_ascii_case("anthropic");
     let mut req = client
         .get(&models_url)
         .header("Accept", "application/json");
@@ -1493,14 +1619,14 @@ pub async fn fetch_provider_models(
         req = req
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01");
-    } else {
+    } else if !api_key.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", api_key));
     }
 
     let resp = req
         .send()
         .await
-        .map_err(|e| format!("request_failed: {e}"))?;
+        .map_err(|e| redact_key(&format!("request_failed: {e}"), api_key))?;
 
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
@@ -1509,7 +1635,7 @@ pub async fn fetch_provider_models(
             Ok(json) => extract_error_message(&json, &ApiFormat::OpenAiCompatible),
             Err(_) => err_text.chars().take(200).collect(),
         };
-        return Err(format!("http_{}: {}", status, detail));
+        return Err(redact_key(&format!("http_{}: {}", status, detail), api_key));
     }
 
     let json: serde_json::Value = resp
@@ -1867,5 +1993,109 @@ mod tests {
         assert!(trust_score("https://www.nih.gov/x") > trust_score("https://random-blog.test/x"));
         assert!(trust_score("https://en.wikipedia.org/wiki/X") > trust_score("https://random-blog.test/x"));
         assert!(trust_score("https://docs.rust-lang.org/std/") > trust_score("https://random-blog.test/x"));
+    }
+
+    // ── v8.1: API key / config handling ──
+
+    fn user_cfg(provider: &str, key: &str, model: &str, base: Option<&str>) -> crate::models::LlmConfig {
+        crate::models::LlmConfig {
+            provider: provider.into(),
+            api_key: key.into(),
+            model: model.into(),
+            base_url: base.map(str::to_string),
+            timeout_ms: None,
+            max_output_tokens: None,
+        }
+    }
+
+    #[test]
+    fn pasted_keys_are_cleaned_not_silently_dropped() {
+        let c = prepare_config(user_cfg(" Groq ", "  gsk_abc123XYZ\n", " llama-3.3-70b ", Some(" https://api.groq.com/openai/v1 "))).unwrap();
+        assert_eq!(c.api_key, "gsk_abc123XYZ");
+        assert_eq!(c.model, "llama-3.3-70b");
+        assert_eq!(c.provider, "groq");
+        assert_eq!(c.base_url.as_deref(), Some("https://api.groq.com/openai/v1"));
+        let headers = build_auth_headers(&c, &resolve_provider(&c).unwrap());
+        assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer gsk_abc123XYZ");
+
+        let b = prepare_config(user_cfg("openai", "Bearer sk-live-123", "gpt-4o-mini", None)).unwrap();
+        assert_eq!(b.api_key, "sk-live-123", "a pasted 'Bearer ' prefix must not be doubled");
+    }
+
+    #[test]
+    fn bad_configs_are_reported_with_a_reason() {
+        let e = prepare_config(user_cfg("openai", "sk-abc def", "gpt-4o-mini", None)).unwrap_err();
+        assert!(e.contains("API key"), "{e}");
+        let e = prepare_config(user_cfg("openai", "sk-ab\u{200b}c", "gpt-4o-mini", None)).unwrap_err();
+        assert!(e.contains("non-ASCII"), "zero-width space: {e}");
+        let e = prepare_config(user_cfg("openai", "", "gpt-4o-mini", None)).unwrap_err();
+        assert!(e.contains("empty"), "{e}");
+        let e = prepare_config(user_cfg("openai", "sk-1", "  ", None)).unwrap_err();
+        assert!(e.contains("model"), "{e}");
+        let c = prepare_config(user_cfg("openai", "sk-1", "m", None)).map(|mut c| {
+            c.timeout_ms = Some(u64::MAX);
+            c
+        }).unwrap();
+        assert_eq!(prepare_config(c).unwrap().timeout_ms, Some(600_000));
+    }
+
+    #[test]
+    fn local_models_need_no_key_and_send_no_auth_header() {
+        let c = prepare_config(user_cfg("ollama", "", "qwen2.5", None)).unwrap();
+        let headers = build_auth_headers(&c, &resolve_provider(&c).unwrap());
+        assert!(headers.get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn a_rejected_base_url_is_an_error_not_a_fallback() {
+        // Previously: fell back to api.openai.com and sent the custom key there.
+        let c = user_cfg("openai_compatible", "sk-custom", "m", Some("http://169.254.169.254/v1"));
+        assert!(resolve_provider(&c).is_err());
+        assert!(prepare_config(c).unwrap_err().contains("base_url rejected"));
+    }
+
+    #[test]
+    fn pasted_endpoint_paths_are_trimmed_from_base_urls() {
+        assert_eq!(normalize_base_url("https://api.x.ai/v1/chat/completions", "xai"), "https://api.x.ai/v1");
+        assert_eq!(normalize_base_url("https://api.anthropic.com/v1/", "anthropic"), "https://api.anthropic.com");
+        assert_eq!(normalize_base_url("https://api.anthropic.com/v1/messages", "anthropic"), "https://api.anthropic.com");
+        assert_eq!(normalize_base_url("https://openrouter.ai/api/v1/", "openrouter"), "https://openrouter.ai/api/v1");
+        let c = user_cfg("anthropic", "k", "claude", Some("https://api.anthropic.com/v1"));
+        assert_eq!(build_chat_url(&resolve_provider(&c).unwrap(), "claude", false), "https://api.anthropic.com/v1/messages");
+        let o = user_cfg("openai_compatible", "k", "m", Some("https://llm.example.com/v1/chat/completions"));
+        assert_eq!(build_chat_url(&resolve_provider(&o).unwrap(), "m", false), "https://llm.example.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn unknown_provider_without_base_url_is_refused() {
+        let e = prepare_config(user_cfg("openai_compatible", "sk-x", "m", None)).unwrap_err();
+        assert!(e.contains("needs a base_url"), "{e}");
+        assert!(prepare_config(user_cfg("openai_compatible", "sk-x", "m", Some("https://llm.example.com/v1"))).is_ok());
+    }
+
+    #[test]
+    fn anthropic_joins_multiple_system_messages() {
+        let msgs = vec![
+            ChatMessage { role: "system".into(), content: "A".into() },
+            ChatMessage { role: "system".into(), content: "B".into() },
+            ChatMessage { role: "user".into(), content: "q".into() },
+        ];
+        let info = ProviderInfo { format: ApiFormat::Anthropic, base_url: "https://api.anthropic.com/".into() };
+        let body = build_request_body(&msgs, "claude", &info, false, 512);
+        assert_eq!(body["system"], "A\n\nB");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn default_anthropic_endpoint_is_well_formed() {
+        let c = user_cfg("anthropic", "k", "claude-haiku", None);
+        assert_eq!(build_chat_url(&resolve_provider(&c).unwrap(), "claude-haiku", false), "https://api.anthropic.com/v1/messages");
+    }
+
+    #[test]
+    fn keys_are_redacted_from_provider_errors() {
+        let msg = "Incorrect API key provided: sk-proj-abcdef123456. Check your key.";
+        assert_eq!(redact_key(msg, "sk-proj-abcdef123456"), "Incorrect API key provided: <redacted>. Check your key.");
+        assert_eq!(redact_key("x", ""), "x");
     }
 }

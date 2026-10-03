@@ -186,6 +186,20 @@ pub async fn execute_search_full(
     let query = params.query.trim().to_string();
     let (mode, domain) = modes::parse(params.focus_mode.as_deref(), params.domain.as_deref());
 
+    // Validate the caller's LLM config once. A bad config is reported in
+    // `llm_error`; the search itself still runs.
+    let mut params = params;
+    let mut llm_config_error: Option<String> = None;
+    if let Some(cfg) = params.llm.take() {
+        match llm::prepare_config(cfg) {
+            Ok(cfg) => params.llm = Some(cfg),
+            Err(e) => {
+                tracing::warn!("LLM config rejected: {}", e);
+                llm_config_error = Some(e);
+            }
+        }
+    }
+
     // ── Optional LLM query rewrite ──
     let mut effective_query = query.clone();
     let mut copilot_out = None;
@@ -678,7 +692,7 @@ pub async fn execute_search_full(
             llm_error: Some("llm_skipped: no scraped content available".to_string()),
             ..Default::default()
         },
-        None => llm::LlmExecutionResult::default(),
+        None => llm::LlmExecutionResult { llm_error: llm_config_error, ..Default::default() },
     };
     let llm_ms = stage_start.elapsed().as_millis();
 
