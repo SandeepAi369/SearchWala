@@ -72,6 +72,10 @@ impl ProxyPoolManager {
         self.proxies.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.proxies.is_empty()
+    }
+
     pub fn mark_proxy_failure(&self, proxy: &str) {
         if self.proxies.is_empty() || proxy.is_empty() {
             return;

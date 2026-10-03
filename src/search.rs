@@ -293,7 +293,7 @@ pub async fn execute_search_full(
         config::stealth_engines().into_iter().collect();
     let stealth_mode = config::stealth_mode();
     let proxy_pool = ProxyPoolManager::from_env();
-    let engine_concurrency = config::engine_concurrency().max(1).min(40);
+    let engine_concurrency = config::engine_concurrency().clamp(1, 40);
     let engine_semaphore = Arc::new(Semaphore::new(engine_concurrency));
 
     let stage_start = std::time::Instant::now();
@@ -762,6 +762,7 @@ pub async fn execute_search_full(
 // Deadline: lite 2.5s, research 8s, specialized 5s, default 6s
 // =============================================================================
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_engines(
     engine_instances: &[std::sync::Arc<dyn engines::SearchEngine>],
     query_variations: &[String],

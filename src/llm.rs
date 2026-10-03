@@ -646,7 +646,7 @@ fn extract_response_text(json: &serde_json::Value, format: &ApiFormat) -> Option
                     let s: String = parts
                         .iter()
                         .filter(|p| {
-                            p.get("type").and_then(|t| t.as_str()).map_or(true, |t| t == "text")
+                            p.get("type").and_then(|t| t.as_str()).is_none_or(|t| t == "text")
                         })
                         .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                         .collect();
@@ -1043,11 +1043,6 @@ fn lost_in_middle_order(len: usize) -> Vec<usize> {
     front
 }
 
-/// Lost-in-Middle reordering: place most relevant items at start and end,
-/// least relevant in the middle. This maximizes LLM attention on the best sources.
-///
-
-
 pub(crate) fn credibility_tag(url: &str) -> String {
     let host = url::Url::parse(url)
         .ok()
@@ -1338,6 +1333,7 @@ pub struct CitationCheck {
 ///    input — so despite its doc comment ("Returns the answer with unsupported
 ///    citations flagged") it only wrote log lines. It was a no-op that cost a
 ///    full substring scan per citation, called twice per answer.
+///
 /// ═══════════════════════════════════════════════════════════════════════════
 pub fn verify_citations(
     answer: &str,

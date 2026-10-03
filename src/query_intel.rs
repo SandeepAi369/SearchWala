@@ -483,8 +483,7 @@ pub fn max_sub_queries() -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5)
-        .min(8)
-        .max(1)
+        .clamp(1, 8)
 }
 
 /// Decomposes a user query into multiple targeted sub-queries

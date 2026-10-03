@@ -99,7 +99,7 @@ pub fn canonical_key(raw: &str) -> String {
         .query_pairs()
         .filter(|(k, _)| {
             let kl = k.to_lowercase();
-            !config::TRACKING_PARAMS.iter().any(|t| *t == kl.as_str())
+            !config::TRACKING_PARAMS.contains(&kl.as_str())
         })
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
@@ -143,7 +143,7 @@ pub fn normalize_url(raw: &str) -> Option<String> {
         .query_pairs()
         .filter(|(k, _)| {
             let kl = k.to_lowercase();
-            !config::TRACKING_PARAMS.iter().any(|t| *t == kl.as_str())
+            !config::TRACKING_PARAMS.contains(&kl.as_str())
         })
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
