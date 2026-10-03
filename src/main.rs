@@ -307,17 +307,18 @@ async fn models_handler(
     let base_url = body.get("base_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let provider = body.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-    if api_key.is_empty() || base_url.is_empty() {
+    if base_url.trim().is_empty() && provider.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "api_key and base_url are required" })),
+            Json(serde_json::json!({ "error": "base_url or provider is required" })),
         ));
     }
 
     // v8.0 P1-12a: this endpoint takes a caller-supplied base_url and fetches
     // it with the user's credentials. Without this check, any page in the
     // user's browser could use it to read loopback services and cloud metadata.
-    if let Err(e) = ssrf::validate_llm_base_url(&base_url) {
+    // (An empty base_url means the provider's built-in endpoint.)
+    if let Err(e) = Some(base_url.trim()).filter(|b| !b.is_empty()).map_or(Ok(()), |b| ssrf::validate_llm_base_url(b).map(|_| ())) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": format!("rejected base_url: {e}") })),
