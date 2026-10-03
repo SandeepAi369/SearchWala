@@ -57,6 +57,12 @@ pub struct TempDb {
     sessions: Arc<RwLock<HashMap<String, TempSession>>>,
 }
 
+impl Default for TempDb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TempDb {
     pub fn new() -> Self {
         Self {
@@ -155,6 +161,12 @@ pub struct HistoryDb {
     enabled: Arc<AtomicBool>,
     entries: Arc<RwLock<Vec<HistoryEntry>>>,
     file_path: PathBuf,
+}
+
+impl Default for HistoryDb {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HistoryDb {

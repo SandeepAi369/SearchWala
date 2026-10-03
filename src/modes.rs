@@ -731,15 +731,11 @@ pub fn source_boost(url: &str, mode: Mode, domain: Domain) -> f64 {
     }
     let mut b: f64 = 1.0;
     match mode {
-        Mode::Study => {
-            if host_matches(&host, STUDY_HOSTS) || host.ends_with(".edu") || host.ends_with(".ac.in") {
-                b *= 1.35;
-            }
+        Mode::Study if host_matches(&host, STUDY_HOSTS) || host.ends_with(".edu") || host.ends_with(".ac.in") => {
+            b *= 1.35;
         }
-        Mode::Academic => {
-            if host_matches(&host, SCHOLARLY_HOSTS) || host.ends_with(".edu") {
-                b *= 1.4;
-            }
+        Mode::Academic if host_matches(&host, SCHOLARLY_HOSTS) || host.ends_with(".edu") => {
+            b *= 1.4;
         }
         _ => {}
     }

@@ -440,7 +440,7 @@ mod tests {
         // Guards against a roster entry with no matching spec, which v7.0
         // handled by logging "Unknown engine" and silently dispatching nothing.
         for name in all_engines() {
-            let built = get_engines(&[name.clone()]);
+            let built = get_engines(std::slice::from_ref(&name));
             assert_eq!(built.len(), 1, "roster entry {name:?} produced no engine");
             assert!(!built[0].name().is_empty());
         }

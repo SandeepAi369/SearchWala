@@ -431,7 +431,7 @@ pub fn clean_notes(raw: &str, range: &std::ops::Range<usize>) -> String {
         if nums.is_empty() {
             continue;
         }
-        if nums.iter().all(|n| *n >= range.start + 1 && *n <= range.end) {
+        if nums.iter().all(|n| *n > range.start && *n <= range.end) {
             let t = t.trim_start_matches(['-', '*', '•', ' ']);
             kept.push(format!("- {t}"));
         }

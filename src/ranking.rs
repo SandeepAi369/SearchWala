@@ -184,6 +184,7 @@ pub fn rank_top_chunks(query: &str, sources: &[SourceResult], top_k: usize) -> V
 ///   3. Apply RRF consensus boost (normalized, not magic constant)
 ///   4. Apply extraction confidence prior
 ///   5. MMR diversity reranking (Carbonell & Goldstein 1998)
+///
 /// Exponential recency decay, gated on the query actually being time-sensitive.
 ///
 /// v7.0 called itself "time-aware" but had ZERO freshness signal in ranking —
@@ -757,16 +758,11 @@ fn is_sentence_boundary(chars: &[char], i: usize) -> bool {
 
     match chars.get(i + 2) {
         None => true,
-        Some(&after) => {
-            // Avoid splitting decimals/abbreviations in cased scripts only.
-            if script_has_case(after) {
-                after.is_uppercase()
-            } else {
-                // Uncased script (Devanagari, Arabic, CJK, Thai): whitespace
-                // after a terminator IS the boundary.
-                true
-            }
-        }
+        // Avoid splitting decimals/abbreviations in cased scripts only.
+        Some(&after) if script_has_case(after) => after.is_uppercase(),
+        // Uncased script (Devanagari, Arabic, CJK, Thai): whitespace after a
+        // terminator IS the boundary.
+        Some(_) => true,
     }
 }
 
@@ -1100,7 +1096,7 @@ mod tests {
         // article never found a boundary, so the whole thing became ONE chunk
         // and BM25 scored it as an undifferentiated blob.
         let sentence = "भारत और पाकिस्तान के बीच मुकाबला दस अक्टूबर को खेला जाएगा।";
-        let article = std::iter::repeat(sentence).take(12).collect::<Vec<_>>().join(" ");
+        let article = std::iter::repeat_n(sentence, 12).collect::<Vec<_>>().join(" ");
         let chunks = paragraph_chunks(&article);
         assert!(
             chunks.len() >= 3,
@@ -1117,7 +1113,7 @@ mod tests {
         // Must exceed MAX_CHUNK_CHARS, otherwise staying as one chunk is the
         // CORRECT behaviour and the test proves nothing.
         let s = "这是一个句子。这是另一个句子。还有第三个句子。";
-        let article = std::iter::repeat(s).take(40).collect::<Vec<_>>().join("");
+        let article = std::iter::repeat_n(s, 40).collect::<Vec<_>>().join("");
         assert!(article.chars().count() > MAX_CHUNK_CHARS, "test input too short");
         let chunks = paragraph_chunks(&article);
         assert!(chunks.len() >= 2, "CJK produced {} chunk(s)", chunks.len());
@@ -1136,7 +1132,7 @@ mod tests {
     fn english_sentences_still_split_correctly() {
         let s = "This is the first sentence of the document. Here is a second one that continues. \
                  And a third sentence follows after it. Then a fourth appears here as well.";
-        let article = std::iter::repeat(s).take(6).collect::<Vec<_>>().join(" ");
+        let article = std::iter::repeat_n(s, 6).collect::<Vec<_>>().join(" ");
         let chunks = paragraph_chunks(&article);
         assert!(chunks.len() >= 2, "English produced {} chunk(s)", chunks.len());
     }
@@ -1341,7 +1337,7 @@ mod tests {
             .collect();
         for top_k in [1, 3, 25, 500] {
             let out = rank_top_chunks_with_signals("rust ownership", &sources, top_k, None, None);
-            assert!(out.len() <= top_k.min(3).max(1) || out.len() <= 3);
+            assert!(out.len() <= top_k.clamp(1, 3) || out.len() <= 3);
         }
         assert!(rank_top_chunks_with_signals("rust", &[], 25, None, None).is_empty());
     }
