@@ -5,6 +5,9 @@ on:
     branches: [ main, master, "v8.0-*" ]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -13,15 +16,16 @@ jobs:
     name: Build, lint, test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -44,7 +48,7 @@ jobs:
         run: cargo clippy --release --all-targets -- -D warnings
         continue-on-error: true
 
-      # 183 unit tests, including parser tests driven by REAL SERP fixtures in
+      # 297 unit tests, including parser tests driven by REAL SERP fixtures in
       # tests/fixtures/ — so selector rot fails CI instead of silently
       # returning zero results, which is how 28 engines shipped broken.
       - name: Test
@@ -58,9 +62,11 @@ jobs:
     # train everyone to ignore it.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry

@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Dependency layer: cached unless the manifests change.
 COPY Cargo.toml Cargo.lock ./
+COPY patches/ patches/
 RUN mkdir -p src src/bin \
     && echo 'fn main() {}' > src/main.rs \
     && echo '' > src/lib.rs \
