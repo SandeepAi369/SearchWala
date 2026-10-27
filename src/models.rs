@@ -59,6 +59,10 @@ pub struct SearchRequest {
     pub llm: Option<LlmConfig>,
     /// Enable the SearchWala Copilot pre-computation rewriter
     pub enable_copilot: Option<bool>,
+    /// Save this question and answer as a conversation. The SearchWala page
+    /// sends true; API callers get a plain search unless they opt in.
+    #[serde(default)]
+    pub save: Option<bool>,
     /// Continue this saved conversation. Absent or unknown: a new one.
     #[serde(default)]
     pub conversation_id: Option<String>,

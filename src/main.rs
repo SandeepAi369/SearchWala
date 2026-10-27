@@ -84,12 +84,14 @@ fn forbidden() -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "conversations are only available to the SearchWala page on this machine" })))
 }
 
-/// Saves the question (when saving is on) and loads the conversation's
-/// earlier turns as memory (when the request asks for them and has an LLM).
+/// Saves the question (when the request opts in with `save: true` and saving
+/// is on) and loads the conversation's earlier turns as memory (when the
+/// request asks for them and has an LLM). Scripts and tools calling the API
+/// without `save` leave nothing on disk.
 async fn begin_turn(state: &AppState, body: &SearchRequest, trusted: bool, params: &mut search::SearchParams) -> Option<(String, i64)> {
     let store = state.chats.as_ref().filter(|_| trusted)?;
     let mode = body.focus_mode.clone().unwrap_or_else(|| "auto".into());
-    let turn = if store.saving_enabled().await {
+    let turn = if body.save == Some(true) && store.saving_enabled().await {
         match store.begin_turn(body.conversation_id.clone(), &params.query, &mode).await {
             Ok(t) => Some(t),
             Err(e) => {

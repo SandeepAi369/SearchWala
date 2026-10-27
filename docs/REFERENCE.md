@@ -296,7 +296,7 @@ docker build -t searchwala . && docker run -p 7860:7860 searchwala
 
 ## Conversations and memory
 
-Every question is saved the moment it is asked and completed when its answer
+In the web UI, every question is saved the moment it is asked and completed when its answer
 is ready, so closing the tab mid-search loses nothing: the server finishes the
 search and stores the answer. Only **Stop** cancels a search.
 
@@ -318,6 +318,11 @@ Two rules keep memory from causing hallucinations:
   conversation only to understand the question, to cite only this turn's
   sources, and to correct an earlier answer when the sources disagree.
 
+**API calls are not saved by default.** A script or tool calling `/search`
+or `/search/stream` gets a plain search and nothing is written to disk. Add
+`"save": true` to keep it as a conversation (and `"conversation_id"` plus
+`"memory_turns"` to continue one with memory).
+
 Old `history.json` / `history.jsonl` files are imported into the database on
 first start and then removed.
 
@@ -327,7 +332,7 @@ first start and then removed.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /search` | Search, extract, and synthesize when `llm` is given. Body: `query`, `focus_mode` (`fast` / `auto` / `deep` / `study` / `academic` / `reddit` / `youtube`), optional `domain`, `max_results` (clamped to the mode's range), `llm` `{provider, api_key, model, base_url?, timeout_ms?}` |
+| `POST /search` | Search, extract, and synthesize when `llm` is given. Nothing is saved unless the body has `"save": true` (the web UI sends it; scripts don't). Body: `query`, `focus_mode` (`fast` / `auto` / `deep` / `study` / `academic` / `reddit` / `youtube`), optional `domain`, `max_results` (clamped to the mode's range), `llm` `{provider, api_key, model, base_url?, timeout_ms?}` |
 | `POST /search/stream` | The same pipeline as Server-Sent Events: `plan`, `engines`, `sources`, `extracted`, `highlight`, `synthesizing`, then `result` (the full response) and `done` |
 | `POST /search/auto-llm`, `POST /search/research-llm` | legacy aliases (`research-llm` forces Deep) |
 | `GET /health` · `GET /health/engines` · `GET /health/cache` | liveness, per-engine verdicts, cache hit ratios |
