@@ -15,7 +15,7 @@ agree on, and answers with citations you can click, using any LLM or none.
 
 [![Release](https://img.shields.io/github/v/release/SandeepAi369/SearchWala?label=release&color=blue)](https://github.com/SandeepAi369/SearchWala/releases/latest)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?logo=rust)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-303_passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-307_passing-brightgreen)](#development)
 [![License](https://img.shields.io/badge/license-Apache%202.0-purple)](./LICENSE)
 [![Author](https://img.shields.io/badge/author-SandeepCH-0A7CFF?logo=github)](https://github.com/SandeepAi369)
 [![Stars](https://img.shields.io/github/stars/SandeepAi369/SearchWala?style=social)](https://github.com/SandeepAi369/SearchWala/stargazers)
@@ -37,6 +37,9 @@ agree on, and answers with citations you can click, using any LLM or none.
   saw, and each citation is checked against the cited text.
 - **Works without an LLM.** You still get ranked sources and a quick answer
   quoted word for word from them.
+- **Conversations that remember, if you want.** Chats are saved and reopen
+  exactly as they were. Follow-ups can use the last 10 answers (or any number,
+  or none). Search engines never see your history.
 - **Private by default.** One binary on `127.0.0.1`. No account, no telemetry,
   and search needs no API key. Your LLM key stays in your browser.
 
@@ -129,7 +132,9 @@ directions are guarded:
   is re-checked.
 - **Keys stay yours.** They're stored only in your browser, never logged, and
   redacted from provider errors. They're never re-routed to another provider.
-- **History is opt-in** and stays on your disk.
+- **Your chats stay on your machine.** Every conversation is saved to a local
+  SQLite file and can be deleted one by one or all at once. Only the
+  SearchWala page itself can read them, not other websites.
 
 The repository is guarded the same way: CodeQL, a daily RustSec audit,
 Dependabot, OpenSSF Scorecard, SHA-pinned Actions and a protected `main`
@@ -145,7 +150,7 @@ branch. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 ## Development
 
 ```bash
-cargo test --release                          # 303 unit tests
+cargo test --release                          # 307 unit tests
 cargo run --release --bin intent_probe        # intent accuracy: 50/50
 cargo run --release --bin eval -- --limit 20 --focus fast   # retrieval quality
 cargo run --release --bin highlight_probe     # quick answers on 45 saved real queries

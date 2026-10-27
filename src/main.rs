@@ -35,7 +35,11 @@ use models::*;
 struct AppState {
     start_time: Instant,
     temp_db: cache::TempDb,
-    history_db: cache::HistoryDb,
+    /// None when the database could not be opened: search still works,
+    /// nothing is saved.
+    chats: Option<chats::ChatStore>,
+    /// Pipelines of saved turns still running, so Stop can cancel them.
+    running: std::sync::Mutex<std::collections::HashMap<i64, tokio::task::AbortHandle>>,
 }
 
 const SEARCH_UI: &str = include_str!("../ui.html");
@@ -49,7 +53,81 @@ fn params_from(body: SearchRequest, focus_override: Option<&str>, default_llm_ur
         domain: body.domain,
         llm: body.llm,
         enable_copilot: body.enable_copilot.unwrap_or(false),
+        memory: Vec::new(),
     }
+}
+
+// =============================================================================
+// Conversations: every turn is saved around the pipeline
+// =============================================================================
+
+/// Requests from the SearchWala page itself: no Origin header (same-origin
+/// GET) or an Origin naming this host, and — while bound to loopback — a
+/// loopback Host, which also defeats DNS rebinding. CORS is permissive for
+/// the search API, so without this any website could read saved
+/// conversations from http://localhost:8000.
+fn from_own_page(headers: &axum::http::HeaderMap) -> bool {
+    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
+    let bind = std::env::var("BIND").unwrap_or_else(|_| "127.0.0.1".into());
+    let loopback_bind = matches!(bind.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]");
+    let host_name = host.rsplit_once(':').map_or(host, |(h, p)| if p.chars().all(|c| c.is_ascii_digit()) { h } else { host });
+    if loopback_bind && !matches!(host_name, "127.0.0.1" | "localhost" | "[::1]") {
+        return false;
+    }
+    match headers.get(axum::http::header::ORIGIN).and_then(|o| o.to_str().ok()) {
+        None => true,
+        Some(origin) => origin.split_once("://").is_some_and(|(_, rest)| rest == host),
+    }
+}
+
+fn forbidden() -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "conversations are only available to the SearchWala page on this machine" })))
+}
+
+/// Saves the question (when saving is on) and loads the conversation's
+/// earlier turns as memory (when the request asks for them and has an LLM).
+async fn begin_turn(state: &AppState, body: &SearchRequest, trusted: bool, params: &mut search::SearchParams) -> Option<(String, i64)> {
+    let store = state.chats.as_ref().filter(|_| trusted)?;
+    let mode = body.focus_mode.clone().unwrap_or_else(|| "auto".into());
+    let turn = if store.saving_enabled().await {
+        match store.begin_turn(body.conversation_id.clone(), &params.query, &mode).await {
+            Ok(t) => Some(t),
+            Err(e) => {
+                tracing::warn!("chats: could not save the question: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let wanted = body.memory_turns.unwrap_or(0);
+    let conversation = turn.as_ref().map(|(c, _)| c.clone()).or_else(|| body.conversation_id.clone());
+    if let (true, true, Some(conv)) = (wanted > 0, params.llm.is_some(), conversation) {
+        let before = turn.as_ref().map_or(i64::MAX, |(_, t)| *t);
+        params.memory = store.prior_turns(&conv, before, wanted).await.unwrap_or_default();
+    }
+    turn
+}
+
+/// Completes the saved turn with the answer and what the UI rendered.
+async fn finish_turn(state: &AppState, turn: &Option<(String, i64)>, response: &mut SearchResponse) {
+    let (Some(store), Some((conv, id))) = (state.chats.as_ref(), turn) else { return };
+    response.conversation_id = Some(conv.clone());
+    response.turn_id = Some(*id);
+    let status = if response.llm_answer.is_some() || response.sources_processed > 0 { "done" } else { "failed" };
+    let json = serde_json::to_value(&*response).ok();
+    if let Err(e) = store.finish_turn(*id, status, response.search_query.clone(), response.llm_answer.clone(), json).await {
+        tracing::warn!("chats: could not save the answer: {e}");
+    }
+}
+
+/// The non-streaming endpoints: save around one pipeline run.
+async fn run_saved(state: &AppState, body: SearchRequest, headers: &axum::http::HeaderMap, focus_override: Option<&str>) -> SearchResponse {
+    let mut params = params_from(body.clone(), focus_override, None);
+    let turn = begin_turn(state, &body, from_own_page(headers), &mut params).await;
+    let mut response = search::execute_search_full(params, Some(&state.temp_db), None).await;
+    finish_turn(state, &turn, &mut response).await;
+    response
 }
 
 fn empty_query_error() -> (StatusCode, Json<serde_json::Value>) {
@@ -75,19 +153,13 @@ fn no_results_error(resp: &SearchResponse) -> (StatusCode, Json<serde_json::Valu
 /// `domain`; synthesis runs when `llm` is supplied.
 async fn search_handler(
     state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     if body.query.trim().is_empty() {
         return Err(empty_query_error());
     }
-    let params = params_from(body, None, None);
-    let response = search::execute_search_full(
-        params,
-        Some(&state.temp_db),
-        Some(&state.history_db),
-        None,
-    )
-    .await;
+    let response = run_saved(&state, body, &headers, None).await;
     if response.sources_processed == 0 {
         return Err(no_results_error(&response));
     }
@@ -98,6 +170,7 @@ async fn search_handler(
 /// mode defaults to auto but `focus_mode` is honoured.
 async fn search_auto_llm_handler(
     state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     if body.query.trim().is_empty() {
@@ -109,9 +182,7 @@ async fn search_auto_llm_handler(
             Json(serde_json::json!({ "error": "LLM config is required for /search/auto-llm" })),
         ));
     }
-    let params = params_from(body, None, None);
-    let response =
-        search::execute_search_full(params, Some(&state.temp_db), Some(&state.history_db), None).await;
+    let response = run_saved(&state, body, &headers, None).await;
     if response.sources_processed == 0 {
         return Err(no_results_error(&response));
     }
@@ -122,6 +193,7 @@ async fn search_auto_llm_handler(
 /// v8.0 also dropped the request's domain here.
 async fn search_research_llm_handler(
     state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     if body.query.trim().is_empty() {
@@ -133,9 +205,7 @@ async fn search_research_llm_handler(
             Json(serde_json::json!({ "error": "LLM config is required for /search/research-llm" })),
         ));
     }
-    let params = params_from(body, Some("deep"), None);
-    let response =
-        search::execute_search_full(params, Some(&state.temp_db), Some(&state.history_db), None).await;
+    let response = run_saved(&state, body, &headers, Some("deep")).await;
     if response.sources_processed == 0 {
         return Err(no_results_error(&response));
     }
@@ -158,38 +228,73 @@ async fn search_research_llm_handler(
 ///   data: {"type":"result", "response": { ...same shape as POST /search... }}
 ///   data: {"type":"done"}
 ///
-/// If the client disconnects, the pipeline task is aborted rather than left
-/// scraping for a response nobody will read.
+/// A saved turn first announces itself:
+///
+///   data: {"type":"turn", "conversation_id": "...", "turn_id": 42}
+///
+/// If the client disconnects, a saved turn keeps running and saves its answer
+/// (closing the tab must not lose the research; reopening the conversation
+/// shows it). Only Stop (POST /api/chats/turns/{id}/stop) cancels it. An
+/// unsaved search is aborted rather than left scraping for nobody.
 async fn stream_handler(
     state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<SearchRequest>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
-    let params = params_from(body, None, None);
+    let mut params = params_from(body.clone(), None, None);
     let state = state.0.clone();
+    let turn = begin_turn(&state, &body, from_own_page(&headers), &mut params).await;
 
     tokio::spawn(async move {
         let (ptx, mut prx) = tokio::sync::mpsc::channel::<search::Progress>(32);
         let pipeline = {
             let state = state.clone();
-            tokio::spawn(async move {
-                search::execute_search_full(params, Some(&state.temp_db), Some(&state.history_db), Some(ptx)).await
-            })
+            tokio::spawn(async move { search::execute_search_full(params, Some(&state.temp_db), Some(ptx)).await })
         };
+        if let Some((conv, id)) = &turn {
+            state.running.lock().unwrap_or_else(|p| p.into_inner()).insert(*id, pipeline.abort_handle());
+            let ev = serde_json::json!({ "type": "turn", "conversation_id": conv, "turn_id": id });
+            let _ = tx.send(Ok(Event::default().data(ev.to_string()))).await;
+        }
 
+        let mut client_gone = false;
         while let Some(p) = prx.recv().await {
+            if client_gone {
+                continue; // keep draining so the pipeline never blocks
+            }
             let data = serde_json::to_string(&p).unwrap_or_default();
             if tx.send(Ok(Event::default().data(data))).await.is_err() {
-                tracing::info!("stream client disconnected; aborting pipeline");
-                pipeline.abort();
-                return;
+                client_gone = true;
+                if turn.is_none() {
+                    tracing::info!("stream client disconnected; aborting pipeline");
+                    pipeline.abort();
+                    return;
+                }
+                tracing::info!("stream client disconnected; finishing the saved turn anyway");
             }
         }
 
-        let final_event = match pipeline.await {
-            Ok(resp) => serde_json::json!({ "type": "result", "response": resp }),
-            Err(e) => serde_json::json!({ "type": "error", "error": e.to_string() }),
+        let outcome = pipeline.await;
+        if let Some((_, id)) = &turn {
+            state.running.lock().unwrap_or_else(|p| p.into_inner()).remove(id);
+        }
+        let final_event = match outcome {
+            Ok(mut resp) => {
+                finish_turn(&state, &turn, &mut resp).await;
+                serde_json::json!({ "type": "result", "response": resp })
+            }
+            Err(e) => {
+                if let (Some(store), Some((_, id))) = (state.chats.as_ref(), &turn) {
+                    let status = if e.is_cancelled() { "stopped" } else { "failed" };
+                    let _ = store.finish_turn(*id, status, None, None, None).await;
+                }
+                serde_json::json!({ "type": "error", "error": e.to_string() })
+            }
         };
+        if client_gone {
+            return;
+        }
         let _ = tx.send(Ok(Event::default().data(final_event.to_string()))).await;
         let _ = tx
             .send(Ok(Event::default().data(serde_json::json!({ "type": "done" }).to_string())))
@@ -201,64 +306,109 @@ async fn stream_handler(
 }
 
 // =============================================================================
-// History API
+// Conversations API (only for the SearchWala page; see `from_own_page`)
 // =============================================================================
 
-/// POST /api/history/enable - Enable history DB and load from disk
-async fn history_enable_handler(
-    state: axum::extract::State<Arc<AppState>>,
-) -> impl IntoResponse {
-    match state.history_db.enable().await {
-        Ok(count) => Json(serde_json::json!({
-            "status": "enabled",
-            "entries_loaded": count
-        })),
-        Err(err) => Json(serde_json::json!({
-            "status": "error",
-            "error": err
-        })),
+type ApiResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
+
+fn store_for<'a>(state: &'a AppState, headers: &axum::http::HeaderMap) -> Result<&'a chats::ChatStore, (StatusCode, Json<serde_json::Value>)> {
+    if !from_own_page(headers) {
+        return Err(forbidden());
     }
+    state.chats.as_ref().ok_or_else(|| {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": "the conversation database could not be opened; see the server log" })))
+    })
 }
 
-/// POST /api/history/disable - Disable history DB
-async fn history_disable_handler(
-    state: axum::extract::State<Arc<AppState>>,
-) -> impl IntoResponse {
-    state.history_db.disable();
-    Json(serde_json::json!({ "status": "disabled" }))
+fn db_error(e: String) -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
 }
 
-/// GET /api/history - Get all history entries
-async fn history_get_handler(
-    state: axum::extract::State<Arc<AppState>>,
-) -> impl IntoResponse {
-    let entries = state.history_db.get_all().await;
-    Json(serde_json::json!({
-        "enabled": state.history_db.is_enabled(),
-        "count": entries.len(),
-        "entries": entries
-    }))
+fn not_found() -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "no such conversation" })))
 }
 
-/// DELETE /api/history - Clear all history
-async fn history_clear_handler(
+#[derive(serde::Deserialize)]
+struct ListQuery {
+    q: Option<String>,
+    limit: Option<usize>,
+}
+
+/// GET /api/chats?q=&limit= — conversations, most recent first.
+async fn chats_list_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap, Query(q): Query<ListQuery>) -> ApiResult {
+    let store = store_for(&state, &headers)?;
+    let list = store.list(q.q, q.limit.unwrap_or(500)).await.map_err(db_error)?;
+    Ok(Json(serde_json::json!({ "saving": store.saving_enabled().await, "conversations": list })))
+}
+
+/// GET /api/chats/{id} — every turn, as it was rendered.
+async fn chat_get_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> ApiResult {
+    let store = store_for(&state, &headers)?;
+    let conv = store.get(&id).await.map_err(db_error)?.ok_or_else(not_found)?;
+    Ok(Json(serde_json::to_value(conv).unwrap_or_default()))
+}
+
+#[derive(serde::Deserialize)]
+struct RenameBody {
+    title: String,
+}
+
+/// PATCH /api/chats/{id} {"title": "..."}
+async fn chat_rename_handler(
     state: axum::extract::State<Arc<AppState>>,
-) -> impl IntoResponse {
-    match state.history_db.clear().await {
-        Ok(()) => Json(serde_json::json!({ "status": "cleared" })),
-        Err(err) => Json(serde_json::json!({ "status": "error", "error": err })),
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<RenameBody>,
+) -> ApiResult {
+    let store = store_for(&state, &headers)?;
+    if !store.rename(&id, &body.title).await.map_err(db_error)? {
+        return Err(not_found());
     }
+    Ok(Json(serde_json::json!({ "renamed": true })))
 }
 
-/// GET /api/history/status - Check history DB status
-async fn history_status_handler(
-    state: axum::extract::State<Arc<AppState>>,
-) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "enabled": state.history_db.is_enabled(),
-        "count": state.history_db.count().await,
-        "temp_sessions": state.temp_db.active_count().await
-    }))
+/// DELETE /api/chats/{id}
+async fn chat_delete_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> ApiResult {
+    let store = store_for(&state, &headers)?;
+    if !store.delete(&id).await.map_err(db_error)? {
+        return Err(not_found());
+    }
+    Ok(Json(serde_json::json!({ "deleted": true })))
+}
+
+/// DELETE /api/chats — every conversation.
+async fn chats_delete_all_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult {
+    let store = store_for(&state, &headers)?;
+    let n = store.delete_all().await.map_err(db_error)?;
+    Ok(Json(serde_json::json!({ "deleted": n })))
+}
+
+#[derive(serde::Deserialize)]
+struct SavingBody {
+    saving: bool,
+}
+
+/// GET /api/chats/settings
+async fn chats_settings_get_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult {
+    let store = store_for(&state, &headers)?;
+    Ok(Json(serde_json::json!({ "saving": store.saving_enabled().await })))
+}
+
+/// PUT /api/chats/settings {"saving": bool}
+async fn chats_settings_put_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(body): Json<SavingBody>) -> ApiResult {
+    let store = store_for(&state, &headers)?;
+    store.set_saving(body.saving).await.map_err(db_error)?;
+    Ok(Json(serde_json::json!({ "saving": body.saving })))
+}
+
+/// POST /api/chats/turns/{id}/stop — cancels a running saved turn.
+async fn turn_stop_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap, axum::extract::Path(id): axum::extract::Path<i64>) -> ApiResult {
+    let store = store_for(&state, &headers)?;
+    let stopped = store.stop_turn(id).await.map_err(db_error)?;
+    if let Some(h) = state.running.lock().unwrap_or_else(|p| p.into_inner()).remove(&id) {
+        h.abort();
+    }
+    Ok(Json(serde_json::json!({ "stopped": stopped })))
 }
 
 // =============================================================================
@@ -383,7 +533,7 @@ async fn about_handler() -> impl IntoResponse {
             "Iterative multi-batch deep research",
             "Specialized domain modes (Tech/Science/Finance/Health/News)",
             "Time-aware LLM with chrono injection",
-            "Dual database (TempDb + HistoryDb)",
+            "Saved conversations with optional LLM memory (SQLite)",
             "Smart engine tiering — primary + backup resilience",
             "Dynamic model fetching",
             "OpenAI-compatible provider support"
@@ -394,9 +544,9 @@ async fn about_handler() -> impl IntoResponse {
             "POST /search/research-llm": "Iterative deep research",
             "POST /search/stream": "SSE streaming",
             "POST /api/models": "Dynamic model fetcher",
-            "GET /api/history": "Get search history",
-            "POST /api/history/enable": "Enable history DB",
-            "DELETE /api/history": "Clear history",
+            "GET /api/chats": "Saved conversations (this machine's page only)",
+            "GET /api/chats/{id}": "One conversation with every turn",
+            "DELETE /api/chats/{id}": "Delete a conversation",
             "GET /health": "Health check"
         }
     }))
@@ -557,14 +707,23 @@ async fn main() {
     tracing::info!("  Modes: fast, auto, deep, study, academic, reddit, youtube (+ domains)");
     tracing::info!("  Concurrency: {}", config::concurrency());
 
-    tracing::info!("  Features: Iterative Research, TempDb, HistoryDb");
+    tracing::info!("  Features: Iterative Research, TempDb, saved conversations");
     tracing::info!("  CORS: permissive");
     tracing::info!("  Port: {}", port);
     tracing::info!("============================================");
 
     // Initialize dual database system
     let temp_db = cache::TempDb::new();
-    let history_db = cache::HistoryDb::new();
+    let chats = match chats::ChatStore::open_default() {
+        Ok(s) => {
+            tracing::info!("  Conversations: {:?}", chats::ChatStore::data_dir().join("searchwala.db"));
+            Some(s)
+        }
+        Err(e) => {
+            tracing::error!("Conversations disabled, the database could not be opened: {e}");
+            None
+        }
+    };
 
     // Spawn background cleanup for expired temp sessions
     cache::spawn_temp_db_cleaner(temp_db.clone());
@@ -572,7 +731,8 @@ async fn main() {
     let state = Arc::new(AppState {
         start_time: Instant::now(),
         temp_db,
-        history_db,
+        chats,
+        running: Default::default(),
     });
 
     let app = Router::new()
@@ -588,10 +748,10 @@ async fn main() {
         .route("/search/research-llm", post(search_research_llm_handler))
         .route("/search/stream", post(stream_handler))
         .route("/api/models", post(models_handler))
-        .route("/api/history", get(history_get_handler).delete(history_clear_handler))
-        .route("/api/history/enable", post(history_enable_handler))
-        .route("/api/history/disable", post(history_disable_handler))
-        .route("/api/history/status", get(history_status_handler))
+        .route("/api/chats", get(chats_list_handler).delete(chats_delete_all_handler))
+        .route("/api/chats/settings", get(chats_settings_get_handler).put(chats_settings_put_handler))
+        .route("/api/chats/turns/{id}/stop", post(turn_stop_handler))
+        .route("/api/chats/{id}", get(chat_get_handler).patch(chat_rename_handler).delete(chat_delete_handler))
         .route("/api/tts", get(tts_handler))
         .route("/health/engines", get(engine_health_handler))
         .route("/health/cache", get(cache_stats_handler))

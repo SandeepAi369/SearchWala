@@ -81,7 +81,8 @@ fn is_local_llm(cfg: &LlmConfig) -> bool {
 impl ContextBudget {
     /// Budget for a configured provider. Prefer this over `for_model`.
     pub fn for_config(cfg: &LlmConfig) -> Self {
-        let override_tokens = std::env::var("CONTEXT_MAX_TOKENS").ok().and_then(|v| v.parse().ok());
+        // The window the user set in Settings, then the server's env.
+        let override_tokens = cfg.context_window.filter(|&t| t > 0).or_else(|| std::env::var("CONTEXT_MAX_TOKENS").ok().and_then(|v| v.parse().ok()));
         Self::for_config_with_override(cfg, override_tokens, std::env::var("OLLAMA_CONTEXT_LENGTH").ok().and_then(|v| v.parse().ok()))
     }
 
@@ -92,7 +93,7 @@ impl ContextBudget {
         ollama_ctx: Option<usize>,
     ) -> Self {
         if let Some(v) = override_tokens {
-            return Self { max_tokens: v.clamp(2_000, 900_000) };
+            return Self { max_tokens: v.clamp(2_000, 2_000_000) };
         }
         if is_local_llm(cfg) {
             // Users who raise Ollama's window usually export
@@ -1585,6 +1586,7 @@ pub async fn fetch_provider_models(
         base_url: Some(base.clone()),
         timeout_ms: None,
         max_output_tokens: None,
+        context_window: None,
     };
     if api_key.is_empty() && !is_local_llm(&probe) {
         return Err("an API key is required".to_string());
@@ -1917,6 +1919,7 @@ mod tests {
             base_url: base.map(str::to_string),
             timeout_ms: None,
             max_output_tokens: None,
+            context_window: None,
         }
     }
 
@@ -2001,6 +2004,7 @@ mod tests {
             base_url: base.map(str::to_string),
             timeout_ms: None,
             max_output_tokens: None,
+            context_window: None,
         }
     }
 
