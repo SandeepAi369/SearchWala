@@ -944,6 +944,7 @@
         ttsAudio.src='';
         ttsAudio=null;
       }
+      if(window.speechSynthesis)speechSynthesis.cancel();
       ttsPlaying=false;
       ttsChunks=[];ttsChunkIdx=0;
       dom.ttsBtn.classList.remove('playing');
@@ -953,7 +954,14 @@
     // Fetch chunk audio, cache the blob URL
     async function ttsFetchChunk(text){
       if(ttsCache.has(text))return ttsCache.get(text);
-      const res=await fetch(apiBase()+'/api/tts?text='+encodeURIComponent(text));
+      // The server voices two requests at a time and answers 429 to the rest;
+      // wait and retry instead of skipping that part of the answer.
+      let res;
+      for(let attempt=0;;attempt++){
+        res=await fetch(apiBase()+'/api/tts?text='+encodeURIComponent(text));
+        if(res.status!==429||attempt>=8)break;
+        await new Promise(r=>setTimeout(r,300+attempt*250));
+      }
       if(!res.ok)throw new Error('TTS '+res.status);
       const blob=await res.blob();
       const url=URL.createObjectURL(blob);
@@ -1026,20 +1034,41 @@
           ttsAudio.src='';
         }
         ttsAudio=new Audio(url);
-        for(let p=1;p<=3;p++){
-          if(idx+p<ttsChunks.length)ttsFetchChunk(ttsChunks[idx+p]).catch(()=>{});
-        }
+        if(idx+1<ttsChunks.length)ttsFetchChunk(ttsChunks[idx+1]).catch(()=>{});
         ttsAudio.onended=()=>{
           if(ttsAbort||mySession!==ttsSessionId)return;
           ttsPlayChunk(idx+1);
         };
         ttsAudio.onerror=()=>{
-          if(mySession===ttsSessionId)ttsPlayChunk(idx+1);
+          if(mySession===ttsSessionId)ttsFallback(idx);
         };
         await ttsAudio.play();
       }catch(e){
-        if(!ttsAbort&&mySession===ttsSessionId)ttsPlayChunk(idx+1);
+        // v8.1 skipped to the next chunk on any failure, so a dead voice
+        // service looked like playback (1/8, 2/8, …) with no sound.
+        if(!ttsAbort&&mySession===ttsSessionId)ttsFallback(idx);
       }
+    }
+
+    // The neural voice failed: read the rest with the browser's own voice,
+    // or say plainly that no voice is available.
+    function ttsFallback(idx){
+      const rest=ttsChunks.slice(idx).join(' ');
+      if(!window.speechSynthesis||!rest){
+        ttsReset();
+        toast('Voice playback is not available right now',true);
+        return;
+      }
+      const mySession=ttsSessionId;
+      if(ttsAudio){ttsAudio.onended=null;ttsAudio.onerror=null;ttsAudio.pause();ttsAudio=null}
+      const u=new SpeechSynthesisUtterance(rest);
+      u.lang=/[\u0900-\u097F]/.test(rest)?'hi-IN':'en-US';
+      u.onend=()=>{if(mySession===ttsSessionId)ttsReset()};
+      u.onerror=()=>{if(mySession===ttsSessionId){ttsReset();toast('Voice playback is not available right now',true)}};
+      dom.ttsBtn.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">Stop</span>`;
+      toast('Neural voice unavailable, using your browser\'s voice');
+      speechSynthesis.cancel();
+      speechSynthesis.speak(u);
     }
 
     function toggleTTS(){
@@ -1053,8 +1082,6 @@
       ttsChunks=ttsSplit(text);
       dom.ttsBtn.classList.add('playing');
       dom.ttsBtn.innerHTML=`<span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span><span id="ttsLabel">1/${ttsChunks.length}</span>`;
-      const prefetchCount=Math.min(5,ttsChunks.length);
-      for(let i=0;i<prefetchCount;i++)ttsFetchChunk(ttsChunks[i]).catch(()=>{});
       ttsPlayChunk(0);
     }
 

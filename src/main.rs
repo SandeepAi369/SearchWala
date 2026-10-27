@@ -500,11 +500,13 @@ async fn tts_handler(
         "edge-tts".to_string()
     });
 
+    // An English voice reads Devanagari as silence or gibberish.
+    let voice = if final_text.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c)) { "hi-IN-SwaraNeural" } else { "en-US-AvaNeural" };
     let output = tokio::process::Command::new(&edge_tts_path)
         .arg("--text")
         .arg(&final_text)
         .arg("--voice")
-        .arg("en-US-AvaNeural")
+        .arg(voice)
         .arg("--rate")
         .arg("+15%")
         .arg("--write-media")
