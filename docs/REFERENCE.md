@@ -367,7 +367,7 @@ reverse proxy with authentication.
 ## Testing
 
 ```bash
-cargo test --release                            # 297 unit tests
+cargo test --release                            # 303 unit tests
 cargo run --release --bin intent_probe          # intent accuracy: 50/50
 cargo run --release --bin eval -- --limit 20 --focus fast   # retrieval quality (live engines)
 ```

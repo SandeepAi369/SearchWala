@@ -15,7 +15,7 @@ agree on, and answers with citations you can click, using any LLM or none.
 
 [![Release](https://img.shields.io/github/v/release/SandeepAi369/SearchWala?label=release&color=blue)](https://github.com/SandeepAi369/SearchWala/releases/latest)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?logo=rust)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-297_passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-303_passing-brightgreen)](#development)
 [![License](https://img.shields.io/badge/license-Apache%202.0-purple)](./LICENSE)
 [![Author](https://img.shields.io/badge/author-SandeepCH-0A7CFF?logo=github)](https://github.com/SandeepAi369)
 [![Stars](https://img.shields.io/github/stars/SandeepAi369/SearchWala?style=social)](https://github.com/SandeepAi369/SearchWala/stargazers)
@@ -145,9 +145,10 @@ branch. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 ## Development
 
 ```bash
-cargo test --release                          # 297 unit tests
+cargo test --release                          # 303 unit tests
 cargo run --release --bin intent_probe        # intent accuracy: 50/50
 cargo run --release --bin eval -- --limit 20 --focus fast   # retrieval quality
+cargo run --release --bin highlight_probe     # quick answers on 45 saved real queries
 ```
 
 Parser tests run against real search-results HTML in `tests/fixtures/`, so a
