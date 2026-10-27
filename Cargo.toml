@@ -108,3 +108,10 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "unwind"
+
+# wreq-util 0.2.0 pins zstd 0.13, which has RUSTSEC-2026-0391/0398/0403 and is
+# used to decompress server-sent TLS certificates. patches/wreq-util is the
+# published 0.2.0 source with only the zstd requirement raised to 0.14.3.
+# Drop this once a non-RC wreq-util ships with zstd >= 0.14.3.
+[patch.crates-io]
+wreq-util = { path = "patches/wreq-util" }

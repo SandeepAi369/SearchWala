@@ -1,0 +1,39 @@
+name: Security audit
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ "**/Cargo.toml", "**/Cargo.lock", ".github/workflows/security-audit.yml" ]
+  pull_request:
+    paths: [ "**/Cargo.toml", "**/Cargo.lock" ]
+  # New RustSec advisories land against code that hasn't changed, so check daily.
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit (RustSec)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      checks: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: moderate

@@ -4,7 +4,15 @@ on:
   push:
     branches:
       - main
+    # Docs and screenshots don't change the binary; don't cut a release for them.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "assets/**"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-and-release:
@@ -13,15 +21,17 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0  # Full history for changelog generation
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
 
       - name: Cache cargo registry & build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -78,7 +88,7 @@ jobs:
           echo '```' >> release_notes.md
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ env.TAG }}
           name: SearchWala v${{ env.VERSION }}
