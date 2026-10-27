@@ -24,6 +24,10 @@ path = "src/bin/eval.rs"
 name = "intent_probe"
 path = "src/bin/intent_probe.rs"
 
+[[bin]]
+name = "highlight_probe"
+path = "src/bin/highlight_probe.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

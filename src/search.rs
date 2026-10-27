@@ -214,6 +214,7 @@ pub async fn execute_search_full(
 
     // ── Query intelligence + mode profile ──
     let intel = query_intel::analyze_query(&effective_query);
+    let intel_query = effective_query.clone();
     let profile = modes::resolve(mode, domain, &intel, params.max_results);
     tracing::info!(
         "Mode {} [{}] domain={} intent={} complexity={} | engines={} pages={} deadline={:?} \
@@ -668,6 +669,7 @@ pub async fn execute_search_full(
     // states its answer.
     let leads = crate::highlight::leads(&raw_scraped_results, |url| selection_rank.get(url).copied());
     let highlight = crate::highlight::extract(&effective_query, &intel, &results, &leads);
+    crate::highlight::dump_case(&effective_query, &intel_query, &results, &leads, highlight.as_ref());
     if let Some(h) = &highlight {
         emit(&progress, Progress::Highlight { highlight: h.clone() }).await;
     }
