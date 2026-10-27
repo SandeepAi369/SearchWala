@@ -37,9 +37,11 @@ agree on, and answers with citations you can click, using any LLM or none.
   saw, and each citation is checked against the cited text.
 - **Works without an LLM.** You still get ranked sources and a quick answer
   quoted word for word from them.
-- **Conversations that remember, if you want.** Chats are saved and reopen
-  exactly as they were. Follow-ups can use the last 10 answers (or any number,
-  or none). Search engines never see your history.
+- **Your chats, saved on your machine.** Every conversation is kept locally
+  and reopens exactly as it was. Follow-ups can remember the last 10 answers
+  (or any number, or none). Search engines never see your history.
+- **Listen to any answer.** A natural neural voice reads answers aloud, in
+  Hindi or English.
 - **Private by default.** One binary on `127.0.0.1`. No account, no telemetry,
   and search needs no API key. Your LLM key stays in your browser.
 
@@ -75,6 +77,39 @@ flowchart LR
 
 Results stream to the browser as they arrive. Sources and the quick answer
 show up before the AI answer is finished.
+
+## Chats, memory and voice
+
+**Everything stays on your machine.** Chats live in one local SQLite file,
+`~/.searchwala/searchwala.db`. Nothing is uploaded, and no account is
+needed.
+
+- **A sidebar like your favourite AI chat app.** It has New chat, search, and
+  chats grouped by date. Reopening a chat shows every question, answer, source
+  and citation as it was, without searching again.
+- **Nothing gets lost.** The question is saved the moment you ask it. If you
+  close the tab mid-search, the server finishes and saves the answer, and a
+  refresh brings you back to the same chat.
+- **You decide what the AI remembers** (Settings → Conversations):
+  - **Memory 10 (default):** follow-ups like *"when was he born?"* understand
+    the earlier answers in that chat.
+  - **Any number:** raise it to suit your model's context window.
+  - **Off:** each question is answered on its own; chats are still saved for
+    you to read.
+- **Memory can't leak or mislead.** Search engines get a rewritten standalone
+  query, never your history, and the AI must cite this turn's sources rather
+  than its own earlier answers.
+- **Delete anytime:** one chat, or all of them. Deleted chats are overwritten
+  on disk. Only the SearchWala page can read your chats; other websites
+  can't.
+- **Scripts stay stateless.** API calls are not saved unless the request sets
+  `"save": true`.
+
+**🔊 Listen.** Press **Listen** on any answer, including earlier ones in a
+chat, and a neural voice reads it aloud. Hindi answers get a Hindi voice. If
+the online voice is unavailable, your browser's built-in voice takes over, so
+Listen never fails silently. The neural voice uses
+[edge-tts](https://pypi.org/project/edge-tts/): `pip install edge-tts`.
 
 ## The five modes
 
