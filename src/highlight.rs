@@ -34,6 +34,7 @@ const MIN_SCORE: f64 = 2.0;
 /// Hindi function words: not content terms.
 const HI_STOPWORDS: &[&str] = &[
     "की", "का", "के", "है", "हैं", "क्या", "में", "और", "को", "से", "पर", "एक", "यह", "वह", "था", "थे", "हो", "कौन", "कैसे", "कब", "कहाँ", "क्यों", "ने",
+    "किसने", "कहां", "कितना", "कितने", "कितनी",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -141,7 +142,17 @@ fn clean(s: &str) -> String {
             _ => out.push(c),
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    // Social-post decoration: "#TajMahal #ShahJahan", emoji.
+    out.split_whitespace()
+        .filter(|w| !(w.starts_with('#') && w.chars().count() > 1))
+        .map(|w| w.chars().filter(|c| !is_emoji(*c)).collect::<String>())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_emoji(c: char) -> bool {
+    matches!(c as u32, 0x1F300..=0x1FAFF | 0x2600..=0x27BF | 0xFE0F | 0x200D)
 }
 
 static GLUED_HEADING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -197,10 +208,14 @@ fn number_support(passages: &[&SourceResult]) -> std::collections::HashMap<Strin
     by_number.into_iter().map(|(n, s)| (n, s.len())).collect()
 }
 
+/// Hindi question words. "क्या" also means "whether", but in a quick-answer
+/// candidate it is almost always the question being repeated.
+const HI_QUESTION_WORDS: &[&str] = &["क्या", "किसने", "कौन", "कब", "कहाँ", "कहां", "कैसे", "क्यों", "कितना", "कितने", "कितनी"];
+
 /// Article filler that announces an answer instead of giving it.
 const FILLER: &[&str] = &[
     "in this article", "in today's article", "this article", "we will tell", "we will discuss", "let us know", "let's know",
-    "read on", "find out", "आर्टिकल", "इस लेख", "आज के इस", "जानते हैं", "बताएंगे", "बताने वाले", "जानकारी देंगे", "जानकारी देंगें",
+    "read on", "find out", "आर्टिकल", "क्या आप जानते", "आइये जानते", "आइए जानते", "जानते है", "इस लेख", "आज के इस", "जानते हैं", "बताएंगे", "बताने वाले", "जानकारी देंगे", "जानकारी देंगें",
 ];
 
 /// Navigation boxes, year lists, tables flattened into text: "१८९६• १९००•
@@ -234,6 +249,79 @@ fn is_definition_query(query: &str) -> bool {
         .any(|p| q.starts_with(p))
         || q.contains(" क्या है")
         || q.contains(" कौन है")
+}
+
+/// Fact-checking outlets. Their pages repeat the false claim word for word
+/// before rebutting it, so the claim matches the query as well as any answer:
+/// live 2026-10-27, "how do mRNA vaccines teach the immune system…" got
+/// fullfact.org's quote of "SARS-CoV-2 doesn't exist, and the vaccines
+/// actually destroy your immune system" as its quick answer.
+const FACT_CHECK_HOSTS: &[&str] = &[
+    "fullfact.org", "snopes.com", "politifact.com", "factcheck.org", "leadstories.com", "healthfeedback.org",
+    "sciencefeedback.co", "checkyourfact.com", "factcheck.afp.com", "altnews.in", "boomlive.in", "factly.in",
+    "vishvasnews.com", "newschecker.in", "thequint.com/news/webqoof", "misbar.com", "truthorfiction.com",
+];
+
+fn is_fact_check_page(url: &str, title: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    let host_and_path = u.split("://").nth(1).unwrap_or(&u).trim_start_matches("www.");
+    let t = title.to_lowercase();
+    FACT_CHECK_HOSTS.iter().any(|h| host_and_path.starts_with(h))
+        || ["fact-check", "factcheck", "fact_check"].iter().any(|m| u.contains(m))
+        || t.contains("fact check")
+        || t.contains("fact-check")
+}
+
+/// A sentence that reports someone else's claim rather than stating a fact:
+/// "Claim: …", a sentence that is one quotation, or one introduced by
+/// "…posts claim that:" just before it.
+fn is_reported_claim(s: &str, previous: Option<&str>) -> bool {
+    let lower = s.to_lowercase();
+    if ["claim:", "myth:", "fake:", "false:", "rumour:", "rumor:", "misleading:"].iter().any(|p| lower.starts_with(p)) {
+        return true;
+    }
+    let first = s.chars().next();
+    let last = s.trim_end_matches(['.', '!']).chars().last();
+    if first.is_some_and(|c| matches!(c, '"' | '“' | '‘' | '\'')) && last.is_some_and(|c| matches!(c, '"' | '”' | '’' | '\'')) {
+        return true;
+    }
+    // "Many people assume the seasons happen because Earth moves closer to
+    // the Sun…" states the misconception; it answers only when the same
+    // sentence rebuts it ("…, but there's no evidence").
+    let belief = [
+        "many people assume", "many people think", "many people believe", "some people think", "some people believe",
+        "it is commonly believed", "it's commonly believed", "common misconception", "popular belief", "you may have heard",
+        "you might think", "people often think",
+    ];
+    let rebutted = [", but ", " however", "no evidence", "not true", "isn't true", "is false", "is a myth", "actually"];
+    if belief.iter().any(|b| lower.contains(b)) && !rebutted.iter().any(|r| lower.contains(r)) {
+        return true;
+    }
+    previous.is_some_and(|p| {
+        let p = p.to_lowercase();
+        p.ends_with(':')
+            && ["claim", "post", "viral", "rumour", "rumor", "myth", "message", "video", "said", "says", "wrote"]
+                .iter()
+                .any(|w| p.contains(w))
+    })
+}
+
+/// Common English words that carry no answer content.
+const EN_STOPWORDS: &[&str] = &[
+    "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "they", "them", "their", "have", "has",
+    "had", "not", "but", "can", "will", "would", "could", "should", "its", "it's", "into", "than", "then", "there",
+    "which", "who", "what", "when", "where", "why", "how", "also", "been", "being", "more", "most", "such", "some",
+    "any", "all", "each", "other", "these", "those", "our", "your", "you", "his", "her", "she", "him", "one", "may",
+    "use", "used", "very", "just", "only", "about", "does", "did", "doe",
+];
+
+/// Content words of `lower` that are not query terms: what the sentence adds.
+fn new_words<'a>(lower: &'a str, stems: &[String]) -> Vec<&'a str> {
+    lower
+        .split(|c: char| !crate::util::is_word_char(c))
+        .filter(|w| w.chars().count() >= 3 && !EN_STOPWORDS.contains(w) && !HI_STOPWORDS.contains(w))
+        .filter(|w| !stems.iter().any(|st| w.starts_with(st.as_str())))
+        .collect()
 }
 
 /// How many top-ranked pages contribute their opening.
@@ -298,6 +386,17 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
     let all_passages: Vec<&SourceResult> = leads.iter().chain(results.iter().take(PASSAGES * 2)).collect();
     let answer_name = if who_question { consensus_name(&all_passages, &query_lower) } else { None };
     let numbers = if wants_number { number_support(&all_passages) } else { Default::default() };
+    // Words per distinct page, for corroboration: an answer's new words show
+    // up on other independent pages; a quoted claim or an off-topic aside
+    // usually doesn't.
+    let mut page_words: Vec<(&str, std::collections::HashSet<String>)> = Vec::new();
+    for p in &all_passages {
+        let words = p.extracted_text.to_lowercase().split(|c: char| !crate::util::is_word_char(c)).map(stem).collect::<Vec<_>>();
+        match page_words.iter_mut().find(|(u, _)| *u == p.url.as_str()) {
+            Some((_, set)) => set.extend(words),
+            None => page_words.push((p.url.as_str(), words.into_iter().collect())),
+        }
+    }
     // The query restated (minus a trailing "?") — a sentence that repeats it
     // is usually announcing an answer, not giving one.
     let query_phrase: String = query_lower.trim_end_matches(['?', '।']).trim().to_string();
@@ -316,6 +415,7 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
     let mut best: Option<(f64, usize, usize, Vec<String>)> = None;
     for (ci, &(r, ri, is_lead)) in candidates.iter().enumerate() {
         let sents = sentences(&r.extracted_text);
+        let fact_check = is_fact_check_page(&r.url, &r.title);
         for (si, s) in sents.iter().enumerate() {
             let len = s.chars().count();
             if !(MIN_SENTENCE_CHARS..=MAX_SENTENCE_CHARS).contains(&len) {
@@ -324,7 +424,23 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
             if looks_like_debris(s) {
                 continue;
             }
+            // A question is never the answer, however many query words it
+            // repeats. As a -1.0 penalty it still won: live 2026-10-27, a
+            // heading "Why do noise-cancelling headphones work well on
+            // airplane hum but not on people talking?" matched every query
+            // word and beat the sentences that explain it.
+            if s.trim_end_matches(['"', '”', '’', '\'', ')']).ends_with('?') {
+                continue;
+            }
+            if is_reported_claim(s, si.checked_sub(1).map(|i| sents[i].as_str())) {
+                continue;
+            }
             let lower = s.to_lowercase();
+            let added = new_words(&lower, &stems);
+            // Nothing beyond the query's own words: a restatement.
+            if added.is_empty() {
+                continue;
+            }
             let matched: Vec<usize> = (0..stems.len()).filter(|&i| lower.contains(stems[i].as_str())).collect();
             let coverage = matched.len() as f64 / stems.len() as f64;
             if coverage < MIN_COVERAGE {
@@ -360,8 +476,11 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
             if s.contains('?') || (question_form && query_phrase.chars().count() >= 8 && lower.contains(&query_phrase)) {
                 score -= 1.0;
             }
-            if query_lower.contains("क्या") && s.contains("क्या") {
-                score -= 0.8;
+            // A Hindi sentence holding the query's question word asks it
+            // ("ताजमहल किसने बनवाया था / … (Taj Mahal Kisne Banaya Tha)");
+            // the answer ("शाहजहाँ ने…") doesn't contain it.
+            if HI_QUESTION_WORDS.iter().any(|w| query_lower.contains(w) && s.contains(w)) {
+                continue;
             }
             if FILLER.iter().any(|f| lower.contains(f)) {
                 score -= 1.5;
@@ -411,6 +530,29 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
             // Independent engines agreeing on the page.
             let engines = r.engine.split(',').filter(|e| !e.is_empty()).count();
             score += 0.15 * (engines.saturating_sub(1).min(3)) as f64;
+            // No closing punctuation: a heading or menu run the extractor
+            // joined into one line ("बना थाताजमहल किसने बनवाया था…").
+            if !s.trim_end().ends_with(['.', '!', '।', ')', '"', '”', '’', '\'']) {
+                score -= 0.8;
+            }
+            // Fact-check pages quote the claims they rebut; their rebuttals
+            // rarely read as a standalone answer either.
+            if fact_check {
+                score -= 2.0;
+            }
+            // Corroboration: share of the sentence's new words found on at
+            // least one other page. Centred on one half so it reorders
+            // candidates without moving the MIN_SCORE bar.
+            if added.len() >= 3 {
+                let corroborated = added
+                    .iter()
+                    .filter(|w| {
+                        let w = stem(w);
+                        page_words.iter().any(|(u, set)| *u != r.url.as_str() && set.contains(&w))
+                    })
+                    .count();
+                score += 0.8 * (corroborated as f64 / added.len() as f64 - 0.5);
+            }
             // Earlier passages are better ranked; earlier sentences in a
             // passage are usually the lead.
             score *= 1.0 / (1.0 + 0.08 * ri as f64);
@@ -433,7 +575,14 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
     if text.chars().count() < 110 {
         if let Some(next) = sents.get(si + 1) {
             let n = next.chars().count();
-            if (MIN_SENTENCE_CHARS..=MAX_SENTENCE_CHARS).contains(&n) && next.chars().next().is_some_and(|c| !c.is_lowercase()) {
+            let next_lower = next.to_lowercase();
+            if (MIN_SENTENCE_CHARS..=MAX_SENTENCE_CHARS).contains(&n)
+                && next.chars().next().is_some_and(|c| !c.is_lowercase())
+                && !next.contains('?')
+                && !FILLER.iter().any(|f| next_lower.contains(f))
+                && !HI_QUESTION_WORDS.iter().any(|w| query_lower.contains(w) && next.contains(w))
+                && !is_reported_claim(next, Some(text.as_str()))
+            {
                 text = format!("{text} {next}");
             }
         }
@@ -442,6 +591,27 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
     // passage, in which case the first passage from the same URL (or 0).
     let result_index = results.iter().position(|x| x.url == r.url).unwrap_or(0);
     Some(Highlight { text, terms: found, url: r.url.clone(), title: r.title.clone(), result_index })
+}
+
+/// Save the highlight's exact inputs and output, so a scoring change can be
+/// replayed offline against real pages (`cargo run --bin highlight_probe`)
+/// instead of judged on whatever the engines return that day. Opt-in via
+/// `DUMP_HIGHLIGHT_DIR`.
+pub fn dump_case(query: &str, intel_query: &str, results: &[SourceResult], leads: &[SourceResult], got: Option<&Highlight>) {
+    let Ok(dir) = std::env::var("DUMP_HIGHLIGHT_DIR") else { return };
+    if dir.trim().is_empty() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    let slug: String = query.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).take(60).collect();
+    let case = serde_json::json!({
+        "query": query,
+        "intel_query": intel_query,
+        "results": &results[..results.len().min(PASSAGES * 2)],
+        "leads": leads,
+        "highlight": got.map(|h| &h.text),
+    });
+    let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{slug}.json")), case.to_string());
 }
 
 #[cfg(test)]
@@ -616,5 +786,75 @@ mod tests {
     fn devanagari_sentences_split_on_danda() {
         let s = sentences("भारत की राजधानी नई दिल्ली है। यह एक बड़ा शहर है।");
         assert_eq!(s.len(), 2);
+    }
+
+    #[test]
+    fn a_question_heading_is_never_the_answer() {
+        // Live 2026-10-27: this heading matched every query word and won.
+        let q = "How do noise-cancelling headphones work, and why do they block engine hum better than people talking?";
+        let results = vec![
+            src("https://p.test/", "Noise-Cancelling Headphones: The Physics of Anti-Noise", "Why do noise-cancelling headphones work well on airplane hum but not on people talking?"),
+            src("https://f.test/", "How noise-cancelling headphones work", "Noise-cancelling headphones use microphones to measure incoming sound and play an inverted wave, which cancels steady low-frequency engine hum far better than changing speech."),
+        ];
+        let h = extract(q, &analyze_query(q), &results, &[]).unwrap();
+        assert!(h.text.starts_with("Noise-cancelling headphones use"), "{}", h.text);
+    }
+
+    #[test]
+    fn fact_check_pages_do_not_supply_the_claim_they_rebut() {
+        // Live 2026-10-27: fullfact.org's quote of the false claim became the
+        // quick answer.
+        let q = "How do mRNA vaccines teach the immune system to fight a virus, and how are they different from traditional vaccines?";
+        let results = vec![
+            src("https://fullfact.org/health/mrna-vaccines/", "The mRNA vaccines don't show Covid-19 'doesn't exist'", "The mRNA vaccines are disguised as regular vaccines but they don't hold a portion of a virus because SARS-CoV-2 doesn't exist, and the vaccines actually destroy your immune system."),
+            src("https://m.test/", "mRNA vaccines", "mRNA vaccines give cells instructions to make a harmless piece of the virus spike protein, which teaches the immune system to recognise the virus, while traditional vaccines put a weakened or inactivated virus into the body."),
+            src("https://n.test/", "How vaccines work", "Traditional vaccines use a weakened or inactivated virus, and the immune system learns to recognise its spike protein."),
+        ];
+        let h = extract(q, &analyze_query(q), &results, &[]).unwrap();
+        assert!(!h.url.contains("fullfact"), "{}", h.text);
+        assert!(!h.text.contains("doesn't exist"), "{}", h.text);
+    }
+
+    #[test]
+    fn a_stated_misconception_is_not_the_answer() {
+        let q = "what causes the seasons on earth";
+        let results = vec![
+            src("https://a.test/", "Seasons", "Many people assume that the seasons on Earth happen because Earth moves closer to the Sun in summer."),
+            src("https://b.test/", "Seasons", "The seasons on Earth are caused by the tilt of its axis, which changes how directly sunlight strikes each hemisphere."),
+        ];
+        let h = extract(q, &analyze_query(q), &results, &[]).unwrap();
+        assert!(h.text.contains("tilt"), "{}", h.text);
+        // Rebutted in the same sentence, it is an answer.
+        assert!(!is_reported_claim("You may have heard that knuckle cracking causes arthritis, but there's no evidence to support this claim.", None));
+    }
+
+    #[test]
+    fn reported_claims_are_recognised() {
+        assert!(is_reported_claim("Claim: 5G towers spread the coronavirus.", None));
+        assert!(is_reported_claim("\u{201c}Vaccines destroy your immune system.\u{201d}", None));
+        assert!(is_reported_claim("Vaccines destroy your immune system.", Some("A viral post claims:")));
+        assert!(!is_reported_claim("Vaccines train your immune system.", Some("Here is how they work.")));
+    }
+
+    #[test]
+    fn hindi_sentences_repeating_the_question_word_lose() {
+        // Live 2026-10-27: the answer was the query restated with a
+        // transliteration.
+        let q = "ताजमहल किसने बनवाया";
+        let results = vec![
+            src("https://a.test/", "ताजमहल किसने बनवाया", "ताजमहल किसने बनवाया था / ताजमहल किसने बनाया था (Taj Mahal Kisne Banaya Tha)।"),
+            src("https://b.test/", "ताजमहल", "मुगल बादशाह शाहजहाँ ने अपनी पत्नी मुमताज़ महल की याद में ताजमहल बनवाया था। #TajMahal 🔥"),
+        ];
+        let h = extract(q, &analyze_query(q), &results, &[]).unwrap();
+        assert!(h.text.starts_with("मुगल बादशाह शाहजहाँ"), "{}", h.text);
+        assert!(!h.text.contains('#') && !h.text.contains('🔥'), "{}", h.text);
+    }
+
+    #[test]
+    fn fact_check_pages_are_recognised() {
+        assert!(is_fact_check_page("https://www.snopes.com/fact-check/x/", "x"));
+        assert!(is_fact_check_page("https://fullfact.org/health/y/", "y"));
+        assert!(is_fact_check_page("https://news.example/2026/z", "Fact Check: z"));
+        assert!(!is_fact_check_page("https://en.wikipedia.org/wiki/Fact", "Fact"));
     }
 }
