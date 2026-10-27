@@ -52,7 +52,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # HTML parsing & text extraction
-scraper = "0.27"
+scraper = "0.29"
 # Node ids for the deep reader's one-pass text-density scoring (already a
 # scraper dependency; declared to name its types).
 ego-tree = "0.11"
