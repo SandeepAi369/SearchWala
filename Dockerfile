@@ -5,13 +5,18 @@
 # ── Stage 1: build ────────────────────────────────────────────────────────────
 # v8.0: bumped from rust:1.82. The dependency set (reqwest 0.13, axum 0.8,
 # rand 0.10, LazyLock, is_none_or) needs a current toolchain.
-FROM rust:1-slim AS builder
+# Builder and runtime must be the same Debian release: a binary linked
+# against trixie's glibc 2.41 exits at once on bookworm (glibc 2.36). The
+# untagged rust:1-slim moved to trixie and broke exactly that.
+FROM rust:1-slim-trixie AS builder
 
 WORKDIR /app
 
-# wreq/BoringSSL build dependencies.
+# wreq/BoringSSL build dependencies. btls-sys runs `git init` / `git apply`
+# on its vendored BoringSSL to patch it (locally, no network); without git
+# the build fails with "can't run git".
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      cmake perl libclang-dev pkg-config build-essential \
+      cmake perl libclang-dev pkg-config build-essential git \
     && rm -rf /var/lib/apt/lists/*
 
 # Dependency layer: cached unless the manifests change.
@@ -32,7 +37,7 @@ COPY benchmarks/ benchmarks/
 RUN touch src/main.rs src/lib.rs && cargo build --release --bin searchwala
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl \

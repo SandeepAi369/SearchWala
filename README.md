@@ -141,8 +141,11 @@ Or download the prebuilt Linux binary from
 Docker:
 
 ```bash
-docker build -t searchwala . && docker run -p 7860:7860 searchwala
+docker build -t searchwala .
+docker run -p 7860:7860 -v searchwala-data:/home/searchwala/.searchwala searchwala
 ```
+
+The `-v` volume keeps your saved chats when the container is replaced.
 
 **Add an AI model (optional):** Settings → choose a provider → paste a key →
 pick a model. Supported: OpenAI, Anthropic, Gemini, Groq, Cerebras, DeepSeek,

@@ -289,7 +289,8 @@ curl -X POST localhost:8000/search -H 'Content-Type: application/json' \
 Docker (listens on 7860, binds `0.0.0.0` inside the container):
 
 ```bash
-docker build -t searchwala . && docker run -p 7860:7860 searchwala
+docker build -t searchwala .
+docker run -p 7860:7860 -v searchwala-data:/home/searchwala/.searchwala searchwala
 ```
 
 ---
