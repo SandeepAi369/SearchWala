@@ -8,6 +8,7 @@
 
 pub mod cache;
 pub mod cache_layer;
+pub mod chats;
 pub mod config;
 pub mod copilot;
 pub mod engines;

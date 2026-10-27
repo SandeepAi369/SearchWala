@@ -10,7 +10,7 @@
 //   - Citation faithfulness verification + quality-gated LLM retry
 //   - Intent-aware LLM prompts and source count optimization
 //   - Iterative deep research: multi-batch LLM synthesis
-//   - TempDb session tracking + HistoryDb persistence
+//   - TempDb session tracking; conversations are saved by the caller (chats.rs)
 // ============================================================================
 
 use std::collections::HashMap;
@@ -46,6 +46,9 @@ pub struct SearchParams {
     pub domain: Option<String>,
     pub llm: Option<LlmConfig>,
     pub enable_copilot: bool,
+    /// Earlier turns of the conversation for the LLM, oldest first. Empty
+    /// when memory is off.
+    pub memory: Vec<crate::chats::PriorTurn>,
 }
 
 /// Pipeline progress, emitted to streaming clients.
@@ -96,7 +99,6 @@ pub async fn execute_search(
     llm_config: Option<LlmConfig>,
     enable_copilot: Option<bool>,
     temp_db: Option<&crate::cache::TempDb>,
-    history_db: Option<&crate::cache::HistoryDb>,
 ) -> SearchResponse {
     execute_search_full(
         SearchParams {
@@ -106,9 +108,9 @@ pub async fn execute_search(
             domain: None,
             llm: llm_config,
             enable_copilot: enable_copilot.unwrap_or(false),
+            memory: Vec::new(),
         },
         temp_db,
-        history_db,
         None,
     )
     .await
@@ -179,7 +181,6 @@ const MUST_FINISH_TOP: usize = 3;
 pub async fn execute_search_full(
     params: SearchParams,
     temp_db: Option<&crate::cache::TempDb>,
-    history_db: Option<&crate::cache::HistoryDb>,
     progress: Option<tokio::sync::mpsc::Sender<Progress>>,
 ) -> SearchResponse {
     let start = std::time::Instant::now();
@@ -200,8 +201,28 @@ pub async fn execute_search_full(
         }
     }
 
-    // ── Optional LLM query rewrite ──
+    // ── Conversation memory ──
+    // A follow-up is searched as a standalone query; the engines never see the
+    // conversation. The LLM gets the earlier turns as context below.
     let mut effective_query = query.clone();
+    let mut search_query = None;
+    if let (Some(cfg), false) = (&params.llm, params.memory.is_empty()) {
+        if let Some(q) = synthesis::standalone_query(&query, &params.memory, cfg).await {
+            tracing::info!("Follow-up searched as: [{}]", q);
+            effective_query = q.clone();
+            search_query = Some(q);
+        }
+    }
+    let (memory_text, memory_used) = match &params.llm {
+        Some(cfg) if !params.memory.is_empty() => {
+            // About a fifth of the model's window, at ~4 characters a token.
+            let window = llm::ContextBudget::for_config(cfg).max_tokens;
+            crate::chats::memory_block(&params.memory, (window * 4 / 5).clamp(1_500, 60_000))
+        }
+        _ => (String::new(), 0),
+    };
+
+    // ── Optional LLM query rewrite ──
     let mut copilot_out = None;
     if params.enable_copilot {
         if let Some(cfg) = &params.llm {
@@ -688,7 +709,7 @@ pub async fn execute_search_full(
     let llm_result = match params.llm {
         Some(cfg) if !results.is_empty() => {
             emit(&progress, Progress::Synthesizing { synthesis: format!("{:?}", profile.synthesis) }).await;
-            synthesis::synthesize(&query, cfg, &results, &intel, &profile, temp_db, session_id.as_deref()).await
+            synthesis::synthesize(&query, cfg, &results, &intel, &profile, &memory_text, temp_db, session_id.as_deref()).await
         }
         Some(_) => llm::LlmExecutionResult {
             llm_error: Some("llm_skipped: no scraped content available".to_string()),
@@ -712,22 +733,13 @@ pub async fn execute_search_full(
     );
 
     let sources_processed = results.len();
-    if let Some(hdb) = history_db {
-        if hdb.is_enabled() {
-            let entry = crate::cache::build_history_entry(
-                &query,
-                profile.tier,
-                llm_result.llm_answer.as_deref(),
-                sources_processed,
-                total_raw,
-                elapsed,
-            );
-            hdb.add_entry(entry).await;
-        }
-    }
 
     SearchResponse {
         query,
+        search_query,
+        memory_used,
+        conversation_id: None,
+        turn_id: None,
         mode: mode.as_str().to_string(),
         tier: profile.tier.to_string(),
         domain: domain.as_str().to_string(),

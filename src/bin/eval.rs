@@ -130,7 +130,6 @@ async fn main() {
             None, // no LLM — we are measuring RETRIEVAL and RANKING
             None,
             None,
-            None,
         )
         .await;
         let elapsed = t0.elapsed();

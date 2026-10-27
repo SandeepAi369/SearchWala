@@ -461,12 +461,14 @@ fn citation_numbers(s: &str) -> Vec<usize> {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn map_reduce(
     query: &str,
     cfg: &LlmConfig,
     sources: &[SourceResult],
     intel: &QueryIntelligence,
     profile: &ModeProfile,
+    memory: &str,
     temp_db: Option<&crate::cache::TempDb>,
     session_id: Option<&str>,
 ) -> LlmExecutionResult {
@@ -501,7 +503,7 @@ async fn map_reduce(
             citation_map: identity.clone(),
         };
         let notes_free = reduce_prompts(query, &ctx.text, sources.len(), intel, profile.domain);
-        return single_call(query, cfg, sources, &ctx, notes_free, Synthesis::Report).await;
+        return single_call(query, cfg, sources, &ctx, with_memory(notes_free, memory), Synthesis::Report).await;
     }
 
     tracing::info!(
@@ -576,7 +578,9 @@ async fn map_reduce(
     if let (Some(db), Some(sid)) = (temp_db, session_id) {
         db.update_status(sid, "deep_reduce", "Writing the report").await;
     }
-    let (sys, user) = reduce_prompts(query, &joined_notes, sources.len(), intel, profile.domain);
+    // Map calls only extract evidence; the conversation matters when the
+    // report is written.
+    let (sys, user) = with_memory(reduce_prompts(query, &joined_notes, sources.len(), intel, profile.domain), memory);
     let msgs = vec![ChatMessage::system(sys), ChatMessage::user(user)];
     let mut reduce_cfg = cfg.clone();
     reduce_cfg.max_output_tokens = Some(reduce_out);
@@ -685,23 +689,86 @@ pub async fn plan_subqueries(query: &str, cfg: &LlmConfig, n: usize) -> Option<V
     }
 }
 
+/// Rewrites a follow-up ("and its battery?") into a query the engines can
+/// answer on its own ("iPhone 17 battery life"), using the last few turns.
+/// Engines never see the conversation itself. Returns None when the question
+/// already stands alone, or on any failure (the question is then searched as
+/// asked).
+pub async fn standalone_query(query: &str, prior: &[crate::chats::PriorTurn], cfg: &LlmConfig) -> Option<String> {
+    let recent: Vec<String> = prior
+        .iter()
+        .rev()
+        .take(3)
+        .rev()
+        .map(|t| format!("User: {}\nAssistant: {}", t.query.trim(), crate::util::truncate_chars(t.answer.trim(), 300)))
+        .collect();
+    if recent.is_empty() {
+        return None;
+    }
+    let mut c = cfg.clone();
+    c.max_output_tokens = Some(80);
+    c.timeout_ms = Some(c.timeout_ms.unwrap_or(8_000).min(8_000));
+    let msgs = vec![
+        ChatMessage::system(
+            "You turn a follow-up question into a standalone web search query. Replace pronouns \
+             and references (it, they, that, the second one) with what they refer to in the \
+             conversation. Keep the user's language. If the question already makes sense on its \
+             own, return it unchanged. Output ONLY the query, on one line."
+                .to_string(),
+        ),
+        ChatMessage::user(format!("Conversation:\n{}\n\nFollow-up question: {query}", recent.join("\n\n"))),
+    ];
+    let raw = match call_with_timeout(&c, &msgs).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::info!("follow-up rewrite unavailable ({e}); searching the question as asked");
+            return None;
+        }
+    };
+    let q = raw.lines().map(str::trim).find(|l| !l.is_empty())?.trim_matches(['"', '\'', '`']).trim().to_string();
+    let plausible = !q.is_empty() && q.chars().count() <= 200 && !q.to_lowercase().starts_with("here");
+    (plausible && !q.eq_ignore_ascii_case(query.trim())).then_some(q)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Adds the conversation so far to a prompt pair. It is there to resolve
+/// "it", "that one", "compare them": the rules forbid treating it as
+/// evidence, so an earlier wrong answer cannot be repeated as fact.
+pub fn with_memory((system, user): (String, String), memory: &str) -> (String, String) {
+    if memory.trim().is_empty() {
+        return (system, user);
+    }
+    (
+        format!(
+            "{system}\n\nCONVERSATION SO FAR: the user is continuing a conversation. Use it only to \
+             understand what the current question refers to and to keep the answer consistent \
+             with what the user already knows. It is NOT a source: every factual claim must come \
+             from the numbered sources and be cited from them. Where an earlier answer conflicts \
+             with the sources, follow the sources and say the earlier answer was wrong. Never \
+             cite the conversation."
+        ),
+        format!("CONVERSATION SO FAR (context only, not a source):\n{memory}\n\n---\n\n{user}"),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn synthesize(
     query: &str,
     cfg: LlmConfig,
     sources: &[SourceResult],
     intel: &QueryIntelligence,
     profile: &ModeProfile,
+    memory: &str,
     temp_db: Option<&crate::cache::TempDb>,
     session_id: Option<&str>,
 ) -> LlmExecutionResult {
     let window = ContextBudget::for_config(&cfg).max_tokens;
     let (mut out, truncated) = llm::TRUNCATED
         .scope(std::cell::Cell::new(false), async {
-            let r = synthesize_inner(query, cfg, sources, intel, profile, temp_db, session_id).await;
+            let r = synthesize_inner(query, cfg, sources, intel, profile, memory, temp_db, session_id).await;
             (r, llm::TRUNCATED.with(|t| t.get()))
         })
         .await;
@@ -721,12 +788,14 @@ pub async fn synthesize(
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn synthesize_inner(
     query: &str,
     cfg: LlmConfig,
     sources: &[SourceResult],
     intel: &QueryIntelligence,
     profile: &ModeProfile,
+    memory: &str,
     temp_db: Option<&crate::cache::TempDb>,
     session_id: Option<&str>,
 ) -> LlmExecutionResult {
@@ -740,10 +809,13 @@ async fn synthesize_inner(
     cfg.max_output_tokens = Some(out);
 
     if profile.synthesis == Synthesis::Report {
-        return map_reduce(query, &cfg, sources, intel, profile, temp_db, session_id).await;
+        return map_reduce(query, &cfg, sources, intel, profile, memory, temp_db, session_id).await;
     }
 
-    let max_ctx = llm::chars_for_tokens(budget.context_tokens(out), sources).min(profile.context_char_cap);
+    // Memory shares the window with the sources.
+    let max_ctx = llm::chars_for_tokens(budget.context_tokens(out), sources)
+        .min(profile.context_char_cap)
+        .saturating_sub(crate::util::char_len(memory));
     let ctx = llm::build_ranked_context(sources, max_ctx);
     if ctx.is_empty() {
         return result(None, Some("llm_skipped: no usable source text".into()), 0);
@@ -766,7 +838,7 @@ async fn synthesize_inner(
         Synthesis::Video => video_prompts(query, &ctx.text),
         Synthesis::Report => unreachable!("handled above"),
     };
-    single_call(query, &cfg, sources, &ctx, prompts, profile.synthesis).await
+    single_call(query, &cfg, sources, &ctx, with_memory(prompts, memory), profile.synthesis).await
 }
 
 #[cfg(test)]

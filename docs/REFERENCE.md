@@ -13,6 +13,7 @@ setting. The [README](../README.md) is the short version.
 - [The interface](#the-interface)
 - [Bring your own model](#bring-your-own-model)
 - [Quick start](#quick-start)
+- [Conversations and memory](#conversations-and-memory)
 - [API](#api)
 - [Configuration](#configuration)
 - [Security](#security)
@@ -234,7 +235,10 @@ into the binary.
   phones it becomes a swipeable strip above the answer.
 - **Answer view.** Rendered Markdown (tables, lists, code), numbered citation
   chips that link to the source, copy (with links) and listen (neural TTS).
-- **Panels.** A history panel (opt-in, stored on your machine) and a settings
+- **Chats.** A sidebar of saved conversations (New chat, search, delete),
+  grouped by date. Reopening a chat shows every question and answer as it
+  was, sources included, without searching again. Ctrl+B toggles the sidebar.
+- **Panels.** A settings
   drawer with presets for 14 providers and "Fetch list" model discovery.
 - **Look and feel.** Light, dark or system theme; `/` or Ctrl+K to search,
   Esc to stop; mobile layout; reduced-motion support.
@@ -290,6 +294,35 @@ docker build -t searchwala . && docker run -p 7860:7860 searchwala
 
 ---
 
+## Conversations and memory
+
+Every question is saved the moment it is asked and completed when its answer
+is ready, so closing the tab mid-search loses nothing: the server finishes the
+search and stores the answer. Only **Stop** cancels a search.
+
+**Memory** (Settings → Conversations) decides what the AI sees from earlier
+in the same chat:
+
+- **Off:** each question is answered on its own. Chats are still saved.
+- **On, last N answers** (default 10, no upper limit): the earlier questions
+  and shortened answers of this chat are given to the model, newest first,
+  and only as much as fits about a fifth of the model's context window. Set
+  the window in Settings if the built-in guess for your model is wrong.
+
+Two rules keep memory from causing hallucinations:
+
+- **Engines never see the conversation.** A follow-up ("when was he born?")
+  is first rewritten into a standalone query ("Alexander Graham Bell date of
+  birth"), and the UI shows what was searched.
+- **Memory is context, not evidence.** The prompt tells the model to use the
+  conversation only to understand the question, to cite only this turn's
+  sources, and to correct an earlier answer when the sources disagree.
+
+Old `history.json` / `history.jsonl` files are imported into the database on
+first start and then removed.
+
+---
+
 ## API
 
 | Endpoint | Purpose |
@@ -300,7 +333,8 @@ docker build -t searchwala . && docker run -p 7860:7860 searchwala
 | `GET /health` · `GET /health/engines` · `GET /health/cache` | liveness, per-engine verdicts, cache hit ratios |
 | `GET /config` | version, engine roster, and every mode's profile |
 | `POST /api/models` | list a provider's models (`provider`, `api_key`, optional `base_url`) |
-| `GET /api/history` · `POST /api/history/{enable,disable}` · `DELETE /api/history` | opt-in local history |
+| `GET /api/chats` · `GET/PATCH/DELETE /api/chats/{id}` · `DELETE /api/chats` | saved conversations: list (`?q=` searches), one with every turn, rename, delete, delete all |
+| `GET/PUT /api/chats/settings` · `POST /api/chats/turns/{id}/stop` | pause or resume saving; stop a running turn |
 | `GET /api/tts?text=…` | neural voice readback (needs `edge-tts`) |
 
 A response includes `search_results` (consensus-ranked hits with
@@ -335,7 +369,7 @@ All optional; the modes choose sensible budgets on their own.
 | `OPENALEX_MAILTO` | unset | your email, for OpenAlex's polite pool |
 | `SEARXNG_BASE_URL` | unset | federate a self-hosted SearXNG |
 | `MARGINALIA_API_KEY` | `public` | a dedicated Marginalia key |
-| `MAX_HISTORY_ENTRIES` | built-in | history size cap |
+| `SEARCHWALA_DATA_DIR` | `~/.searchwala` | where the conversation database (`searchwala.db`) lives |
 | `DUMP_SERP_DIR` | unset | save zero-result engine responses for parser debugging |
 
 ---
@@ -356,7 +390,11 @@ both directions are guarded:
   defeats DNS rebinding), and every redirect hop is re-checked.
 - **Keys are never logged.** The config's `Debug` output redacts them, and
   provider errors are scrubbed.
-- **History is opt-in** and stays on your disk (`~/.searchwala/`).
+- **Conversations stay on your disk** (`~/.searchwala/searchwala.db`). The
+  `/api/chats` endpoints answer only the SearchWala page on this machine:
+  requests from other origins, or with a non-local Host header (DNS
+  rebinding), get 403 even though the search API's CORS is permissive.
+  Deleted chats are overwritten on disk (`secure_delete`).
 - **TTS is capped.** `/api/tts` is concurrency-limited.
 
 CORS is permissive for local use. If you expose the service, put it behind a
@@ -367,7 +405,7 @@ reverse proxy with authentication.
 ## Testing
 
 ```bash
-cargo test --release                            # 303 unit tests
+cargo test --release                            # 307 unit tests
 cargo run --release --bin intent_probe          # intent accuracy: 50/50
 cargo run --release --bin eval -- --limit 20 --focus fast   # retrieval quality (live engines)
 ```
@@ -397,7 +435,8 @@ src/
   fetcher.rs          Fetcher {Plain (reqwest), Stealth (wreq + BoringSSL)}
   host_gate.rs        per-host request spacing
   ssrf.rs             LLM endpoint validation, public-only scraping resolver
-  cache_layer.rs      SERP + page caches        cache.rs   sessions + history
+  cache_layer.rs      SERP + page caches        cache.rs   live sessions
+  chats.rs            saved conversations (SQLite), memory for follow-ups
   engines/            bing, brave, duckduckgo, yahoo, mojeek, wikipedia, wiby,
                       marginalia_api, openalex, arxiv, searxng, generic (template
                       engines), health (verdicts, challenge and soft-block detection)

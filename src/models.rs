@@ -17,6 +17,10 @@ pub struct LlmConfig {
     /// may also pass it.
     #[serde(default)]
     pub max_output_tokens: Option<usize>,
+    /// The model's whole window in tokens, from Settings. Wins over
+    /// CONTEXT_MAX_TOKENS and the built-in guess for the model name.
+    #[serde(default)]
+    pub context_window: Option<usize>,
 }
 
 /// Hand-written so a stray `{:?}` cannot write the user's API key to the log.
@@ -33,11 +37,12 @@ impl std::fmt::Debug for LlmConfig {
             .field("api_key", &"<redacted>")
             .field("timeout_ms", &self.timeout_ms)
             .field("max_output_tokens", &self.max_output_tokens)
+            .field("context_window", &self.context_window)
             .finish()
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
     /// Subject-area focus — tech | science | finance | health | news.
@@ -54,6 +59,13 @@ pub struct SearchRequest {
     pub llm: Option<LlmConfig>,
     /// Enable the SearchWala Copilot pre-computation rewriter
     pub enable_copilot: Option<bool>,
+    /// Continue this saved conversation. Absent or unknown: a new one.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// How many earlier answered turns of the conversation the LLM sees.
+    /// Absent or 0: none (memory off). The history is saved either way.
+    #[serde(default)]
+    pub memory_turns: Option<usize>,
 }
 
 // --- Response ---------------------------------------------------------------
@@ -61,6 +73,18 @@ pub struct SearchRequest {
 #[derive(Debug, Serialize)]
 pub struct SearchResponse {
     pub query: String,
+    /// The standalone query sent to the engines when memory rewrote a
+    /// follow-up; absent when the question was searched as asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_query: Option<String>,
+    /// Earlier turns the LLM was given as memory.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub memory_used: usize,
+    /// The saved conversation and turn, when saving is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<i64>,
     /// Mode actually used ("fast", "auto", "deep", "study", ...).
     pub mode: String,
     /// Resolved tier, e.g. "auto:light" — shows how Auto sized this query.
@@ -190,4 +214,8 @@ pub struct ConfigResponse {
     pub jitter_max_ms: u64,
     pub proxy_cooldown_secs: u64,
     pub user_agents_count: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }

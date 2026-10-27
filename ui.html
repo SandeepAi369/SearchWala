@@ -324,6 +324,50 @@
     .footer-note .kbd{margin:0 2px}
     /* Phones — kept last so it overrides the base rules above. */
     @media (max-width:560px){.mode-pills{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;max-width:100%}.mode-pills::-webkit-scrollbar{display:none}.composer-foot{flex-direction:column;align-items:stretch}.foot-right{justify-content:flex-start}.dropdown .menu{left:0;right:auto}.mode-dropdown{position:static}.mode-dropdown .menu{left:12px}.menu{top:calc(100% + 8px);bottom:auto}}
+
+    /* ═══ Conversations sidebar ═══ */
+    .top-left{display:flex;align-items:center;gap:6px}
+    .chat-sidebar{position:fixed;top:0;left:0;bottom:0;z-index:60;width:276px;display:flex;flex-direction:column;background:var(--bg-2);border-right:1px solid var(--border-2);transform:translateX(-100%);transition:transform .22s var(--ease)}
+    body.side-open .chat-sidebar{transform:none}
+    @media (min-width:1100px){body.side-open .app{margin-left:276px}.app{transition:margin-left .22s var(--ease)}}
+    .side-backdrop{position:fixed;inset:0;z-index:59;background:rgba(3,6,12,.45);backdrop-filter:blur(2px)}
+    @media (min-width:1100px){.side-backdrop{display:none}}
+    .cs-head{display:flex;align-items:center;gap:8px;padding:12px 12px 8px}
+    .cs-new{flex:1;display:flex;align-items:center;gap:8px;height:38px;padding:0 12px;border-radius:11px;border:1px solid var(--border-2);background:var(--surface);color:var(--ink);font-size:13.5px;font-weight:600;cursor:pointer}
+    .cs-new:hover{border-color:var(--accent);background:var(--surface-2)}
+    .cs-search{margin:0 12px 8px;height:34px;padding:0 11px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;font-size:13px}
+    .cs-search:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+    .cs-list{flex:1;overflow-y:auto;padding:4px 8px 12px}
+    .cs-group{margin:12px 6px 4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+    .cs-item{position:relative;display:flex;align-items:center;gap:6px;width:100%;padding:8px 8px 8px 10px;border-radius:9px;border:none;background:none;color:var(--ink-2);font-size:13.5px;text-align:left;cursor:pointer}
+    .cs-item:hover{background:var(--surface-2);color:var(--ink)}
+    .cs-item.active{background:var(--accent-bg);color:var(--ink)}
+    .cs-item .t{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+    .cs-item .live{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:pulse 1.2s ease-in-out infinite;flex:none}
+    .cs-del{flex:none;display:none;width:26px;height:26px;border-radius:7px;border:none;background:none;color:var(--muted);cursor:pointer;align-items:center;justify-content:center}
+    .cs-item:hover .cs-del,.cs-item:focus-within .cs-del{display:inline-flex}
+    @media (hover:none){.cs-del{display:inline-flex}}
+    .cs-del:hover{background:var(--surface-3);color:var(--bad)}
+    .cs-empty{padding:18px 12px;color:var(--muted);font-size:13px;line-height:1.5}
+    .cs-foot{padding:10px 14px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+    .cs-foot a{cursor:pointer}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+    /* ═══ Thread: earlier turns of the open conversation ═══ */
+    .thread{display:flex;flex-direction:column;gap:18px;padding-top:22px}
+    .thread:empty{display:none}
+    .turn{padding:18px 20px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);animation:fadeUp .3s var(--ease) both}
+    .turn-q{font-size:19px;font-weight:700;letter-spacing:-.015em;line-height:1.3;word-break:break-word}
+    .turn .q-meta{margin:8px 0 12px}
+    .turn .hl-mini{margin:0 0 12px;padding:10px 12px;border-radius:10px;background:var(--accent-bg);font-size:13.5px;color:var(--ink-2);line-height:1.5}
+    .turn .hl-mini b{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);display:block;margin-bottom:3px}
+    .turn-srcs{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}
+    .turn-srcs .src-chip{max-width:240px}
+    .turn-actions{display:flex;gap:6px;margin-top:12px}
+    .searched-as{font-size:12.5px;color:var(--muted);margin-top:6px}
+    .searched-as b{color:var(--ink-2);font-weight:500}
+    .mem-chip{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:12.5px;cursor:pointer}
+    .mem-chip:hover{border-color:var(--border-2);color:var(--ink)}
+    .mem-chip.on{color:var(--accent);border-color:var(--accent-bg);background:var(--accent-bg)}
   </style>
 </head>
 <body>
@@ -356,33 +400,36 @@
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
     <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-brain" viewBox="0 0 24 24"><path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 3 3h1V4z"/><path d="M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-3 3h-1V4z"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></symbol>
   </svg>
 
-  <div id="dbModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dbModalTitle">
-    <div class="modal-box">
-      <div class="modal-icon"><svg class="i"><use href="#i-db"/></svg></div>
-      <div class="modal-title" id="dbModalTitle">Enable search history?</div>
-      <div class="modal-text">Saves your queries and AI answers on this machine only.<br><code>~/.searchwala/history.json</code></div>
-      <div class="modal-actions">
-        <button class="modal-btn modal-btn-primary" onclick="initHistory(true)">Enable</button>
-        <button class="modal-btn modal-btn-ghost" onclick="initHistory(false)">Not now</button>
-      </div>
-      <div class="modal-hint">Press <span class="kbd">Esc</span> to skip</div>
-    </div>
-  </div>
-
   <div class="aurora" aria-hidden="true"></div>
+
+  <aside id="chatSidebar" class="chat-sidebar" aria-label="Conversations">
+    <div class="cs-head">
+      <button class="cs-new" onclick="newChat()" title="New chat (Ctrl+Shift+O)"><svg class="i"><use href="#i-plus"/></svg>New chat</button>
+      <button class="ghost-btn square" onclick="toggleSidebar(false)" title="Close" aria-label="Close sidebar"><svg class="i"><use href="#i-sidebar"/></svg></button>
+    </div>
+    <input id="chatSearch" class="cs-search" type="search" placeholder="Search chats" aria-label="Search chats" oninput="renderChatList()" />
+    <div id="chatList" class="cs-list"></div>
+    <div id="chatFoot" class="cs-foot"></div>
+  </aside>
+  <div id="sideBackdrop" class="side-backdrop hidden" onclick="toggleSidebar(false)"></div>
 
   <div class="app">
     <header class="topbar">
-      <button class="brand" onclick="goHome()" aria-label="SearchWala home">
-        <span class="brand-mark"><svg class="i"><use href="#i-search"/></svg></span>
-        SearchWala
-      </button>
+      <div class="top-left">
+        <button id="sideToggle" class="ghost-btn square" onclick="toggleSidebar()" title="Chats (Ctrl+B)" aria-label="Show chats" aria-controls="chatSidebar"><svg class="i"><use href="#i-sidebar"/></svg></button>
+        <button class="brand" onclick="newChat()" aria-label="SearchWala, new chat">
+          <span class="brand-mark"><svg class="i"><use href="#i-search"/></svg></span>
+          SearchWala
+        </button>
+      </div>
       <div class="top-actions">
         <button id="themeBtn" class="ghost-btn square" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme"><svg class="i"><use href="#i-moon"/></svg></button>
-        <button class="ghost-btn" onclick="toggleHistory()" title="History"><svg class="i"><use href="#i-history"/></svg><span class="lbl">History</span></button>
         <button class="ghost-btn" onclick="openSettings()" title="Settings"><svg class="i"><use href="#i-settings"/></svg><span class="lbl">Settings</span></button>
       </div>
     </header>
@@ -419,6 +466,7 @@
               </div>
             </div>
             <div class="foot-right">
+              <button id="memChip" class="mem-chip" type="button" onclick="openSettings('memory')" title="Conversation memory: what the AI sees from earlier in this chat"><svg class="i"><use href="#i-brain"/></svg><span id="memLabel">Memory</span></button>
               <div class="dropdown category-dropdown">
                 <button id="categoryBtn" class="chip-btn" onclick="toggleCategoryMenu()" title="Domain focus" aria-haspopup="true">
                   <svg class="i"><use href="#i-globe"/></svg><span id="catLabelBtn">All domains</span><svg class="i"><use href="#i-chev"/></svg>
@@ -453,10 +501,13 @@
         <div id="suggestions" class="suggestions" aria-label="Example questions"></div>
       </div>
 
+      <div id="thread" class="thread" aria-label="Earlier in this chat"></div>
+
       <section id="resultsArea" class="results-area hidden" aria-live="polite">
         <div class="q-head">
           <h2 id="queryTitle" class="q-title"></h2>
           <div id="resultMeta" class="q-meta"></div>
+          <div id="searchedAs" class="searched-as hidden"></div>
         </div>
         <div id="sourcesStrip" class="sources-strip"></div>
         <div class="results-grid">
@@ -529,6 +580,22 @@
         <input id="maxResults" type="number" value="" min="3" max="300" placeholder="Let each mode decide" />
         <div class="hint">Leave blank: Fast reads ~10 pages, Deep ~150.</div>
       </div>
+      <div class="section-label" style="margin-top:20px" id="memorySection">Conversations</div>
+      <label class="check-row"><input id="saveChats" type="checkbox" checked onchange="setSaving(this.checked)" /> Save my chats on this machine</label>
+      <div class="field"><div class="hint" style="margin:0 0 10px 26px">Every question and answer is kept so you can reopen it later. Turning this off stops new saving; nothing is deleted.</div></div>
+      <label class="check-row"><input id="memoryOn" type="checkbox" checked onchange="syncMemoryUI()" /> Memory: let the AI see earlier answers in the same chat</label>
+      <div class="field-row" style="margin-top:8px">
+        <div class="field">
+          <label for="memoryTurns">Earlier answers to send</label>
+          <input id="memoryTurns" type="number" min="1" step="1" value="10" oninput="syncMemoryUI()" />
+        </div>
+        <div class="field">
+          <label for="contextWindow">Model context window</label>
+          <input id="contextWindow" type="number" min="2000" step="1000" placeholder="auto (tokens)" />
+        </div>
+      </div>
+      <div class="field"><div class="hint">Off: each question is answered on its own; chats are still saved for you to read. On: the last N answers of this chat go to the AI, shortened and only as much as fits the context window; search engines never see them. Larger values cost more tokens and give the AI more room to drift, so 10 is a good default.</div></div>
+      <button class="modal-btn modal-btn-ghost" style="width:100%;color:var(--bad)" onclick="deleteAllChats()"><svg class="i"><use href="#i-trash"/></svg> Delete all chats</button>
       <div class="section-label" style="margin-top:20px">Appearance</div>
       <div class="field">
         <label for="themeSelect">Theme</label>
@@ -538,23 +605,11 @@
     <div class="drawer-foot"><button class="btn-primary" style="width:100%" onclick="saveSettings();closeSettings();toast('Settings saved')">Save</button></div>
   </div>
 
-  <!-- History -->
-  <div id="historyOverlay" class="drawer-overlay hidden" onclick="closeHistory()"></div>
-  <div id="historyDrawer" class="drawer hidden" role="dialog" aria-label="History">
-    <div class="drawer-title">History
-      <span style="display:flex;gap:4px">
-        <button class="drawer-close" onclick="clearHistory()" title="Clear history" aria-label="Clear history"><svg class="i"><use href="#i-trash"/></svg></button>
-        <button class="drawer-close" onclick="closeHistory()" aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>
-      </span>
-    </div>
-    <div class="drawer-body" id="historyList"></div>
-  </div>
-
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script>
-    // Runs before the main script and does not depend on it, so a failure
-    // there cannot leave the page locked behind the history popup.
+    // Runs before the main script and does not depend on it, so an error in
+    // the main script is still shown.
     function showFatal(msg){
       let b=document.getElementById('fatalBanner');
       if(!b){b=document.createElement('div');b.id='fatalBanner';
@@ -564,21 +619,6 @@
     }
     window.addEventListener('error',e=>showFatal((e.message||'unknown')+(e.lineno?' (line '+e.lineno+')':'')));
     window.addEventListener('unhandledrejection',e=>{const r=e.reason;if(r&&r.name==='AbortError')return;showFatal(String(r&&r.message||r))});
-    function closeHistoryModal(){
-      const m=document.getElementById('dbModal');
-      if(m)m.classList.add('hidden');
-      try{localStorage.setItem('ss_history_init','done')}catch(_){}
-      const q=document.getElementById('queryInput');if(q)q.focus();
-    }
-    (function(){
-      let done=false;try{done=localStorage.getItem('ss_history_init')==='done'}catch(_){}
-      const m=document.getElementById('dbModal');
-      if(!m)return;
-      if(done){m.classList.add('hidden');return}
-      // Clicking the backdrop or pressing Escape dismisses it (same as "No").
-      m.addEventListener('click',e=>{if(e.target===m)closeHistoryModal()});
-      document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!m.classList.contains('hidden'))closeHistoryModal()});
-    })();
   </script>
   <script>
     const $ = id => document.getElementById(id);
@@ -597,12 +637,19 @@
       modelInput:$('modelInput'), modelSelect:$('modelSelect'),
       enableLlm:$('enableLlm'), maxResults:$('maxResults'),
       drawerOverlay:$('drawerOverlay'), settingsDrawer:$('settingsDrawer'),
-      historyOverlay:$('historyOverlay'), historyDrawer:$('historyDrawer'), historyList:$('historyList'),
-      dbModal:$('dbModal'),
+      thread:$('thread'), searchedAs:$('searchedAs'), chatList:$('chatList'), chatSearch:$('chatSearch'), chatFoot:$('chatFoot'),
+      sideBackdrop:$('sideBackdrop'), memChip:$('memChip'), memLabel:$('memLabel'),
+      saveChats:$('saveChats'), memoryOn:$('memoryOn'), memoryTurns:$('memoryTurns'), contextWindow:$('contextWindow'),
     };
 
     let focusMode = 'auto';
-    let historyEnabled = false;
+    // The open conversation. Its earlier turns are in #thread; the latest
+    // (or the one being searched) is in #resultsArea.
+    let currentConversationId = null;
+    let currentTurnId = null;      // the turn being searched, for Stop
+    let liveTurn = null;           // the finished turn shown in #resultsArea
+    let chats = [];                // sidebar list
+    let savingOn = true;
     let searchTimer = null;
     let searchStartTime = 0;
     let currentAnswer = '';      // For TTS and copy
@@ -681,20 +728,11 @@
     function toggleTheme(){setTheme(currentTheme()==='light'?'dark':'light')}
 
     // ═══ Navigation ═══
-    function goHome(){
-      cancelIfRunning();
-      document.body.classList.remove('has-results');
-      document.querySelector('.center-wrap').classList.add('home-active');
-      dom.homeView.classList.remove('hidden');
-      dom.suggestions.classList.remove('hidden');
-      dom.resultsArea.classList.add('hidden');
-      dom.queryInput.value='';
-      autosizeQuery();
-      dom.queryInput.focus();
-    }
-
     // ═══ Settings ═══
-    function openSettings(){dom.drawerOverlay.classList.remove('hidden');dom.settingsDrawer.classList.remove('hidden')}
+    function openSettings(section){
+      dom.drawerOverlay.classList.remove('hidden');dom.settingsDrawer.classList.remove('hidden');
+      if(section==='memory')setTimeout(()=>$('memorySection').scrollIntoView({block:'start',behavior:'smooth'}),60);
+    }
     function closeSettings(){dom.drawerOverlay.classList.add('hidden');dom.settingsDrawer.classList.add('hidden')}
     function saveSettings(){
       localStorage.setItem('ss_provider',dom.provider.value);
@@ -705,6 +743,9 @@
       localStorage.setItem('ss_llm_on',dom.enableLlm.checked?'1':'0');
       localStorage.setItem('ss_max_sources_v81',dom.maxResults.value);
       localStorage.setItem('ss_mode',focusMode);
+      localStorage.setItem('ss_memory_on',dom.memoryOn.checked?'1':'0');
+      localStorage.setItem('ss_memory_turns',String(memoryTurnsValue()));
+      localStorage.setItem('ss_context_window',dom.contextWindow.value);
     }
     function loadSettings(){
       const p=localStorage.getItem('ss_provider');
@@ -729,6 +770,11 @@
         const el=document.querySelector(`[data-mode="${savedMode}"]`);
         if(el)selectMode(el,true);
       }
+      const mo=localStorage.getItem('ss_memory_on'), mt=parseInt(localStorage.getItem('ss_memory_turns'),10), cw=localStorage.getItem('ss_context_window');
+      dom.memoryOn.checked=mo!=='0';
+      if(mt>0)dom.memoryTurns.value=mt;
+      if(cw)dom.contextWindow.value=cw;
+      syncMemoryUI();
       let t=null;try{t=localStorage.getItem('ss_theme')}catch(_){}
       $('themeSelect').value=t||'system';
       syncThemeIcon();
@@ -850,38 +896,235 @@
       dom.suggestions.querySelectorAll('.suggestion').forEach(b=>b.addEventListener('click',()=>{dom.queryInput.value=b.dataset.q;runSearch()}));
     }
 
-    // ═══ History ═══
-    function initHistory(yes){
-      closeHistoryModal();
-      try{localStorage.setItem('ss_history_on',yes?'1':'0')}catch(_){}
-      if(yes){historyEnabled=true;api('/api/history/enable','POST').catch(()=>{});toast('History enabled')}
+    // ═══ Conversations ═══
+    function toggleSidebar(force){
+      const open=force===undefined?!document.body.classList.contains('side-open'):force;
+      document.body.classList.toggle('side-open',open);
+      dom.sideBackdrop.classList.toggle('hidden',!open||window.innerWidth>=1100);
+      try{localStorage.setItem('ss_sidebar',open?'1':'0')}catch(_){}
+      if(open)loadChats();
     }
-    function closeHistory(){dom.historyOverlay.classList.add('hidden');dom.historyDrawer.classList.add('hidden')}
-    function toggleHistory(){
-      if(!dom.historyDrawer.classList.contains('hidden')){closeHistory();return}
-      dom.historyOverlay.classList.remove('hidden');dom.historyDrawer.classList.remove('hidden');
-      dom.historyList.innerHTML='<div class="empty"><span class="spinner"></span></div>';
-      fetch(apiBase()+'/api/history').then(r=>r.json()).then(data=>{
-        const entries=(data?.entries||[]).slice().sort((a,b)=>String(b.timestamp).localeCompare(String(a.timestamp)));
-        if(!entries.length){
-          dom.historyList.innerHTML=`<div class="empty">${data?.enabled?'No searches saved yet.':'History is off.<br><a href="#" id="enableHistLink">Enable history</a> to keep your searches on this machine.'}</div>`;
-          const l=$('enableHistLink');if(l)l.onclick=e=>{e.preventDefault();initHistory(true);closeHistory()};
-          return;
+    function closeSidebarOnMobile(){if(window.innerWidth<1100)toggleSidebar(false)}
+
+    async function loadChats(){
+      try{
+        const r=await fetch(apiBase()+'/api/chats?limit=500');
+        if(!r.ok)throw new Error(r.status);
+        const d=await r.json();
+        chats=d.conversations||[];
+        savingOn=d.saving!==false;
+        dom.saveChats.checked=savingOn;
+      }catch(_){chats=null}
+      renderChatList();
+    }
+
+    function chatGroup(ms){
+      const d=new Date(ms), now=new Date();
+      const day=x=>new Date(x.getFullYear(),x.getMonth(),x.getDate()).getTime();
+      const diff=Math.round((day(now)-day(d))/86400000);
+      if(diff<=0)return 'Today';
+      if(diff===1)return 'Yesterday';
+      if(diff<7)return 'Previous 7 days';
+      if(diff<30)return 'Previous 30 days';
+      return d.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+    }
+
+    function renderChatList(){
+      if(chats===null){dom.chatList.innerHTML='<div class="cs-empty">Saved chats are not available. Check the server log.</div>';return}
+      const f=dom.chatSearch.value.trim().toLowerCase();
+      const list=f?chats.filter(c=>c.title.toLowerCase().includes(f)):chats;
+      if(!list.length){
+        dom.chatList.innerHTML=`<div class="cs-empty">${f?'No chats match.':'Your chats will appear here. Every question and answer is saved on this machine.'}</div>`;
+      }else{
+        let html='',group='';
+        for(const c of list){
+          const g=chatGroup(c.updated_at);
+          if(g!==group){html+=`<div class="cs-group">${esc(g)}</div>`;group=g}
+          html+=`<div class="cs-item${c.id===currentConversationId?' active':''}" role="button" tabindex="0" data-id="${esc(c.id)}" title="${esc(c.title)}">
+            <span class="t">${esc(c.title)}</span>
+            <button class="cs-del" data-del="${esc(c.id)}" title="Delete chat" aria-label="Delete chat">${icon('trash')}</button>
+          </div>`;
         }
-        dom.historyList.innerHTML=entries.slice(0,100).map(e=>`
-          <button class="hist-item" data-q="${esc(e.query)}" data-mode="${esc(e.focus_mode||'')}">
-            <div class="hist-q">${esc(e.query)}</div>
-            <div class="hist-meta"><span>${esc(e.focus_mode||'')}</span><span>${e.sources_count||0} sources</span><span>${esc(String(e.timestamp||'').replace('T',' ').slice(0,16))}</span></div>
-            ${e.answer?`<div class="hist-ans">${esc(cleanAnswer(e.answer).replace(/[#*\[\]]/g,'').slice(0,220))}</div>`:''}
-          </button>`).join('');
-        dom.historyList.querySelectorAll('.hist-item').forEach(b=>b.addEventListener('click',()=>{
-          closeHistory();dom.queryInput.value=b.dataset.q;runSearch();
-        }));
-      }).catch(()=>{dom.historyList.innerHTML='<div class="empty">History is not available.</div>'});
+        dom.chatList.innerHTML=html;
+        dom.chatList.querySelectorAll('.cs-item').forEach(el=>{
+          el.addEventListener('click',e=>{if(e.target.closest('.cs-del'))return;openChat(el.dataset.id)});
+          el.addEventListener('keydown',e=>{if(e.key==='Enter')openChat(el.dataset.id)});
+        });
+        dom.chatList.querySelectorAll('.cs-del').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();deleteChat(b.dataset.del)}));
+      }
+      dom.chatFoot.innerHTML=`<span>${savingOn?'Saving on':'Saving paused'}</span>·<a onclick="openSettings('memory')">${esc(memorySummary())}</a>`;
     }
-    function clearHistory(){
-      if(!confirm('Delete all saved searches?'))return;
-      fetch(apiBase()+'/api/history',{method:'DELETE'}).then(()=>{toast('History cleared');dom.historyList.innerHTML='<div class="empty">No searches saved yet.</div>'}).catch(()=>toast('Could not clear history',true));
+
+    function setHash(id){
+      const h=id?'#c='+id:'';
+      if(location.hash!==h)history.replaceState(null,'',h||location.pathname+location.search);
+    }
+
+    function newChat(){
+      ttsReset();
+      // A running search keeps going on the server and is saved to its chat.
+      if(inflight){inflight.abort();endRequest();setSearchingUI(false);stopStatus()}
+      currentConversationId=null;currentTurnId=null;liveTurn=null;
+      dom.thread.innerHTML='';
+      setHash(null);
+      document.body.classList.remove('has-results');
+      document.querySelector('.center-wrap').classList.add('home-active');
+      dom.homeView.classList.remove('hidden');
+      dom.suggestions.classList.remove('hidden');
+      dom.resultsArea.classList.add('hidden');
+      dom.queryInput.value='';
+      autosizeQuery();
+      renderChatList();
+      closeSidebarOnMobile();
+      dom.queryInput.focus();
+    }
+    function goHome(){newChat()}
+
+    let chatPoll=null;
+    async function openChat(id,{keepSidebar}={}){
+      clearTimeout(chatPoll);
+      let conv;
+      try{
+        const r=await fetch(apiBase()+'/api/chats/'+encodeURIComponent(id));
+        if(r.status===404){toast('That chat no longer exists',true);setHash(null);loadChats();return}
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        conv=await r.json();
+      }catch(e){toast('Could not open the chat: '+e.message,true);return}
+      if(inflight&&currentConversationId!==id){inflight.abort();endRequest();setSearchingUI(false);stopStatus()}
+      if(inflight&&currentConversationId===id)return; // already showing it live
+      ttsReset();
+      currentConversationId=conv.id;currentTurnId=null;
+      setHash(conv.id);
+      const turns=conv.turns||[];
+      showResultsLayout();
+      dom.thread.innerHTML=turns.slice(0,-1).map(turnHTML).join('');
+      wireTurnActions(dom.thread);
+      const last=turns[turns.length-1];
+      if(last)renderSavedTurn(last);else dom.resultsArea.classList.add('hidden');
+      renderChatList();
+      if(!keepSidebar)closeSidebarOnMobile();
+      const lastEl=dom.resultsArea;
+      if(turns.length>1)lastEl.scrollIntoView({block:'start'});else window.scrollTo({top:0});
+      // A turn still being answered (e.g. the tab was closed mid-search):
+      // check back until it lands.
+      if(turns.some(t=>t.status==='running')){
+        chatPoll=setTimeout(()=>{if(currentConversationId===conv.id&&!inflight)openChat(conv.id,{keepSidebar:true})},3000);
+      }
+    }
+
+    async function deleteChat(id){
+      const c=(chats||[]).find(x=>x.id===id);
+      if(!confirm(`Delete "${c?c.title:'this chat'}"? This can't be undone.`))return;
+      try{
+        const r=await fetch(apiBase()+'/api/chats/'+encodeURIComponent(id),{method:'DELETE'});
+        if(!r.ok&&r.status!==404)throw new Error('HTTP '+r.status);
+        toast('Chat deleted');
+        if(id===currentConversationId)newChat();
+        loadChats();
+      }catch(e){toast('Could not delete: '+e.message,true)}
+    }
+
+    async function deleteAllChats(){
+      if(!confirm('Delete ALL saved chats from this machine? This can\'t be undone.'))return;
+      try{
+        const r=await fetch(apiBase()+'/api/chats',{method:'DELETE'});
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        const d=await r.json();
+        toast(`Deleted ${d.deleted} chat${d.deleted===1?'':'s'}`);
+        newChat();loadChats();
+      }catch(e){toast('Could not delete: '+e.message,true)}
+    }
+
+    async function setSaving(on){
+      try{
+        const r=await fetch(apiBase()+'/api/chats/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({saving:on})});
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        savingOn=on;toast(on?'Chats will be saved':'Saving paused; existing chats are kept');renderChatList();
+      }catch(e){dom.saveChats.checked=savingOn;toast('Could not change saving: '+e.message,true)}
+    }
+
+    // ── Memory settings (this browser) ──
+    function memoryTurnsValue(){const n=parseInt(dom.memoryTurns.value,10);return n>0?n:10}
+    function memorySummary(){return dom.memoryOn.checked?`Memory: last ${memoryTurnsValue()}`:'Memory off'}
+    function syncMemoryUI(){
+      dom.memoryTurns.disabled=!dom.memoryOn.checked;
+      dom.memLabel.textContent=dom.memoryOn.checked?`Memory ${memoryTurnsValue()}`:'Memory off';
+      dom.memChip.classList.toggle('on',dom.memoryOn.checked);
+      renderChatList();
+    }
+
+    // ── Rendering saved turns ──
+    const TURN_NOTES={
+      running:'Still working on this answer. It will appear here when it is ready.',
+      stopped:'Stopped before an answer was written.',
+      interrupted:'The server stopped before this answer was finished.',
+      failed:'No answer: the search engines returned nothing for this question.',
+    };
+    function citationsFor(resp){
+      const results=resp?.results||[];
+      if(Array.isArray(resp?.citation_map)&&resp.citation_map.length&&results.length)return resp.citation_map.map(i=>results[i]).filter(Boolean);
+      return resp?.search_results||[];
+    }
+    function savedMeta(t){
+      const r=t.response||{};
+      const data={mode:r.mode||t.mode,tier:r.tier,domain:r.domain,sources_extracted:r.sources_extracted};
+      const ms=t.finished_at&&t.created_at?t.finished_at-t.created_at:Math.round((r.elapsed_seconds||0)*1000);
+      let html=metaTags(data,ms);
+      html+=`<span class="tag">${icon('history')}${esc(new Date(t.created_at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}))}</span>`;
+      return html;
+    }
+    function searchedAsHTML(q){return q?`Searched as: <b>${esc(q)}</b>`:''}
+    // Answer text of rendered earlier turns, for their Copy and Listen.
+    const turnTexts=new Map();
+    function turnHTML(t){
+      const r=t.response||{};
+      const answer=t.answer||r.llm_answer;
+      if(answer)turnTexts.set(String(t.id),cleanAnswer(answer));
+      const saved=citationSources;
+      citationSources=citationsFor(r);
+      const body=answer?`<div class="answer-content">${formatMarkdownToHtml(cleanAnswer(answer))}</div>`
+        :`<div class="answer-note">${esc(TURN_NOTES[t.status]||(r.highlight?'No AI answer was written for this question; the quick answer is above.':'No AI answer was saved for this question.'))}</div>`;
+      citationSources=saved;
+      const hl=r.highlight?.text?`<div class="hl-mini"><b>Quick answer</b>${esc(r.highlight.text)}</div>`:'';
+      const srcs=(r.search_results||[]).slice(0,8).map((s,i)=>`<a class="src-chip" href="${esc(s.url)}" target="_blank" rel="noopener"><span class="src-num">${i+1}</span><img src="${favicon(s.url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /><span class="t">${esc(s.title||domain(s.url))}</span></a>`).join('');
+      const actions=answer?`<div class="turn-actions"><button class="act-btn" data-copy="${t.id}">${icon('copy')}Copy</button><button class="tts-btn" data-tts="${t.id}">${icon('volume')}<span>Listen</span></button></div>`:'';
+      return `<article class="turn" data-turn="${t.id}">
+        <h3 class="turn-q">${esc(t.query)}</h3>
+        ${t.search_query?`<div class="searched-as">${searchedAsHTML(t.search_query)}</div>`:''}
+        <div class="q-meta">${savedMeta(t)}</div>
+        ${hl}${body}
+        ${srcs?`<div class="turn-srcs">${srcs}</div>`:''}
+        ${actions}
+      </article>`;
+    }
+    function wireTurnActions(root){
+      root.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>copyText(turnTexts.get(b.dataset.copy)||'',b));
+      root.querySelectorAll('[data-tts]').forEach(b=>b.onclick=()=>toggleTTS(b,turnTexts.get(b.dataset.tts)||''));
+    }
+
+    function showResultsLayout(){
+      document.body.classList.add('has-results');
+      document.querySelector('.center-wrap').classList.remove('home-active');
+      dom.homeView.classList.add('hidden');
+      dom.suggestions.classList.add('hidden');
+    }
+
+    // The latest saved turn goes in the full results view (sources panel,
+    // copy, listen), exactly as it looked when it was answered.
+    function renderSavedTurn(t){
+      resetLiveArea(t.query);
+      const r=t.response;
+      dom.searchedAs.innerHTML=searchedAsHTML(t.search_query);
+      dom.searchedAs.classList.toggle('hidden',!t.search_query);
+      if(r&&t.status==='done'){
+        renderResponse(r,{saved:true,meta:savedMeta(t)});
+        liveTurn=t;
+      }else{
+        dom.resultMeta.innerHTML=savedMeta(t);
+        dom.sourcesStrip.innerHTML='';dom.sideList.innerHTML='<div class="empty">No sources.</div>';
+        dom.answerContent.innerHTML=`<div class="answer-note">${esc(TURN_NOTES[t.status]||'No answer was saved.')}</div>`;
+        liveTurn=t.status==='running'?null:t;
+      }
     }
 
     // ═══ Progress ═══
@@ -926,6 +1169,7 @@
 
     // ═══ TTS — Cached Chunked Edge Neural Voice (en-US-AvaNeural) ═══
     let ttsAudio=null;
+    let ttsBtnEl=document.getElementById('ttsBtn');   // the Listen button currently playing
     let ttsChunks=[];
     let ttsChunkIdx=0;
     let ttsAbort=false;
@@ -947,8 +1191,8 @@
       if(window.speechSynthesis)speechSynthesis.cancel();
       ttsPlaying=false;
       ttsChunks=[];ttsChunkIdx=0;
-      dom.ttsBtn.classList.remove('playing');
-      dom.ttsBtn.innerHTML=TTS_ICON+`<span id="ttsLabel">Listen</span>`;
+      ttsBtnEl.classList.remove('playing');
+      ttsBtnEl.innerHTML=TTS_ICON+`<span id="ttsLabel">Listen</span>`;
     }
 
     // Fetch chunk audio, cache the blob URL
@@ -1023,7 +1267,7 @@
       if(ttsAbort||idx>=ttsChunks.length){ttsReset();return}
       ttsChunkIdx=idx;
       const total=ttsChunks.length;
-      dom.ttsBtn.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">${idx+1}/${total}</span>`;
+      ttsBtnEl.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">${idx+1}/${total}</span>`;
       try{
         const url=await ttsFetchChunk(ttsChunks[idx]);
         if(ttsAbort||mySession!==ttsSessionId)return;
@@ -1065,26 +1309,38 @@
       u.lang=/[\u0900-\u097F]/.test(rest)?'hi-IN':'en-US';
       u.onend=()=>{if(mySession===ttsSessionId)ttsReset()};
       u.onerror=()=>{if(mySession===ttsSessionId){ttsReset();toast('Voice playback is not available right now',true)}};
-      dom.ttsBtn.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">Stop</span>`;
+      ttsBtnEl.innerHTML=`<div class="eq-bars"><div class="eq-bar" style="height:8px"></div><div class="eq-bar"></div><div class="eq-bar"></div></div><span id="ttsLabel">Stop</span>`;
       toast('Neural voice unavailable, using your browser\'s voice');
       speechSynthesis.cancel();
       speechSynthesis.speak(u);
     }
 
-    function toggleTTS(){
-      if(ttsPlaying){ttsReset();return}
-      if(!currentAnswer)return;
-      const text=ttsCleanText(currentAnswer).slice(0,5000);
+    // Listen on the live answer (no arguments) or on an earlier turn's button.
+    function toggleTTS(btn,raw){
+      btn=btn||dom.ttsBtn;
+      const same=btn===ttsBtnEl;
+      if(ttsPlaying){ttsReset();if(same)return}
+      raw=raw??currentAnswer;
+      if(!raw)return;
+      ttsBtnEl=btn;
+      const text=ttsCleanText(raw).slice(0,5000);
       if(!text||text.length<5)return;
       ttsAbort=false;
       ttsSessionId++;
       ttsPlaying=true;
       ttsChunks=ttsSplit(text);
-      dom.ttsBtn.classList.add('playing');
-      dom.ttsBtn.innerHTML=`<span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span><span id="ttsLabel">1/${ttsChunks.length}</span>`;
+      ttsBtnEl.classList.add('playing');
+      ttsBtnEl.innerHTML=`<span class="spinner" style="width:12px;height:12px;border-width:1.5px"></span><span id="ttsLabel">1/${ttsChunks.length}</span>`;
       ttsPlayChunk(0);
     }
 
+    function copyText(text,btn){
+      if(!text)return;
+      (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject()).then(()=>{
+        const html=btn.innerHTML;btn.innerHTML=icon('check')+'Copied';toast('Answer copied');
+        setTimeout(()=>{btn.innerHTML=html},1600);
+      }).catch(()=>toast('Copy is not available here',true));
+    }
     function copyAnswer(){
       if(!currentAnswer)return;
       const text=currentAnswer.replace(/\[(\d+)\]/g,(m,n)=>{const s=citationSources[parseInt(n,10)-1];return s?.url?`[${n}](${s.url})`:m});
@@ -1174,6 +1430,9 @@
       dom.composer.classList.toggle('searching',on);
     }
     function cancelRequest(){
+      // Closing the tab lets a saved search finish; Stop really stops it.
+      if(currentTurnId)fetch(apiBase()+'/api/chats/turns/'+currentTurnId+'/stop',{method:'POST'}).catch(()=>{});
+      currentTurnId=null;
       if(inflight){ inflight.abort(); }
       typewriterAbort=true;
       stopStatus();
@@ -1181,7 +1440,6 @@
       setSearchingUI(false);
       if(!currentAnswer)dom.answerContent.innerHTML='<div class="answer-note">Search stopped.</div>';
     }
-    function cancelIfRunning(){if(inflight)cancelRequest()}
 
     // ═══ Markdown ═══
     let typewriterAbort=false;
@@ -1288,14 +1546,15 @@
     }
 
     // ═══ Search ═══
-    function metaTags(data){
+    function metaTags(data,ms){
       const tags=[];
       tags.push(`<span class="tag accent">${icon(modeIconNames[data.mode]||'auto')}${esc(modeLabels[data.mode]||data.mode||'Auto')}</span>`);
       if(data.tier&&data.tier!==data.mode)tags.push(`<span class="tag">${icon('layers')}${esc(data.tier.replace(/^auto:/,'auto · '))}</span>`);
       if(data.domain&&data.domain!=='general')tags.push(`<span class="tag">${icon('globe')}${esc(data.domain)}</span>`);
       if(data.sources_extracted!=null)tags.push(`<span class="tag">${icon('file')}${data.sources_extracted} pages read</span>`);
       // Measured here: a cached server response reports 0s.
-      const ms=Date.now()-searchStartTime;
+      if(ms==null)ms=Date.now()-searchStartTime;
+      if(data.memory_used)tags.push(`<span class="tag" title="Earlier answers from this chat the AI saw">${icon('brain')}remembered ${data.memory_used}</span>`);
       tags.push(`<span class="tag">${icon('clock')}${ms<1000?ms+' ms':(ms/1000).toFixed(1)+'s'}</span>`);
       return tags.join('');
     }
@@ -1328,6 +1587,12 @@
 
     function onProgress(ev){
       switch(ev.type){
+        case 'turn':
+          // Saved from this moment: closing the tab no longer loses it.
+          currentConversationId=ev.conversation_id;currentTurnId=ev.turn_id;
+          setHash(ev.conversation_id);
+          loadChats();
+          break;
         case 'plan':
           setStage('search');
           updateStatus(`Searching ${ev.engines} engines${ev.sub_queries?.length>1?` with ${ev.sub_queries.length} queries`:''}…`);
@@ -1354,22 +1619,12 @@
       }
     }
 
-    async function runSearch(){
-      // Line breaks (Shift+Enter, pasted text) are layout, not query syntax.
-      const query=dom.queryInput.value.replace(/\s+/g,' ').trim();
-      if(!query)return;
-      // The query is shown as the results heading; clear the box for the next one.
-      dom.queryInput.value='';
-      autosizeQuery();
-
+    // Clears the live results area for a new (or reopened) question.
+    function resetLiveArea(query){
       ttsReset();
       typewriterAbort=true;
       if(typewriterTimer)clearTimeout(typewriterTimer);
-
-      document.body.classList.add('has-results');
-      document.querySelector('.center-wrap').classList.remove('home-active');
-      dom.homeView.classList.add('hidden');
-      dom.suggestions.classList.add('hidden');
+      showResultsLayout();
       dom.resultsArea.classList.remove('hidden');
       dom.llmError.classList.add('hidden');
       dom.llmError.classList.remove('note');
@@ -1379,16 +1634,82 @@
       dom.ttsBtn.classList.add('hidden');
       dom.copyBtn.classList.add('hidden');
       dom.highlightCard.classList.add('hidden');
+      dom.searchedAs.classList.add('hidden');
       currentAnswer='';
       citationSources=[];
-
       dom.queryTitle.textContent=query;
+    }
+
+    // Draws a search response in the live area: sources, quick answer, answer.
+    // `saved` responses come from a reopened chat and are shown without the
+    // typing animation.
+    function renderResponse(data,{saved=false,meta=null,llmConfigured=true,useLlm=true}={}){
+      dom.resultMeta.innerHTML=meta||metaTags(data);
+      if(data.search_query){dom.searchedAs.innerHTML=searchedAsHTML(data.search_query);dom.searchedAs.classList.remove('hidden')}
+      const sources=data.search_results||[];
+      renderSourceStrip(sources);
+      renderAllSources(sources);
+      renderHighlight(data.highlight);
+      citationSources=citationsFor(data);
+
+      if(data.llm_answer){
+        currentAnswer=cleanAnswer(data.llm_answer);
+        dom.answerLabel.textContent='Answer';
+        if(saved)renderAnswer(currentAnswer);else typewriterRender(currentAnswer);
+        dom.ttsBtn.classList.remove('hidden');
+        dom.copyBtn.classList.remove('hidden');
+        // An answer can arrive WITH a caveat (cut off at the output limit,
+        // or some Deep evidence batches failed). Show it.
+        if(data.llm_error&&String(data.llm_error).startsWith('partial')){
+          dom.llmError.textContent=String(data.llm_error).replace(/^partial:\s*/,'Note: ');
+          dom.llmError.classList.add('note');
+          dom.llmError.classList.remove('hidden');
+        }
+      }else if(!sources.length&&!data.imported){
+        dom.answerContent.innerHTML=`<div class="answer-note">${esc(data.error||'No results found. The search engines may be rate-limiting this connection — try again in a minute, or try another mode.')}</div>`;
+      }else if(data.llm_error){
+        dom.answerContent.innerHTML='<div class="answer-note">The AI could not write an answer for this search. The sources and the quick answer above are still available.</div>';
+        dom.llmError.textContent=data.llm_error;
+        dom.llmError.classList.remove('hidden');
+      }else if(saved){
+        dom.answerContent.innerHTML=`<div class="answer-note">${data.highlight?'No AI answer was written for this question; the quick answer is above.':'No AI answer was saved for this question.'}</div>`;
+      }else if(!llmConfigured){
+        dom.answerLabel.textContent='Answer';
+        dom.answerContent.innerHTML=useLlm
+          ?`<div class="answer-note">${data.highlight?'The quick answer above is quoted word for word from one of the sources.':'The sources are listed alongside.'} For a full written answer with citations, <a id="openSettingsLink">add an AI model in Settings</a>.</div>`
+          :'<div class="answer-note">AI answers are turned off. Browse the sources, or turn them on in Settings.</div>';
+        const l=$('openSettingsLink');if(l)l.onclick=()=>openSettings();
+      }else{
+        dom.answerContent.innerHTML='<div class="answer-note">No AI answer was returned.</div>';
+      }
+    }
+
+    async function runSearch(){
+      // Line breaks (Shift+Enter, pasted text) are layout, not query syntax.
+      const query=dom.queryInput.value.replace(/\s+/g,' ').trim();
+      if(!query)return;
+      // The query is shown as the results heading; clear the box for the next one.
+      dom.queryInput.value='';
+      autosizeQuery();
+      clearTimeout(chatPoll);
+
+      // The previous answer of this chat moves up into the thread.
+      if(liveTurn&&currentConversationId){
+        dom.thread.insertAdjacentHTML('beforeend',turnHTML(liveTurn));
+        wireTurnActions(dom.thread.lastElementChild);
+      }else if(!currentConversationId){
+        dom.thread.innerHTML='';
+      }
+      liveTurn=null;currentTurnId=null;
+
+      resetLiveArea(query);
       dom.resultMeta.innerHTML=`<span class="tag accent">${icon(modeIconNames[focusMode]||'auto')}${esc(modeSummary())}</span>`;
       dom.sourcesStrip.innerHTML=Array(4).fill(0).map(()=>'<div class="src-chip"><div class="skel" style="height:12px;width:140px;margin:0"></div></div>').join('');
       dom.sideList.innerHTML=Array(5).fill(0).map(()=>'<div class="src-card"><div class="skel w50"></div><div class="skel w90"></div></div>').join('');
       dom.answerContent.innerHTML=`<div class="answer-loading"><span class="spinner"></span>Reading sources…</div><div class="skel w90"></div><div class="skel w70"></div><div class="skel w90"></div><div class="skel w50"></div>`;
       setSearchingUI(true);
-      window.scrollTo({top:0,behavior:'smooth'});
+      if(dom.thread.children.length)dom.resultsArea.scrollIntoView({behavior:'smooth',block:'start'});
+      else window.scrollTo({top:0,behavior:'smooth'});
 
       const effectiveFocus=getEffectiveFocus();
       saveSettings();
@@ -1408,8 +1729,13 @@
       if(selectedCategory) payload.domain=selectedCategory;
       const userMax=parseInt(dom.maxResults.value);
       if(userMax>0) payload.max_results=userMax;
+      if(currentConversationId) payload.conversation_id=currentConversationId;
+      // Memory off: the AI sees only this question. The chat is saved either way.
+      payload.memory_turns=dom.memoryOn.checked?memoryTurnsValue():0;
       if(llmConfigured){
         payload.llm={provider:prov,api_key:key,model,base_url:base,timeout_ms:modeTimeoutMs[effectiveFocus]||60000};
+        const cw=parseInt(dom.contextWindow.value,10);
+        if(cw>=2000)payload.llm.context_window=cw;
       }
 
       const ctl=beginRequest();
@@ -1426,51 +1752,15 @@
         }
         if(ctl!==inflight)return; // a newer search replaced this one
         stopStatus();
-        dom.resultMeta.innerHTML=metaTags(data);
-
-        const sources=data.search_results||[];
-        renderSourceStrip(sources);
-        renderAllSources(sources);
-        renderHighlight(data.highlight);
-
-        // Resolve [n] through the backend's citation_map, so a citation links
-        // to the source the model actually saw as [n].
-        if(Array.isArray(data.citation_map) && data.citation_map.length && Array.isArray(data.results)){
-          citationSources=data.citation_map.map(i=>data.results[i]).filter(Boolean);
-        }else{
-          citationSources=sources;
+        renderResponse(data,{llmConfigured,useLlm});
+        if(data.conversation_id){
+          currentConversationId=data.conversation_id;
+          setHash(data.conversation_id);
+          liveTurn={id:data.turn_id,query,search_query:data.search_query,mode:data.mode,status:'done',
+            answer:data.llm_answer,response:data,created_at:Date.now()-Math.round((data.elapsed_seconds||0)*1000),finished_at:Date.now()};
         }
-
-        if(data.llm_answer){
-          currentAnswer=cleanAnswer(data.llm_answer);
-          dom.answerLabel.textContent='Answer';
-          typewriterRender(currentAnswer);
-          dom.ttsBtn.classList.remove('hidden');
-          dom.copyBtn.classList.remove('hidden');
-          // An answer can arrive WITH a caveat (cut off at the output limit,
-          // or some Deep evidence batches failed). Show it.
-          if(data.llm_error&&String(data.llm_error).startsWith('partial')){
-            dom.llmError.textContent=String(data.llm_error).replace(/^partial:\s*/,'Note: ');
-            dom.llmError.classList.add('note');
-            dom.llmError.classList.remove('hidden');
-          }
-        }else if(!sources.length){
-          dom.answerContent.innerHTML=`<div class="answer-note">${esc(data.error||'No results found. The search engines may be rate-limiting this connection — try again in a minute, or try another mode.')}</div>`;
-        }else if(data.llm_error){
-          dom.answerContent.innerHTML='<div class="answer-note">The AI could not write an answer for this search. The sources and the quick answer above are still available.</div>';
-          dom.llmError.textContent=data.llm_error;
-          dom.llmError.classList.remove('hidden');
-        }else if(!llmConfigured){
-          dom.answerLabel.textContent='Answer';
-          dom.answerContent.innerHTML=useLlm
-            ?`<div class="answer-note">${data.highlight?'The quick answer above is quoted word for word from one of the sources.':'The sources are listed alongside.'} For a full written answer with citations, <a id="openSettingsLink">add an AI model in Settings</a>.</div>`
-            :'<div class="answer-note">AI answers are turned off. Browse the sources, or turn them on in Settings.</div>';
-          const l=$('openSettingsLink');if(l)l.onclick=openSettings;
-        }else{
-          dom.answerContent.innerHTML='<div class="answer-note">No AI answer was returned.</div>';
-        }
-
-        if(historyEnabled)api('/api/history','GET').catch(()=>{});
+        currentTurnId=null;
+        loadChats();
       }catch(err){
         stopStatus();
         if(err?.name==='AbortError')return; // cancelRequest() already rendered a notice
@@ -1499,9 +1789,11 @@
       const typing=/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName||'');
       if(e.key==='Escape'){
         if(!dom.settingsDrawer.classList.contains('hidden')){closeSettings();return}
-        if(!dom.historyDrawer.classList.contains('hidden')){closeHistory();return}
+        if(document.body.classList.contains('side-open')&&window.innerWidth<1100){toggleSidebar(false);return}
         if(inflight){cancelRequest();return}
       }
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='b'){e.preventDefault();toggleSidebar();return}
+      if((e.ctrlKey||e.metaKey)&&e.shiftKey&&e.key.toLowerCase()==='o'){e.preventDefault();newChat();return}
       if((e.key==='/'&&!typing)||((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k')){
         e.preventDefault();dom.queryInput.focus();dom.queryInput.select();
       }
@@ -1510,14 +1802,16 @@
     // ═══ Init ═══
     renderSuggestions();
     loadSettings();
-    try{
-      if(localStorage.getItem('ss_history_init')==='done'){
-        dom.dbModal.classList.add('hidden');
-        const on=localStorage.getItem('ss_history_on');
-        historyEnabled=on==='1'||(on===null&&!!localStorage.getItem('ss_api_key'));
-        if(historyEnabled)api('/api/history/enable','POST').catch(()=>{});
-      }
-    }catch(_){}
+    // Sidebar open on wide screens unless the user closed it; reopen the
+    // chat in the URL (a refresh or a shared bookmark lands back in it).
+    {
+      let side=null;try{side=localStorage.getItem('ss_sidebar')}catch(_){}
+      // On phones it is an overlay: never open it by itself.
+      if(window.innerWidth>=1100&&side!=='0')toggleSidebar(true);else loadChats();
+      const m=location.hash.match(/^#c=([0-9a-f]+)$/);
+      if(m)openChat(m[1]);
+      window.addEventListener('resize',()=>dom.sideBackdrop.classList.toggle('hidden',!document.body.classList.contains('side-open')||window.innerWidth>=1100));
+    }
   </script>
 </body>
 </html>
