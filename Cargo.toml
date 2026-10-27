@@ -3,7 +3,7 @@ name = "searchwala"
 version = "8.1.0"
 edition = "2021"
 description = "Meta-search engine in Rust: cross-engine consensus ranking, trafilatura + Readability extraction, scholarly sources, mode-specific synthesis (fast/auto/deep/study/academic) with optional BYOK LLM"
-authors = ["Sandeep"]
+authors = ["SandeepCH"]
 license = "Apache-2.0"
 
 [lib]

@@ -17,6 +17,7 @@ agree on, and answers with citations you can click, using any LLM or none.
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?logo=rust)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-297_passing-brightgreen)](#development)
 [![License](https://img.shields.io/badge/license-Apache%202.0-purple)](./LICENSE)
+[![Author](https://img.shields.io/badge/author-SandeepCH-0A7CFF?logo=github)](https://github.com/SandeepAi369)
 [![Stars](https://img.shields.io/github/stars/SandeepAi369/SearchWala?style=social)](https://github.com/SandeepAi369/SearchWala/stargazers)
 
 <img src="assets/screenshots/3-answer.png" alt="SearchWala showing a cited AI answer next to its consensus-ranked sources" width="100%">
@@ -155,6 +156,6 @@ CI builds with `-D warnings`.
 
 ## License
 
-Apache-2.0. See [LICENSE](./LICENSE).
+Apache-2.0 © 2026 [SandeepCH](https://github.com/SandeepAi369). See [LICENSE](./LICENSE).
 
 <div align="center"><sub>If SearchWala is useful to you, a ⭐ helps other people find it.</sub></div>
