@@ -48,7 +48,7 @@ jobs:
         run: cargo clippy --release --all-targets -- -D warnings
         continue-on-error: true
 
-      # 297 unit tests, including parser tests driven by REAL SERP fixtures in
+      # 303 unit tests, including parser tests driven by REAL SERP fixtures in
       # tests/fixtures/ — so selector rot fails CI instead of silently
       # returning zero results, which is how 28 engines shipped broken.
       - name: Test
