@@ -1725,7 +1725,8 @@
 
       // Each mode sizes itself on the server. "Max sources" is only sent when
       // the user set it explicitly; the server clamps it to the mode's range.
-      const payload={query,focus_mode:effectiveFocus};
+      // The page saves its chats; API callers don't unless they ask to.
+      const payload={query,focus_mode:effectiveFocus,save:true};
       if(selectedCategory) payload.domain=selectedCategory;
       const userMax=parseInt(dom.maxResults.value);
       if(userMax>0) payload.max_results=userMax;
