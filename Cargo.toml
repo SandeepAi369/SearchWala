@@ -71,7 +71,7 @@ encoding_rs = "0.8"
 # On the Amar Ujala article the v7.0 extractor returned 180 chars (a WebPage
 # meta description) where trafilatura returns 5,812 — a 32x difference.
 rs-trafilatura = "0.2"
-dom_smoothie = "0.18"
+dom_smoothie = "0.19"
 
 # URL handling
 url = "2"
