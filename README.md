@@ -203,3 +203,9 @@ CI builds with `-D warnings`.
 Apache-2.0 © 2026 [SandeepCH](https://github.com/SandeepAi369). See [LICENSE](./LICENSE).
 
 <div align="center"><sub>If SearchWala is useful to you, a ⭐ helps other people find it.</sub></div>
+
+---
+
+## 💖 Sponsor & Support
+
+If you find this project useful, consider supporting my open-source work and systems research via [GitHub Sponsors](https://github.com/sponsors/SandeepAi369).
