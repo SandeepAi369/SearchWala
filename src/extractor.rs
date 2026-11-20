@@ -76,7 +76,69 @@ pub struct Extracted {
 }
 
 // ============================================================================
-// Primary: rs-trafilatura
+// Primary: dom_smoothie (Mozilla Readability port + Strategies 1-4)
+// ============================================================================
+
+fn parse_datetime_utc(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    let date_prefix = s.get(..10)?;
+    let nd = chrono::NaiveDate::parse_from_str(date_prefix, "%Y-%m-%d").ok()?;
+    Some(nd.and_hms_opt(0, 0, 0)?.and_utc())
+}
+
+fn word_count(s: &str) -> usize {
+    s.split_whitespace().count()
+}
+
+fn readability_extract(html: &str, url: &str) -> Option<Extracted> {
+    let cfg = dom_smoothie::Config {
+        text_mode: dom_smoothie::TextMode::Formatted,
+        unwrap_noscript_if_small: true,
+        ..Default::default()
+    };
+    let mut r = dom_smoothie::Readability::new(html, Some(url), Some(cfg)).ok()?;
+    let article = r.parse().ok()?;
+    let text = article.text_content.to_string();
+    if text.trim().is_empty() {
+        return None;
+    }
+    let chars = crate::util::char_len(&text);
+    let confidence = if chars >= 600 {
+        0.90
+    } else if chars >= min_text_chars() {
+        0.82
+    } else {
+        0.65
+    };
+    let published = article
+        .published_time
+        .as_deref()
+        .and_then(parse_datetime_utc);
+    let language = article
+        .lang
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string);
+    Some(Extracted {
+        title: article.title,
+        text,
+        published,
+        language,
+        page_type: None,
+        confidence,
+        source: "readability",
+    })
+}
+
+// ============================================================================
+// Conditional second opinion: rs-trafilatura
 // ============================================================================
 
 fn trafilatura_extract(html: &str, url: &str) -> Option<Extracted> {
@@ -100,27 +162,7 @@ fn trafilatura_extract(html: &str, url: &str) -> Option<Extracted> {
     })
 }
 
-// ============================================================================
-// Second opinion: dom_smoothie (Mozilla Readability port)
-// ============================================================================
-
-fn readability_extract(html: &str, url: &str) -> Option<String> {
-    let cfg = dom_smoothie::Config { ..Default::default() };
-    let mut r = dom_smoothie::Readability::new(html, Some(url), Some(cfg)).ok()?;
-    let article = r.parse().ok()?;
-    let text = article.text_content.to_string();
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(text)
-    }
-}
-
-/// Should we spend the extra ~8ms/page on a second opinion?
-///
-/// An absolute "< 600 chars" threshold never fired on the benchmark corpus —
-/// trafilatura always produced *something*. What it misses is content that is
-/// thin RELATIVE to the page, which is the nih_gov failure mode.
+/// Should we spend a second opinion on rs-trafilatura?
 fn wants_second_opinion(primary: &Extracted, html_len: usize) -> bool {
     let chars = crate::util::char_len(&primary.text);
     if chars < 600 {
@@ -141,28 +183,32 @@ fn wants_second_opinion(primary: &Extracted, html_len: usize) -> bool {
 
 /// Extract readable content from a page.
 ///
-/// DOM extraction (trafilatura, then Readability as a second opinion) runs on
-/// the page with any declarative shadow roots unwrapped. Structured sources
-/// then compete with the DOM result (see `deep_reader`): JSON-LD
-/// `articleBody` is authoritative and wins when clearly longer (paywalled
-/// pages show a teaser in the DOM and the full text there); hydration data
-/// wins on JS shells.
+/// DOM extraction (`dom_smoothie` primary with `TextMode::Formatted` and
+/// `unwrap_noscript_if_small: true`, then `rs-trafilatura` as a conditional
+/// second opinion) runs on the page after Stage 1 pre-cleaners. Structured
+/// sources then compete with the DOM result: JSON-LD `articleBody` wins when
+/// clearly longer (paywalled teasers); hydration data wins on JS shells.
 pub fn extract(html: &str, url: &str) -> Extracted {
     let unwrapped = crate::deep_reader::unwrap_shadow_templates(html);
     let html = unwrapped.as_deref().unwrap_or(html);
     let de_sandpacked = crate::deep_reader::strip_sandpack_placeholders(html);
     let html = de_sandpacked.as_deref().unwrap_or(html);
 
-    let mut best = trafilatura_extract(html, url).unwrap_or_default();
+    let mut best = readability_extract(html, url).unwrap_or_default();
 
     if wants_second_opinion(&best, html.len()) {
-        if let Some(alt) = readability_extract(html, url) {
-            if crate::util::char_len(&alt) > crate::util::char_len(&best.text) {
-                // Keep trafilatura's METADATA (date/language/quality) — only
-                // the text body is replaced.
-                best.text = alt;
-                best.source = "readability";
+        if let Some(alt) = trafilatura_extract(html, url) {
+            if word_count(&alt.text) > word_count(&best.text) {
+                best.text = alt.text;
+                best.source = "trafilatura";
+                best.confidence = best.confidence.max(alt.confidence);
             }
+            if best.title.trim().is_empty() && !alt.title.trim().is_empty() {
+                best.title = alt.title;
+            }
+            best.published = best.published.or(alt.published);
+            best.language = best.language.or(alt.language);
+            best.page_type = best.page_type.or(alt.page_type);
         }
     }
 
