@@ -144,9 +144,9 @@ fn wants_second_opinion(primary: &Extracted, html_len: usize) -> bool {
 /// DOM extraction (trafilatura, then Readability as a second opinion) runs on
 /// the page with any declarative shadow roots unwrapped. Structured sources
 /// then compete with the DOM result (see `deep_reader`): JSON-LD
-/// `articleBody` and microdata are authoritative and win when clearly longer
-/// (paywalled pages show a teaser in the DOM and the full text there);
-/// hydration data wins on JS shells; text density is a last resort.
+/// `articleBody` is authoritative and wins when clearly longer (paywalled
+/// pages show a teaser in the DOM and the full text there); hydration data
+/// wins on JS shells.
 pub fn extract(html: &str, url: &str) -> Extracted {
     let unwrapped = crate::deep_reader::unwrap_shadow_templates(html);
     let html = unwrapped.as_deref().unwrap_or(html);
@@ -187,9 +187,6 @@ pub fn extract(html: &str, url: &str) -> Extracted {
         if let Some(body) = json_ld_article_body(html) {
             adopt(&mut best, body, "json-ld", 0.85, 1.3);
         }
-        if let Some(body) = crate::deep_reader::microdata_body(&Html::parse_document(html)) {
-            adopt(&mut best, body, "microdata", 0.8, 1.3);
-        }
     }
 
     // JS shells (Next.js, Nuxt, Remix, Redux/Apollo state): the DOM is nearly
@@ -198,13 +195,6 @@ pub fn extract(html: &str, url: &str) -> Extracted {
     if dom_chars < 2_000 {
         if let Some(text) = crate::deep_reader::hydration_text(html) {
             adopt(&mut best, text, "hydration", 0.7, 2.0);
-        }
-    }
-
-    // Last resort: densest text block.
-    if crate::util::char_len(&best.text) < min {
-        if let Some(text) = crate::deep_reader::density_text(html) {
-            adopt(&mut best, text, "density", 0.55, 1.0);
         }
     }
 

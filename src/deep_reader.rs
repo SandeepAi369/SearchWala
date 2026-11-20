@@ -20,15 +20,12 @@
 // the DOM result:
 //   * unwrap_shadow_templates  — make shadow-root content ordinary DOM
 //   * hydration_text           — harvest prose strings from hydration data
-//   * microdata_body           — itemprop="articleBody"
-//   * density_text             — text-density/link-density block scoring,
-//                                a last resort when everything else is thin
 //   * amp_url                  — the page's AMP variant (server-rendered,
 //                                minimal markup); fetched by the scraper
 // ============================================================================
 
 use regex::Regex;
-use scraper::{Html, Node, Selector};
+use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
@@ -247,139 +244,6 @@ pub fn hydration_text(html: &str) -> Option<String> {
 }
 
 // ----------------------------------------------------------------------------
-// Microdata
-// ----------------------------------------------------------------------------
-
-static ARTICLE_BODY: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse(r#"[itemprop="articleBody"], [property="articleBody"]"#).unwrap());
-
-pub fn microdata_body(doc: &Html) -> Option<String> {
-    let parts: Vec<String> = doc
-        .select(&ARTICLE_BODY)
-        .map(|el| block_text(&el))
-        .filter(|t| !t.is_empty())
-        .collect();
-    let text = parts.join("\n\n");
-    (crate::util::char_len(&text) >= MIN_PROSE_CHARS).then_some(text)
-}
-
-// ----------------------------------------------------------------------------
-// Text density
-// ----------------------------------------------------------------------------
-
-const SKIP_TAGS: &[&str] = &["script", "style", "noscript", "nav", "footer", "header", "aside", "form", "svg", "button", "select", "template"];
-const BOILERPLATE_HINTS: &[&str] = &[
-    "nav", "menu", "footer", "header", "sidebar", "comment", "cookie", "consent", "share", "social", "related",
-    "promo", "advert", "banner", "breadcrumb", "subscribe", "newsletter", "popup", "modal",
-];
-const BLOCK_TAGS: &[&str] = &["p", "h1", "h2", "h3", "h4", "li", "blockquote", "pre", "td", "dd", "dt", "figcaption"];
-
-fn has_boilerplate_hint(el: &scraper::node::Element) -> bool {
-    let mut s = String::new();
-    if let Some(c) = el.attr("class") {
-        s.push_str(&c.to_ascii_lowercase());
-    }
-    if let Some(i) = el.attr("id") {
-        s.push(' ');
-        s.push_str(&i.to_ascii_lowercase());
-    }
-    if let Some(r) = el.attr("role") {
-        s.push(' ');
-        s.push_str(&r.to_ascii_lowercase());
-    }
-    !s.is_empty() && BOILERPLATE_HINTS.iter().any(|h| s.contains(h))
-}
-
-/// Text of an element with paragraph breaks at block boundaries.
-fn block_text(el: &scraper::ElementRef) -> String {
-    let mut out = String::new();
-    for node in el.descendants() {
-        match node.value() {
-            Node::Text(t) => {
-                let skip = node
-                    .ancestors()
-                    .take_while(|a| a.id() != el.id())
-                    .any(|a| a.value().as_element().is_some_and(|e| SKIP_TAGS.contains(&e.name()) || has_boilerplate_hint(e)));
-                if !skip {
-                    out.push_str(t);
-                }
-            }
-            Node::Element(e) if BLOCK_TAGS.contains(&e.name()) || e.name() == "br" => out.push_str("\n\n"),
-            _ => {}
-        }
-    }
-    out.split("\n\n")
-        .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-/// The densest content block: score = text × (1 − link density), with
-/// boilerplate-named containers excluded. Computed bottom-up in one pass.
-pub fn density_text(html: &str) -> Option<String> {
-    let doc = Html::parse_document(html);
-    // (text chars, link chars, excluded) per node, accumulated child -> parent.
-    let mut acc: std::collections::HashMap<ego_tree::NodeId, (usize, usize, bool)> = std::collections::HashMap::new();
-    let nodes: Vec<_> = doc.tree.nodes().collect();
-    for node in nodes.iter().rev() {
-        let (mut text, mut link, mut excluded) = acc.get(&node.id()).copied().unwrap_or((0, 0, false));
-        match node.value() {
-            Node::Text(t) => text += t.trim().chars().count(),
-            Node::Element(e) => {
-                if SKIP_TAGS.contains(&e.name()) || has_boilerplate_hint(e) {
-                    excluded = true;
-                }
-                if e.name() == "a" {
-                    link = text;
-                }
-            }
-            _ => {}
-        }
-        acc.insert(node.id(), (text, link, excluded));
-        if let Some(parent) = node.parent() {
-            let entry = acc.entry(parent.id()).or_insert((0, 0, false));
-            if !excluded {
-                entry.0 += text;
-                entry.1 += link;
-            }
-        }
-    }
-    let score_of = |node: &ego_tree::NodeRef<Node>| -> Option<f64> {
-        let Node::Element(e) = node.value() else { return None };
-        if !matches!(e.name(), "div" | "section" | "article" | "main" | "td" | "body") {
-            return None;
-        }
-        let (text, link, excluded) = acc.get(&node.id()).copied().unwrap_or_default();
-        if excluded || text < 200 {
-            return None;
-        }
-        let link_density = link as f64 / text as f64;
-        (link_density <= 0.5).then_some(text as f64 * (1.0 - link_density))
-    };
-    let mut best: Option<(f64, ego_tree::NodeId)> = None;
-    for node in &nodes {
-        if let Some(score) = score_of(node) {
-            if best.is_none_or(|b| score > b.0) {
-                best = Some((score, node.id()));
-            }
-        }
-    }
-    let (top, mut id) = best?;
-    // A wrapper (body, page div) scores about the same as the block it
-    // wraps; descend to the deepest block that keeps most of the score.
-    let top_node = doc.tree.get(id)?;
-    for node in top_node.descendants() {
-        if score_of(&node).is_some_and(|s| s >= top * 0.85) {
-            id = node.id();
-        }
-    }
-    let el = scraper::ElementRef::wrap(doc.tree.get(id)?)?;
-    let text = block_text(&el);
-    (crate::util::char_len(&text) >= MIN_PROSE_CHARS).then_some(text)
-}
-
-// ----------------------------------------------------------------------------
 // AMP
 // ----------------------------------------------------------------------------
 
@@ -464,26 +328,6 @@ mod tests {
         assert!(!is_prose(".btn{color:var(--accent);padding:4px;} .card{margin:0 auto;} .x{display:flex;} .y{gap:2px;}"));
         assert!(is_prose(&paras("OK", 1)));
         assert!(is_prose("भारत दक्षिण एशिया में स्थित एक विशाल देश है जिसकी राजधानी नई दिल्ली है। यह विश्व का सबसे अधिक जनसंख्या वाला देश है और यहाँ अनेक भाषाएँ बोली जाती हैं।"));
-    }
-
-    #[test]
-    fn density_finds_the_article_block_not_the_menu() {
-        let menu: String = (0..40).map(|i| format!("<a href='/{i}'>Menu item {i}</a> ")).collect();
-        let html = format!(
-            "<html><body><div class='menu'>{menu}</div><div class='x9'><div><p>{}</p><p>{}</p></div></div><div class='footer'>Copyright</div></body></html>",
-            paras("BODY", 3),
-            paras("MORE", 2)
-        );
-        let t = density_text(&html).unwrap();
-        assert!(t.contains("BODY paragraph 0") && t.contains("MORE paragraph 1"), "{t}");
-        assert!(!t.contains("Menu item"), "{t}");
-    }
-
-    #[test]
-    fn microdata_article_body() {
-        let html = format!(r#"<div itemprop="articleBody"><p>{}</p></div>"#, paras("MICRO", 2));
-        let doc = Html::parse_document(&html);
-        assert!(microdata_body(&doc).unwrap().contains("MICRO paragraph 1"));
     }
 
     #[test]

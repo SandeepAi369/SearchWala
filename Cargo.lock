@@ -2193,7 +2193,6 @@ dependencies = [
  "chrono",
  "dom_smoothie",
  "dotenvy",
- "ego-tree",
  "encoding_rs",
  "futures",
  "moka",
