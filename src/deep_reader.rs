@@ -18,8 +18,9 @@
 //
 // Strategies here, each a CANDIDATE that `extractor::extract` weighs against
 // the DOM result:
-//   * unwrap_shadow_templates  — make shadow-root content ordinary DOM
-//   * hydration_text           — harvest prose strings from hydration data
+//   * unwrap_shadow_templates     — make shadow-root content ordinary DOM
+//   * strip_sandpack_placeholders — strip Sandpack playground <pre> comma bombs
+//   * hydration_text              — harvest prose strings from hydration data
 //   * amp_url                  — the page's AMP variant (server-rendered,
 //                                minimal markup); fetched by the scraper
 // ============================================================================
@@ -72,6 +73,34 @@ pub fn unwrap_shadow_templates(html: &str) -> Option<String> {
     }
     out.push_str(&html[last..]);
     changed.then_some(out)
+}
+
+static SANDPACK_PRE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<pre\b[^>]*\bsp-pre-placeholder\b[^>]*>.*?</pre\s*>").unwrap()
+});
+
+/// Remove Sandpack interactive playground placeholder `<pre>` blocks (e.g.
+/// `<pre class="sp-pre-placeholder">` on React/MDX docs), which embed deeply
+/// nested data arrays whose comma counts hijack Readability container scoring.
+/// Regular `<pre>` code blocks are left untouched. Returns `None` without
+/// allocating when the page has no Sandpack placeholder `<pre>` tags.
+pub fn strip_sandpack_placeholders(html: &str) -> Option<String> {
+    if !html.contains("sp-pre-placeholder") {
+        return None;
+    }
+    let mut out = String::with_capacity(html.len());
+    let mut last = 0;
+    let mut changed = false;
+    for m in SANDPACK_PRE.find_iter(html) {
+        out.push_str(&html[last..m.start()]);
+        last = m.end();
+        changed = true;
+    }
+    if !changed {
+        return None;
+    }
+    out.push_str(&html[last..]);
+    Some(out)
 }
 
 // ----------------------------------------------------------------------------
@@ -280,6 +309,15 @@ mod tests {
             .map(|i| format!("{tag} paragraph {i}: The reactor cooling loop transfers heat from the core to the steam generators, and engineers monitor its pressure continuously."))
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    #[test]
+    fn strips_sandpack_placeholder_pre_without_touching_regular_pre() {
+        let html = r#"<article><pre class="sp-cm sp-pristine"><code>const x = 1;</code></pre><div class="sandpack sandpack--playground"><pre class=" sp-pre-placeholder" style="margin-left:0">let data = [1, 2, 3, 4];</pre></div></article>"#;
+        let out = strip_sandpack_placeholders(html).expect("should strip sp-pre-placeholder");
+        assert!(out.contains("const x = 1;"), "regular pre must remain: {out}");
+        assert!(!out.contains("let data = [1, 2, 3, 4]"), "placeholder pre must be removed: {out}");
+        assert!(strip_sandpack_placeholders("<article><pre><code>normal()</code></pre></article>").is_none());
     }
 
     #[test]

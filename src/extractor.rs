@@ -150,6 +150,8 @@ fn wants_second_opinion(primary: &Extracted, html_len: usize) -> bool {
 pub fn extract(html: &str, url: &str) -> Extracted {
     let unwrapped = crate::deep_reader::unwrap_shadow_templates(html);
     let html = unwrapped.as_deref().unwrap_or(html);
+    let de_sandpacked = crate::deep_reader::strip_sandpack_placeholders(html);
+    let html = de_sandpacked.as_deref().unwrap_or(html);
 
     let mut best = trafilatura_extract(html, url).unwrap_or_default();
 
