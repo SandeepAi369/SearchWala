@@ -142,6 +142,12 @@ pub struct SourceResult {
     /// Detected content language, e.g. "hi" (drives language-mirrored answers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Author / byline when the page declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byline: Option<String>,
+    /// Publisher / site name when the page declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_name: Option<String>,
     /// Real extraction confidence 0.0-1.0. v7.0 hardcoded 0.7 in ranking.rs
     /// with a comment promising this value.
     pub confidence: f64,

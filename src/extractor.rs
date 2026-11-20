@@ -61,11 +61,14 @@ fn min_text_chars() -> usize {
 pub struct Extracted {
     pub title: String,
     pub text: String,
-    /// Publication date, when the page declares one. The "time-aware" v7.0
-    /// never extracted this, so ranking had no freshness signal at all.
+    /// Publication date (or modified date fallback) when the page declares one.
     pub published: Option<chrono::DateTime<chrono::Utc>>,
-    /// BCP-47-ish language code from the extractor ("hi", "en", ...).
+    /// Normalized primary BCP-47 language subtag ("hi", "en", ...).
     pub language: Option<String>,
+    /// Author / byline when the page declares one.
+    pub byline: Option<String>,
+    /// Publisher / site name when the page declares one.
+    pub site_name: Option<String>,
     /// Page-type classification ("article", "forum", "documentation", ...).
     pub page_type: Option<String>,
     /// 0.0–1.0 extraction confidence. v7.0 hardcoded 0.7 with the comment
@@ -87,9 +90,37 @@ fn parse_datetime_utc(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return Some(dt.with_timezone(&chrono::Utc));
     }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(s) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    for fmt in ["%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M%z", "%Y-%m-%d %H:%M:%S%z"] {
+        if let Ok(dt) = chrono::DateTime::parse_from_str(s, fmt) {
+            return Some(dt.with_timezone(&chrono::Utc));
+        }
+    }
+    for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
+        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(ndt.and_utc());
+        }
+    }
     let date_prefix = s.get(..10)?;
     let nd = chrono::NaiveDate::parse_from_str(date_prefix, "%Y-%m-%d").ok()?;
     Some(nd.and_hms_opt(0, 0, 0)?.and_utc())
+}
+
+fn normalize_lang(raw: &str) -> Option<String> {
+    let primary = raw
+        .trim()
+        .split(['-', '_'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    (!primary.is_empty()).then_some(primary)
+}
+
+fn clean_opt_str(opt: Option<String>) -> Option<String> {
+    opt.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 fn word_count(s: &str) -> usize {
@@ -119,18 +150,18 @@ fn readability_extract(html: &str, url: &str) -> Option<Extracted> {
     let published = article
         .published_time
         .as_deref()
-        .and_then(parse_datetime_utc);
-    let language = article
-        .lang
-        .as_deref()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string);
+        .and_then(parse_datetime_utc)
+        .or_else(|| article.modified_time.as_deref().and_then(parse_datetime_utc));
+    let language = article.lang.as_deref().and_then(normalize_lang);
+    let byline = clean_opt_str(article.byline);
+    let site_name = clean_opt_str(article.site_name);
     Some(Extracted {
         title: article.title,
         text,
         published,
         language,
+        byline,
+        site_name,
         page_type: None,
         confidence,
         source: "readability",
@@ -155,7 +186,9 @@ fn trafilatura_extract(html: &str, url: &str) -> Option<Extracted> {
         title: r.metadata.title.clone().unwrap_or_default(),
         text: r.content_text,
         published: r.metadata.date,
-        language: r.metadata.language.clone(),
+        language: r.metadata.language.as_deref().and_then(normalize_lang),
+        byline: clean_opt_str(r.metadata.author.clone()),
+        site_name: clean_opt_str(r.metadata.sitename.clone()),
         page_type: r.metadata.page_type.clone(),
         confidence: r.extraction_quality.clamp(0.0, 1.0),
         source: "trafilatura",
@@ -208,6 +241,8 @@ pub fn extract(html: &str, url: &str) -> Extracted {
             }
             best.published = best.published.or(alt.published);
             best.language = best.language.or(alt.language);
+            best.byline = best.byline.or(alt.byline);
+            best.site_name = best.site_name.or(alt.site_name);
             best.page_type = best.page_type.or(alt.page_type);
         }
     }
@@ -664,5 +699,57 @@ mod tests {
         let e = extract(&html, "https://example.org/a");
         assert_ne!(e.source, "hydration");
         assert!(e.text.contains("REAL paragraph 5"));
+    }
+
+    #[test]
+    fn wires_modified_time_fallback_and_extended_metadata() {
+        let html = format!(
+            r#"<!DOCTYPE html><html lang="en-US"><head>
+            <title>Microservices Guide</title>
+            <meta name="dcterms.modified" content="2026-02-20">
+            <script type="application/ld+json">
+            {{
+                "@context": "https://schema.org",
+                "@graph": [
+                    {{
+                        "@type": ["Article", "TechArticle"],
+                        "headline": "Microservices Architecture Guide",
+                        "author": {{ "@type": "Person", "name": "Martin Fowler" }},
+                        "publisher": {{ "@type": "Organization", "name": "martinfowler.com" }}
+                    }}
+                ]
+            }}
+            </script>
+            </head><body><article><p>{}</p><p>{}</p></article></body></html>"#,
+            prose("ARCH", 4),
+            prose("DESIGN", 4)
+        );
+        let got = extract(&html, "https://martinfowler.com/articles/microservices.html");
+        assert_eq!(got.source, "readability");
+        assert_eq!(got.title, "Microservices Architecture Guide");
+        assert_eq!(got.language.as_deref(), Some("en"));
+        assert_eq!(got.byline.as_deref(), Some("Martin Fowler"));
+        assert_eq!(got.site_name.as_deref(), Some("martinfowler.com"));
+        assert!(got.published.is_some(), "modified_time fallback must populate published");
+    }
+
+    #[test]
+    fn unwraps_noscript_fallback_on_spa_shell() {
+        let html = format!(
+            r#"<!DOCTYPE html><html lang="en"><head>
+            <title>PEP 703 Thread</title>
+            <meta property="og:site_name" content="Discussions on Python.org">
+            <meta property="article:published_time" content="2023-07-28T20:44:43+00:00">
+            </head><body>
+            <div id="spa-root"></div>
+            <noscript><div id="main-outlet" role="main"><article><h1>PEP 703</h1><p>{}</p><p>{}</p></article></div></noscript>
+            </body></html>"#,
+            prose("GIL", 4),
+            prose("THREAD", 4)
+        );
+        let got = extract(&html, "https://discuss.python.org/t/pep-703/123");
+        assert!(got.text.contains("GIL paragraph 3"), "noscript content missing: {}", got.text);
+        assert_eq!(got.site_name.as_deref(), Some("Discussions on Python.org"));
+        assert!(got.published.is_some());
     }
 }

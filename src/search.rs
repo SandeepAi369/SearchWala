@@ -510,6 +510,8 @@ pub async fn execute_search_full(
                     engine: engine_name,
                     published: c.published,
                     language: None,
+                    byline: None,
+                    site_name: None,
                     confidence: 0.9,
                     extractor: "abstract",
                 });
@@ -524,6 +526,8 @@ pub async fn execute_search_full(
                     engine: engine_name,
                     published: cached.published.or(c.published),
                     language: cached.language.clone(),
+                    byline: cached.byline.clone(),
+                    site_name: cached.site_name.clone(),
                     confidence: cached.confidence,
                     extractor: cached.source,
                 });
@@ -545,6 +549,8 @@ pub async fn execute_search_full(
                         engine: engine_name,
                         published: e.published.or(c.published),
                         language: e.language,
+                        byline: e.byline,
+                        site_name: e.site_name,
                         confidence: e.confidence,
                         extractor: e.source,
                     })
@@ -563,6 +569,8 @@ pub async fn execute_search_full(
                         engine: engine_name,
                         published: c.published,
                         language: None,
+                        byline: None,
+                        site_name: None,
                         confidence: 0.35,
                         extractor: "snippet",
                     })

@@ -89,6 +89,8 @@ struct ChunkCandidate {
     extraction_confidence: f64,
     published: Option<chrono::DateTime<chrono::Utc>>,
     language: Option<String>,
+    byline: Option<String>,
+    site_name: Option<String>,
     extractor: &'static str,
 }
 
@@ -308,6 +310,8 @@ pub fn rank_with_options(
                 extraction_confidence: if source.confidence > 0.0 { source.confidence } else { 0.7 },
                 published: source.published,
                 language: source.language.clone(),
+                byline: source.byline.clone(),
+                site_name: source.site_name.clone(),
                 extractor: source.extractor,
             });
         }
@@ -331,6 +335,8 @@ pub fn rank_with_options(
                 extracted_text: c.text,
                 published: c.published,
                 language: c.language,
+                byline: c.byline,
+                site_name: c.site_name,
                 confidence: c.extraction_confidence,
                 extractor: c.extractor,
             })
@@ -473,6 +479,8 @@ pub fn rank_with_options(
                 extracted_text: chunk.text.clone(),
                 published: chunk.published,
                 language: chunk.language.clone(),
+                byline: chunk.byline.clone(),
+                site_name: chunk.site_name.clone(),
                 confidence: chunk.extraction_confidence,
                 extractor: chunk.extractor,
             }
