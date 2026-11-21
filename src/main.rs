@@ -641,12 +641,19 @@ async fn tts_handler(
     ));
     let _tmp_guard = TempFileGuard(tmp_path.clone());
 
-    // v7.0 hardcoded /home/sandeep/.local/bin/edge-tts, which exists for
-    // exactly one user. Resolve from env or $PATH only.
+    // Resolve edge-tts dynamically from EDGE_TTS_PATH, $HOME/.local/bin/edge-tts
+    // (standard pip install --user location, not in $PATH for non-login shells),
+    // system bin directories, or $PATH (zero hardcoded username).
     let edge_tts_path = std::env::var("EDGE_TTS_PATH").unwrap_or_else(|_| {
+        if let Ok(home) = std::env::var("HOME") {
+            let user_local = format!("{}/.local/bin/edge-tts", home.trim_end_matches('/'));
+            if std::path::Path::new(&user_local).exists() {
+                return user_local;
+            }
+        }
         for path in &["/usr/local/bin/edge-tts", "/usr/bin/edge-tts"] {
             if std::path::Path::new(path).exists() {
-                return path.to_string();
+                return (*path).to_string();
             }
         }
         "edge-tts".to_string()

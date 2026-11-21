@@ -1948,7 +1948,8 @@ pub(crate) fn build_intent_prompts(query: &str, context: &str, intel: &QueryInte
          ---\n\
          [USER QUESTION]\n\
          {query}\n\n\
-         {format_instruction}"
+         {format_instruction}\n\
+         End with: **Sources Used:** followed by each cited [n] <url>."
     );
 
     (system, user)
