@@ -665,89 +665,108 @@ pub fn describe_modes() -> serde_json::Value {
 // Source preferences per mode and domain
 // ─────────────────────────────────────────────────────────────────────────────
 
-const STUDY_HOSTS: &[&str] = &[
-    "wikipedia.org", "britannica.com", "khanacademy.org", "openstax.org",
-    "libretexts.org", "ncert.nic.in", "byjus.com", "geeksforgeeks.org",
-    "mathsisfun.com", "physicsclassroom.com", "ocw.mit.edu", "developer.mozilla.org",
-    "chem.libretexts.org", "bio.libretexts.org", "math.libretexts.org",
-    "cuemath.com", "vedantu.com", "toppr.com", "sparknotes.com", "studysmarter.co.uk",
-];
-
-const SCHOLARLY_HOSTS: &[&str] = &[
-    "nature.com", "science.org", "cell.com", "pnas.org", "arxiv.org", "nih.gov",
-    "sciencedirect.com", "springer.com", "link.springer.com", "wiley.com",
-    "plos.org", "acm.org", "ieee.org", "jstor.org", "openalex.org", "doi.org",
-    "semanticscholar.org", "biorxiv.org", "medrxiv.org", "thelancet.com",
-    "nejm.org", "bmj.com", "frontiersin.org", "mdpi.com", "aps.org", "iop.org",
-];
-
-const TECH_HOSTS: &[&str] = &[
-    "docs.rs", "doc.rust-lang.org", "developer.mozilla.org", "docs.python.org",
-    "learn.microsoft.com", "github.com", "stackoverflow.com", "kubernetes.io",
-    "docs.docker.com", "go.dev", "nodejs.org", "react.dev", "postgresql.org",
-    "man7.org", "rfc-editor.org", "w3.org", "developer.apple.com",
-    "developer.android.com", "cloud.google.com", "docs.aws.amazon.com",
-];
-
-const FINANCE_HOSTS: &[&str] = &[
-    "reuters.com", "bloomberg.com", "ft.com", "wsj.com", "sec.gov",
-    "federalreserve.gov", "rbi.org.in", "sebi.gov.in", "imf.org", "worldbank.org",
-    "moneycontrol.com", "economictimes.indiatimes.com", "livemint.com",
-    "investopedia.com", "nseindia.com", "bseindia.com", "cnbc.com",
-];
-
-const HEALTH_HOSTS: &[&str] = &[
-    "who.int", "nih.gov", "cdc.gov", "nhs.uk", "mayoclinic.org", "medlineplus.gov",
-    "cochrane.org", "clevelandclinic.org", "hopkinsmedicine.org", "fda.gov",
-    "mohfw.gov.in", "icmr.gov.in", "ema.europa.eu", "nice.org.uk",
-];
-
-const NEWS_HOSTS: &[&str] = &[
-    "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "theguardian.com",
-    "nytimes.com", "aljazeera.com", "thehindu.com", "indianexpress.com",
-    "hindustantimes.com", "ndtv.com", "amarujala.com", "bhaskar.com", "jagran.com",
-    "timesofindia.indiatimes.com", "livemint.com", "npr.org", "washingtonpost.com",
-];
-
+/// Structural URL authority signals (zero hardcoded domain lists).
 fn host_of(url: &str) -> String {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
-        .unwrap_or_default()
+    parse_host_and_path(url).0
 }
 
-fn host_matches(host: &str, list: &[&str]) -> bool {
-    list.iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
+pub(crate) fn parse_host_and_path(url: &str) -> (String, String) {
+    match url::Url::parse(url) {
+        Ok(u) => (
+            u.host_str().map(|h| h.to_lowercase()).unwrap_or_default(),
+            u.path().to_lowercase(),
+        ),
+        Err(_) => (String::new(), String::new()),
+    }
 }
 
-/// Ranking multiplier for preferred sources in this mode/domain.
-///
-/// Stacks with `llm::trust_score`; capped so a preferred blog cannot outrank a
-/// genuinely more relevant page purely on reputation.
+/// Public institutional TLD hierarchy (.gov, .edu, .int, .mil, .ac.*, .gov.*, .edu.*, .nic.*).
+pub(crate) fn is_institutional_host(host: &str) -> bool {
+    host.ends_with(".gov")
+        || host.ends_with(".edu")
+        || host.ends_with(".int")
+        || host.ends_with(".mil")
+        || host.contains(".gov.")
+        || host.contains(".edu.")
+        || host.contains(".ac.")
+        || host.contains(".nic.")
+}
+
+/// Structural documentation / developer reference subdomain or path.
+pub(crate) fn is_structural_docs_url(host: &str, path: &str) -> bool {
+    host.starts_with("docs.")
+        || host.starts_with("doc.")
+        || host.starts_with("developer.")
+        || host.starts_with("developers.")
+        || host.starts_with("learn.")
+        || host.starts_with("reference.")
+        || host.starts_with("manual.")
+        || path.starts_with("/docs/")
+        || path.starts_with("/doc/")
+        || path.starts_with("/documentation/")
+        || path.starts_with("/reference/")
+        || path.starts_with("/manual/")
+        || path.starts_with("/std/")
+        || path.starts_with("/api/")
+}
+
+/// Structural scholarly/research article path or institutional research host.
+pub(crate) fn is_structural_scholarly_url(host: &str, path: &str) -> bool {
+    is_institutional_host(host)
+        || path.starts_with("/articles/")
+        || path.starts_with("/article/")
+        || path.starts_with("/abs/")
+        || path.starts_with("/pdf/")
+        || path.starts_with("/doi/")
+        || path.starts_with("/papers/")
+        || path.starts_with("/journals/")
+}
+
+/// Structural educational or encyclopedic reference URL (verified against lookalike hosts
+/// by checking the registrable domain root and path structure).
+pub(crate) fn is_structural_encyclopedia_or_study_url(url: &str, host: &str, path: &str) -> bool {
+    if is_institutional_host(host)
+        || path.starts_with("/textbook")
+        || path.starts_with("/courses/")
+        || path.starts_with("/lesson")
+    {
+        return true;
+    }
+    let reg = crate::url_utils::registrable_domain(url);
+    let root_label = reg.split('.').next().unwrap_or("");
+    (root_label == "wikipedia" || root_label == "britannica" || root_label == "wikibooks")
+        && (path.starts_with("/wiki/") || path.starts_with("/topic/") || path.len() > 1)
+}
+
+/// Ranking multiplier for structural mode/domain alignment (zero hardcoded site lists).
 pub fn source_boost(url: &str, mode: Mode, domain: Domain) -> f64 {
-    let host = host_of(url);
+    let (host, path) = parse_host_and_path(url);
     if host.is_empty() {
         return 1.0;
     }
     let mut b: f64 = 1.0;
     match mode {
-        Mode::Study if host_matches(&host, STUDY_HOSTS) || host.ends_with(".edu") || host.ends_with(".ac.in") => {
+        Mode::Study if is_structural_encyclopedia_or_study_url(url, &host, &path) => {
             b *= 1.35;
         }
-        Mode::Academic if host_matches(&host, SCHOLARLY_HOSTS) || host.ends_with(".edu") => {
+        Mode::Academic if is_structural_scholarly_url(&host, &path) => {
             b *= 1.4;
         }
         _ => {}
     }
-    let list: &[&str] = match domain {
-        Domain::Tech => TECH_HOSTS,
-        Domain::Science => SCHOLARLY_HOSTS,
-        Domain::Finance => FINANCE_HOSTS,
-        Domain::Health => HEALTH_HOSTS,
-        Domain::News => NEWS_HOSTS,
-        Domain::General => &[],
+    let domain_match = match domain {
+        Domain::Tech => is_structural_docs_url(&host, &path),
+        Domain::Science => is_structural_scholarly_url(&host, &path),
+        Domain::Health | Domain::Finance => is_institutional_host(&host),
+        Domain::News => {
+            path.starts_with("/news")
+                || path.starts_with("/press")
+                || path.starts_with("/announcements")
+                || path.starts_with("/releases")
+        }
+        Domain::General => false,
     };
-    if host_matches(&host, list) {
+    if domain_match {
         b *= 1.3;
     }
     b.min(1.8)

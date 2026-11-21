@@ -195,15 +195,26 @@ pub fn analyze_query(query: &str) -> QueryIntelligence {
 // Intent Detection — Pattern-based classification
 // =============================================================================
 
-/// Well-known destination sites. A query that LEADS with one of these and is
-/// short is navigational — the user wants that site, not an explanation.
-const NAV_SITES: &[&str] = &[
-    "facebook", "youtube", "twitter", "reddit", "instagram", "tiktok",
-    "amazon", "google", "github", "gitlab", "linkedin", "netflix", "spotify",
-    "wikipedia", "stackoverflow", "gmail", "outlook", "whatsapp", "mdn",
-    "crates", "npm", "pypi", "docker", "dockerhub", "figma", "notion",
-    "jira", "slack", "discord", "twitch", "ebay", "paypal", "coinbase",
-];
+/// Structural navigational check: determines if a token looks like a destination
+/// site or brand identifier rather than an interrogative/question word (zero hardcoded site lists).
+fn is_structural_site_leader(word: &str) -> bool {
+    let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.');
+    if clean.len() < 2 {
+        return false;
+    }
+    if clean.contains('.') && !clean.starts_with('.') && !clean.ends_with('.') {
+        return true;
+    }
+    !matches!(
+        clean,
+        "what" | "how" | "why" | "who" | "when" | "where" | "which"
+            | "is" | "are" | "was" | "were" | "can" | "could" | "should"
+            | "does" | "do" | "did" | "will" | "would" | "explain" | "compare"
+            | "define" | "tell" | "show" | "list" | "give" | "the" | "a" | "an"
+            | "best" | "top" | "latest" | "current" | "recent" | "upcoming" | "history"
+            | "biography" | "overview" | "impact" | "future"
+    )
+}
 
 /// Words that mark a query as wanting a specific page on a site.
 const NAV_INTENTS: &[&str] = &[
@@ -249,21 +260,14 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
     if words.len() <= 5 {
         let leads_with_site = words
             .first()
-            .map(|w| NAV_SITES.contains(w) || NAV_SITES.iter().any(|s| w.starts_with(s)))
+            .map(|w| is_structural_site_leader(w))
             .unwrap_or(false);
-        let mentions_site = words
+        let has_domain_token = words
             .iter()
-            .any(|w| NAV_SITES.contains(w) || NAV_SITES.iter().any(|s| w.starts_with(s)));
+            .any(|w| w.contains('.') && w.len() >= 4 && !w.ends_with('.'));
         let has_nav_word = words.iter().any(|w| NAV_INTENTS.contains(w));
 
-        // Leading with a site name is a strong signal on its own for short
-        // queries ("youtube trending", "github new repository").
-        if leads_with_site && words.len() <= 4 {
-            return QueryIntent::Navigational;
-        }
-        // Otherwise a site plus a destination word ("amazon order tracking",
-        // "MDN CSS flexbox documentation").
-        if mentions_site && has_nav_word {
+        if (leads_with_site && has_nav_word) || (has_domain_token && words.len() <= 4) {
             return QueryIntent::Navigational;
         }
     }

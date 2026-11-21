@@ -101,6 +101,18 @@ impl ContextBudget {
             let t = ollama_ctx.unwrap_or(LOCAL_SERVER_DEFAULT_TOKENS);
             return Self { max_tokens: t.clamp(2_000, 900_000) };
         }
+        // Providers with strict per-request/per-minute token caps on standard
+        // tiers (e.g. Groq 8,000 TPM limit) get a safe default window so
+        // prompt + output fit inside one request without triggering HTTP 413.
+        let is_tpm_capped_provider = cfg.provider.eq_ignore_ascii_case("groq")
+            || cfg
+                .base_url
+                .as_deref()
+                .map(|u| u.to_ascii_lowercase().contains("groq.com"))
+                .unwrap_or(false);
+        if is_tpm_capped_provider {
+            return Self { max_tokens: 6_500 };
+        }
         Self::for_model_with_override(&cfg.model, None)
     }
 
@@ -775,8 +787,83 @@ fn is_retryable(err: &str) -> bool {
         || err.contains("response_read_error")
 }
 
-/// `call_llm` with exponential backoff. v7.0 had NO retry at all: a single 429
-/// from a rate-limited provider failed the whole search.
+/// Detects HTTP 413 or token/context-limit overflow errors that can be recovered
+/// immediately by trimming the lowest-ranked context chunks from the prompt.
+pub(crate) fn is_payload_too_large(err: &str) -> bool {
+    if err.starts_with("http_413") {
+        return true;
+    }
+    let lower = err.to_ascii_lowercase();
+    (err.starts_with("http_400") || err.starts_with("http_429"))
+        && (lower.contains("request too large")
+            || lower.contains("context_length_exceeded")
+            || lower.contains("maximum context length")
+            || lower.contains("prompt is too long")
+            || (lower.contains("limit") && lower.contains("requested") && lower.contains("tokens")))
+}
+
+/// Parses provider error strings such as "Limit 8000, Requested 9655" to compute
+/// an exact safe keep-ratio, falling back to 0.62 when no numbers are present.
+pub(crate) fn parse_token_limit_ratio(err: &str) -> Option<f64> {
+    let lower = err.to_ascii_lowercase();
+    let limit_pos = lower.find("limit")?;
+    let req_pos = lower.find("requested")?;
+
+    let parse_first_num = |s: &str| -> Option<usize> {
+        let num_str: String = s
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        num_str.parse::<usize>().ok().filter(|&n| n > 0)
+    };
+
+    let limit_val = parse_first_num(&lower[limit_pos..])?;
+    let req_val = parse_first_num(&lower[req_pos..])?;
+    if req_val > limit_val {
+        Some(((limit_val as f64 / req_val as f64) * 0.80).clamp(0.25, 0.82))
+    } else {
+        None
+    }
+}
+
+/// Trims the source context inside `messages` while preserving the trailing
+/// question/instruction block (`\n---\n...`) so a retry fits the provider's TPM cap.
+pub(crate) fn shrink_messages_for_retry(messages: &[ChatMessage], ratio: f64) -> Vec<ChatMessage> {
+    let keep_ratio = ratio.clamp(0.25, 0.85);
+    messages
+        .iter()
+        .map(|m| {
+            if m.role != "user" || crate::util::char_len(&m.content) < 1_200 {
+                return m.clone();
+            }
+            let content = &m.content;
+            // Preserve the trailing "\n---\n" question block if present
+            let new_content = if let Some(sep_idx) = content.rfind("\n---\n") {
+                let (sources_part, question_footer) = content.split_at(sep_idx);
+                let target_chars =
+                    ((crate::util::char_len(sources_part) as f64) * keep_ratio) as usize;
+                let truncated = crate::util::truncate_chars(sources_part, target_chars.max(600));
+                // Back up to the last complete source paragraph boundary if possible
+                let clean_sources = truncated
+                    .rfind("\n\n[")
+                    .filter(|&pos| pos >= 400)
+                    .map(|pos| &truncated[..pos])
+                    .unwrap_or(truncated);
+                format!("{clean_sources}{question_footer}")
+            } else {
+                let target_chars = ((crate::util::char_len(content) as f64) * keep_ratio) as usize;
+                crate::util::truncate_chars(content, target_chars.max(600)).to_string()
+            };
+            ChatMessage {
+                role: m.role.clone(),
+                content: new_content,
+            }
+        })
+        .collect()
+}
+
+/// `call_llm` with exponential backoff and automatic HTTP 413 / TPM context-trimming recovery.
 pub(crate) async fn call_llm_retrying(
     config: &LlmConfig,
     messages: &[ChatMessage],
@@ -784,11 +871,29 @@ pub(crate) async fn call_llm_retrying(
     const ATTEMPTS: usize = 4;
     let mut delay = Duration::from_millis(700);
     let mut last = String::new();
+    let mut current_messages: Vec<ChatMessage> = messages.to_vec();
+    let mut current_config: LlmConfig = config.clone();
+
     for attempt in 1..=ATTEMPTS {
-        match call_llm(config, messages).await {
+        match call_llm(&current_config, &current_messages).await {
             Ok(v) => return Ok(v),
             Err(e) => {
                 last = e;
+                if attempt < ATTEMPTS && is_payload_too_large(&last) {
+                    let ratio = parse_token_limit_ratio(&last).unwrap_or(0.62);
+                    current_messages = shrink_messages_for_retry(&current_messages, ratio);
+                    let cur_out = output_tokens_for(&current_config);
+                    current_config.max_output_tokens = Some(((cur_out * 3) / 4).max(256));
+                    tracing::warn!(
+                        "LLM payload exceeded provider token cap on attempt {}/{} ({}); auto-trimmed context to {:.0}% and retrying immediately",
+                        attempt,
+                        ATTEMPTS,
+                        last,
+                        ratio * 100.0
+                    );
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    continue;
+                }
                 if attempt == ATTEMPTS || !is_retryable(&last) {
                     break;
                 }
@@ -965,6 +1070,14 @@ impl BuiltContext {
 /// source. Citations were systematically misattributed.
 /// ═══════════════════════════════════════════════════════════════════════════
 pub(crate) fn build_ranked_context(sources: &[SourceResult], budget_chars: usize) -> BuiltContext {
+    build_ranked_context_with_intel(sources, budget_chars, None)
+}
+
+pub(crate) fn build_ranked_context_with_intel(
+    sources: &[SourceResult],
+    budget_chars: usize,
+    intel: Option<&QueryIntelligence>,
+) -> BuiltContext {
     if sources.is_empty() {
         return BuiltContext { text: String::new(), citation_map: Vec::new() };
     }
@@ -988,27 +1101,21 @@ pub(crate) fn build_ranked_context(sources: &[SourceResult], budget_chars: usize
         if remaining < 400 {
             break;
         }
-        let header_budget = 220;
+        let header_budget = 240;
         let body_budget = remaining.saturating_sub(header_budget);
 
-        // v7.0 BUG: it computed an estimated block size and `break`-ed on the
-        // first source that did not fit. A single long source at position 3
-        // therefore TRUNCATED the whole context to two sources. Truncate the
-        // body and continue instead.
         let body = crate::util::truncate_chars(body_raw, body_budget);
         if crate::util::char_len(body) < 80 {
             continue;
         }
 
         let n = citation_map.len() + 1;
-        let cred = credibility_tag(&src.url);
+        let cred = credibility_tag_for_source(src, intel);
         let date = src
             .published
             .map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_else(|| "undated".to_string());
 
-        // The date is now IN the context. v7.0 told the model to "prefer the
-        // most recent sources" while giving it no dates to compare.
         let _ = write!(
             text,
             "[{}] {} {} — published {} ({})\n{}\n\n",
@@ -1044,178 +1151,249 @@ fn lost_in_middle_order(len: usize) -> Vec<usize> {
     front
 }
 
-pub(crate) fn credibility_tag(url: &str) -> String {
-    let host = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let high_trust = [
-        ("wikipedia.org", "Wikipedia"),
-        ("nih.gov", "NIH"),
-        ("who.int", "WHO"),
-        ("nature.com", "Nature"),
-        ("sciencedirect.com", "ScienceDirect"),
-        ("arxiv.org", "arXiv"),
-        ("pubmed.ncbi", "PubMed"),
-    ];
-
-    if host.ends_with(".gov") || host.ends_with(".edu") {
-        return "[High Trust - Institutional]".to_string();
+/// Algorithmically matches query entities against a URL's hostname labels and
+/// extracted `site_name` without any hardcoded domain lists.
+/// Returns `(matched_entity_tokens, total_entity_tokens)`.
+pub fn url_matches_query_entities(
+    url: &str,
+    site_name: Option<&str>,
+    entities: &[String],
+) -> (usize, usize) {
+    let (host, _) = crate::modes::parse_host_and_path(url);
+    if host.is_empty() || entities.is_empty() {
+        return (0, 0);
     }
 
-    for (needle, label) in high_trust {
-        if host.contains(needle) {
-            return format!("[High Trust - {}]", label);
+    // Collect distinct normalized entity tokens (len >= 3)
+    let mut entity_tokens: Vec<String> = Vec::new();
+    for ent in entities {
+        for raw_tok in ent.split(|c: char| !c.is_alphanumeric()) {
+            let clean = raw_tok.trim().to_lowercase();
+            if clean.chars().count() >= 3 && !entity_tokens.contains(&clean) {
+                entity_tokens.push(clean);
+            }
+        }
+    }
+    if entity_tokens.is_empty() {
+        return (0, 0);
+    }
+
+    // Split host into meaningful labels (excluding generic DNS TLD/prefix tokens
+    // unless a brand TLD itself matches an entity token like `.google`).
+    let host_labels: Vec<String> = host
+        .trim_start_matches("www.")
+        .split(|c: char| c == '.' || c == '-' || c == '_')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.len() >= 2)
+        .collect();
+    let reg_domain = crate::url_utils::registrable_domain(url);
+    let reg_concat: String = reg_domain
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+
+    let site_tokens: Vec<String> = site_name
+        .unwrap_or("")
+        .split(|c: char| !c.is_alphanumeric())
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.chars().count() >= 3)
+        .collect();
+
+    let mut matched = 0usize;
+    for et in &entity_tokens {
+        let host_hit = host_labels.iter().any(|hl| {
+            hl == et
+                || (hl.len() >= 4 && et.len() >= 4 && (hl.starts_with(et) || et.starts_with(hl)))
+        }) || (!reg_concat.is_empty()
+            && reg_concat.len() >= 4
+            && (reg_concat == *et || reg_concat.contains(et.as_str())));
+
+        // Accept site_name match when the host root is consistent with site_name
+        let site_hit = !site_tokens.is_empty()
+            && site_tokens.iter().any(|st| st == et)
+            && host_labels.iter().any(|hl| {
+                site_tokens
+                    .iter()
+                    .any(|st| st == hl || (hl.len() >= 3 && st.starts_with(hl)))
+            });
+
+        if host_hit || site_hit {
+            matched += 1;
         }
     }
 
-    let forum = [
-        ("reddit.com", "Reddit"),
-        ("stackexchange.com", "StackExchange"),
-        ("stackoverflow.com", "StackOverflow"),
-        ("quora.com", "Quora"),
-        ("news.ycombinator.com", "Hacker News"),
-    ];
-
-    for (needle, label) in forum {
-        if host.contains(needle) {
-            return format!("[Forum Discussion - {}]", label);
-        }
-    }
-
-    // v5.2.0: Major news outlets
-    let news = [
-        ("bbc.com", "BBC"), ("bbc.co.uk", "BBC"),
-        ("reuters.com", "Reuters"), ("apnews.com", "AP News"),
-        ("nytimes.com", "NYT"), ("theguardian.com", "Guardian"),
-        ("cnn.com", "CNN"), ("bloomberg.com", "Bloomberg"),
-        ("washingtonpost.com", "WashPost"), ("wsj.com", "WSJ"),
-        ("aljazeera.com", "Al Jazeera"), ("economist.com", "Economist"),
-    ];
-
-    for (needle, label) in news {
-        if host.contains(needle) {
-            return format!("[High Trust - News - {}]", label);
-        }
-    }
-
-    // v5.2.0: Tech documentation
-    let tech_docs = [
-        ("docs.python.org", "Python Docs"),
-        ("developer.mozilla.org", "MDN"),
-        ("docs.rust-lang.org", "Rust Docs"),
-        ("docs.microsoft.com", "MS Docs"),
-        ("learn.microsoft.com", "MS Learn"),
-        ("docs.github.com", "GitHub Docs"),
-        ("docs.aws.amazon.com", "AWS Docs"),
-        ("cloud.google.com", "Google Cloud"),
-    ];
-
-    for (needle, label) in tech_docs {
-        if host.contains(needle) {
-            return format!("[High Trust - Docs - {}]", label);
-        }
-    }
-
-    // v5.2.0: Tech news/blogs
-    let tech_news = [
-        ("techcrunch.com", "TechCrunch"), ("arstechnica.com", "ArsTechnica"),
-        ("theverge.com", "The Verge"), ("wired.com", "Wired"),
-        ("zdnet.com", "ZDNet"), ("engadget.com", "Engadget"),
-    ];
-
-    for (needle, label) in tech_news {
-        if host.contains(needle) {
-            return format!("[Tech News - {}]", label);
-        }
-    }
-
-    format!("[General Web - {}]", host.trim_start_matches("www."))
+    (matched, entity_tokens.len())
 }
 
-/// v6.1.0: Numeric trust score for domain authority.
-/// Used as a modifier within ranking — not an override.
-/// Scores are config-driven and tunable against the eval set.
-///
-/// Returns a multiplier:
-///   .edu/.gov, Wikipedia, Nature, arXiv → 1.5
-///   StackOverflow, GitHub, MDN → 1.3
-///   Major news (BBC, Reuters, NYT) → 1.2
-///   Tech news/blogs → 1.1
-///   Forums (Reddit, Quora) → 0.8
-///   Unknown → 1.0
-pub fn trust_score(url: &str) -> f32 {
-    let host = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
-        .unwrap_or_default();
+/// Checks if a URL is an encyclopedia (e.g. Wikipedia/Britannica/Wikibooks)
+/// based on its registrable root and `/wiki/` path structure.
+pub fn is_encyclopedia_url(url: &str, site_name: Option<&str>) -> bool {
+    let (host, path) = crate::modes::parse_host_and_path(url);
+    if host.is_empty() {
+        return false;
+    }
+    let reg = crate::url_utils::registrable_domain(url);
+    let root = reg.split('.').next().unwrap_or("");
+    let site_lower = site_name.unwrap_or("").to_lowercase();
+    ((root == "wikipedia" || root == "britannica" || root == "wikibooks")
+        && (path.starts_with("/wiki/") || path.starts_with("/topic/") || path.len() > 1))
+        || site_lower == "wikipedia"
+}
 
-    // Tier 1: Institutional / academic (1.5)
-    if host.ends_with(".gov") || host.ends_with(".edu") {
-        return 1.5;
+/// Dynamic source credibility label for the LLM prompt context (zero hardcoded site lists).
+pub(crate) fn credibility_tag_for_source(
+    src: &SourceResult,
+    intel: Option<&QueryIntelligence>,
+) -> String {
+    let (host, path) = crate::modes::parse_host_and_path(&src.url);
+    let clean_host = host.trim_start_matches("www.");
+    if clean_host.is_empty() {
+        return "[Web Source - unknown]".to_string();
     }
 
-    // Tier 1: High-trust scholarly sources (1.5)
-    const SCHOLARLY: &[&str] = &[
-        "wikipedia.org", "nih.gov", "who.int", "nature.com",
-        "sciencedirect.com", "arxiv.org", "pubmed.ncbi",
-        "britannica.com", "plato.stanford.edu",
-    ];
-    for domain in SCHOLARLY {
-        if host.contains(domain) {
-            return 1.5;
+    if let Some(it) = intel {
+        let (matched, total) =
+            url_matches_query_entities(&src.url, src.site_name.as_deref(), &it.key_entities);
+        if matched > 0 {
+            if matched >= 2 || (matched == 1 && total == 1) {
+                return format!("[Official Primary Source - {}]", clean_host);
+            } else {
+                return format!("[Official Vendor Source - {}]", clean_host);
+            }
         }
     }
 
-    // Tier 2: Technical docs & Q&A (1.3)
-    const TECH_AUTHORITY: &[&str] = &[
-        "stackoverflow.com", "stackexchange.com", "github.com",
-        "developer.mozilla.org", "docs.python.org", "docs.rust-lang.org",
-        "docs.microsoft.com", "learn.microsoft.com", "docs.aws.amazon.com",
-        "cloud.google.com", "docs.github.com",
-    ];
-    for domain in TECH_AUTHORITY {
-        if host.contains(domain) {
-            return 1.3;
+    if crate::modes::is_institutional_host(&host) {
+        return format!("[High Trust - Institutional - {}]", clean_host);
+    }
+    if crate::modes::is_structural_docs_url(&host, &path) {
+        return format!("[Official Documentation - {}]", clean_host);
+    }
+    if is_encyclopedia_url(&src.url, src.site_name.as_deref()) {
+        return format!("[Reference Encyclopedia - {}]", clean_host);
+    }
+    if let Some(ref sn) = src.site_name {
+        let sn_trim = sn.trim();
+        if !sn_trim.is_empty() && !sn_trim.eq_ignore_ascii_case(clean_host) {
+            return format!("[Web Source - {} ({})]", sn_trim, clean_host);
+        }
+    }
+    format!("[General Web - {}]", clean_host)
+}
+
+pub(crate) fn credibility_tag(url: &str) -> String {
+    let dummy = SourceResult {
+        url: url.to_string(),
+        ..Default::default()
+    };
+    credibility_tag_for_source(&dummy, None)
+}
+
+/// Universal dynamic authority score combining:
+/// 1. Entity-to-domain primary source matching (`1.45x–1.75x`)
+/// 2. Third-party aggregator demotion (`0.78x`) whenever an official entity domain exists in the pool
+/// 3. Wikipedia/encyclopedia secondary default (`1.0x`), demoted on live/temporal updates (`0.85x`),
+///    and boosted (`1.35x`) ONLY on `Mode::Study` or `SemanticCategory::HistoryStatic`
+/// 4. Structural institutional (`.gov`/`.edu`/`.ac.*`/`.int`) and documentation (`docs.*`/`/docs/`) signals
+pub fn dynamic_authority_score(
+    url: &str,
+    site_name: Option<&str>,
+    title: &str,
+    intel: Option<&QueryIntelligence>,
+    mode: crate::modes::Mode,
+    has_official_in_pool: bool,
+) -> f64 {
+    use crate::query_intel::{QueryIntent, SemanticCategory};
+
+    let (host, path) = crate::modes::parse_host_and_path(url);
+    if host.is_empty() {
+        return 1.0;
+    }
+
+    // 1. Check Wikipedia / Encyclopedia rules first: secondary (1.0x) by default
+    if is_encyclopedia_url(url, site_name) {
+        if mode == crate::modes::Mode::Study {
+            return 1.35;
+        }
+        if let Some(it) = intel {
+            let wants_encyclopedia = it.key_entities.iter().any(|e| e.to_lowercase().contains("wikipedia"));
+            if wants_encyclopedia {
+                return 1.35;
+            }
+            if it.is_time_sensitive
+                || it.intent == QueryIntent::Temporal
+                || it.semantic_category == SemanticCategory::LiveNews
+                || (it.semantic_category == SemanticCategory::ProductOrg && it.is_time_sensitive)
+            {
+                return 0.85;
+            }
+            if it.semantic_category == SemanticCategory::HistoryStatic
+                && !it.is_time_sensitive
+            {
+                return 1.35;
+            }
+        }
+        return 1.0;
+    }
+
+    let is_inst = crate::modes::is_institutional_host(&host);
+    let is_docs = crate::modes::is_structural_docs_url(&host, &path);
+    let is_release_path = path.contains("/changelog")
+        || path.contains("/release-notes")
+        || path.contains("/releases")
+        || path.contains("/announcements")
+        || path.contains("/updates")
+        || path.starts_with("/blog")
+        || path.starts_with("/news");
+
+    // 2. Dynamic Entity-Host Matching
+    if let Some(it) = intel {
+        let (matched, total) = url_matches_query_entities(url, site_name, &it.key_entities);
+        if matched > 0 {
+            let mut mult: f64 = if matched >= 2 || (matched == 1 && total == 1) {
+                1.60
+            } else {
+                1.42
+            };
+            if is_docs || is_release_path || is_inst {
+                mult += 0.15;
+            }
+            return mult.min(1.75);
+        }
+
+        // 3. Dynamic Third-Party Aggregator Demotion when an official domain is already in the pool
+        if has_official_in_pool && !is_inst && total > 0 {
+            let hay = format!("{} {}", title.to_lowercase(), path);
+            let mentions_entity = it.key_entities.iter().any(|e| {
+                e.split_whitespace()
+                    .filter(|t| t.chars().count() >= 3)
+                    .any(|t| hay.contains(&t.to_lowercase()))
+            });
+            if mentions_entity {
+                return 0.78;
+            }
         }
     }
 
-    // Tier 3: Major news outlets (1.2)
-    const NEWS: &[&str] = &[
-        "bbc.com", "bbc.co.uk", "reuters.com", "apnews.com",
-        "nytimes.com", "theguardian.com", "bloomberg.com",
-        "washingtonpost.com", "wsj.com", "economist.com",
-    ];
-    for domain in NEWS {
-        if host.contains(domain) {
-            return 1.2;
-        }
+    // 4. Structural TLD & Documentation authority (zero hardcoded site lists)
+    if is_inst {
+        return 1.45;
+    }
+    if is_docs {
+        return 1.30;
     }
 
-    // Tier 3.5: Tech news (1.1)
-    const TECH_NEWS: &[&str] = &[
-        "techcrunch.com", "arstechnica.com", "theverge.com",
-        "wired.com", "zdnet.com",
-    ];
-    for domain in TECH_NEWS {
-        if host.contains(domain) {
-            return 1.1;
-        }
-    }
-
-    // Tier 4: Forums (0.8 — valuable but need cross-referencing)
-    const FORUMS: &[&str] = &[
-        "reddit.com", "quora.com", "news.ycombinator.com",
-    ];
-    for domain in FORUMS {
-        if host.contains(domain) {
-            return 0.8;
-        }
-    }
-
-    // Unknown → neutral
     1.0
+}
+
+/// Structural baseline trust score (zero hardcoded domain lists).
+/// Wikipedia is 1.0 (secondary) by default; institutional (.gov/.edu/.int/.ac.*)
+/// is 1.45; structural documentation (`docs.*`, `/docs/`, `/std/`) is 1.30.
+pub fn trust_score(url: &str) -> f32 {
+    dynamic_authority_score(url, None, "", None, crate::modes::Mode::Auto, false) as f32
 }
 
 fn ensure_trailing_slash(url: &str) -> String {
@@ -1988,10 +2166,45 @@ mod tests {
 
     #[test]
     fn trust_score_is_actually_wired_and_ranks_authorities_higher() {
-        // It was pub-but-never-called in v7.0.
+        // Structural institutional and documentation hosts outrank random blogs,
+        // while Wikipedia stays secondary (1.0) by default and boosts only on Study/HistoryStatic.
         assert!(trust_score("https://www.nih.gov/x") > trust_score("https://random-blog.test/x"));
-        assert!(trust_score("https://en.wikipedia.org/wiki/X") > trust_score("https://random-blog.test/x"));
         assert!(trust_score("https://docs.rust-lang.org/std/") > trust_score("https://random-blog.test/x"));
+        assert_eq!(trust_score("https://en.wikipedia.org/wiki/X"), 1.0);
+        let study_wiki = dynamic_authority_score(
+            "https://en.wikipedia.org/wiki/X",
+            Some("Wikipedia"),
+            "X",
+            None,
+            crate::modes::Mode::Study,
+            false,
+        );
+        assert!(study_wiki > 1.2);
+    }
+
+    #[test]
+    fn http_413_payload_overflow_auto_trims_context_preserving_question_footer() {
+        let err = "http_413: Request too large for model openai/gpt-oss-120b in organization org_123 on tokens per minute (TPM): Limit 8000, Requested 9655, please reduce your message size";
+        assert!(is_payload_too_large(err));
+        let ratio = parse_token_limit_ratio(err).expect("should parse Limit and Requested");
+        assert!(ratio > 0.50 && ratio < 0.75, "unexpected ratio: {ratio}");
+
+        let body = format!(
+            "[1] Source A\n{}\n\n[2] Source B\n{}\n\n---\n\nQuestion: What is the latest release?",
+            "alpha ".repeat(400),
+            "beta ".repeat(400)
+        );
+        let msgs = vec![
+            ChatMessage::system("System prompt"),
+            ChatMessage::user(body.clone()),
+        ];
+        let trimmed = shrink_messages_for_retry(&msgs, ratio);
+        assert!(trimmed[1].content.len() < body.len());
+        assert!(
+            trimmed[1].content.ends_with("Question: What is the latest release?"),
+            "Question footer must be preserved after auto-trim: {}",
+            trimmed[1].content
+        );
     }
 
     // ── v8.1: API key / config handling ──

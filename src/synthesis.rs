@@ -73,7 +73,11 @@ pub fn domain_rules(domain: Domain) -> &'static str {
 
 fn base_rules() -> &'static str {
     " Use ONLY the numbered sources — never add outside facts. Cite every factual \
-     statement with its source number like [3] or [3][7]. If the sources do not \
+     statement with its source number like [3] or [3][7]. Prefer [Official Primary Source] \
+     and [Official Vendor Source] citations over third-party sites or encyclopedias. \
+     Pay strict attention to each chunk's published date and any [Entry Date: YYYY-MM-DD]: \
+     anchor 'latest' or 'current' claims to the most recent entry date, and never present \
+     an older historical changelog entry as the newest release. If the sources do not \
      answer something, say so plainly rather than guessing."
 }
 
@@ -827,7 +831,7 @@ async fn synthesize_inner(
     let max_ctx = llm::chars_for_tokens(budget.context_tokens(out), sources)
         .min(profile.context_char_cap)
         .saturating_sub(crate::util::char_len(memory));
-    let ctx = llm::build_ranked_context(sources, max_ctx);
+    let ctx = llm::build_ranked_context_with_intel(sources, max_ctx, Some(intel));
     if ctx.is_empty() {
         return result(None, Some("llm_skipped: no usable source text".into()), 0);
     }

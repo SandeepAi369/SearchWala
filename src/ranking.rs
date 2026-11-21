@@ -300,15 +300,34 @@ pub fn rank_with_options(
             if chunk.trim().is_empty() {
                 continue;
             }
+            let inline_date = extract_chunk_inline_date(&chunk);
+            let (effective_published, annotated_text) = match (inline_date, source.published) {
+                (Some(d_inline), Some(d_page)) if (d_page - d_inline).num_days() > 7 => {
+                    let prefix = format!(
+                        "[Entry Date: {} | Page Modified: {}] ",
+                        d_inline.format("%Y-%m-%d"),
+                        d_page.format("%Y-%m-%d")
+                    );
+                    let tagged = if chunk.starts_with("[Entry Date:") {
+                        chunk
+                    } else {
+                        format!("{prefix}{chunk}")
+                    };
+                    (Some(d_inline), tagged)
+                }
+                (Some(d_inline), None) => (Some(d_inline), chunk),
+                (_, page_pub) => (page_pub, chunk),
+            };
+
             candidates.push(ChunkCandidate {
                 url: source.url.clone(),
                 title: source.title.clone(),
                 engine: source.engine.clone(),
-                text: chunk,
+                text: annotated_text,
                 rrf_score: url_rrf,
                 // Real value now, not the v7.0 hardcoded 0.7.
                 extraction_confidence: if source.confidence > 0.0 { source.confidence } else { 0.7 },
-                published: source.published,
+                published: effective_published,
                 language: source.language.clone(),
                 byline: source.byline.clone(),
                 site_name: source.site_name.clone(),
@@ -366,6 +385,14 @@ pub fn rank_with_options(
         }
     }
 
+    // ── Check if the pool contains at least one entity-matched official domain ──
+    let has_official_in_pool = match intel {
+        Some(it) if !it.key_entities.is_empty() => candidates.iter().any(|c| {
+            crate::llm::url_matches_query_entities(&c.url, c.site_name.as_deref(), &it.key_entities).0 > 0
+        }),
+        _ => false,
+    };
+
     // ── Score each chunk with BM25+ ──
     let query_phrase = query.trim().to_lowercase();
     let mut scored: Vec<(usize, f64)> = Vec::with_capacity(candidates.len());
@@ -421,25 +448,39 @@ pub fn rank_with_options(
         // half-confidence extraction is genuinely demoted.
         score *= 0.80 + 0.20 * candidates[idx].extraction_confidence.clamp(0.0, 1.0);
 
-        // ── Source trust prior ──
-        // `llm::trust_score` was fully implemented in v7.0 and NEVER CALLED
-        // (it is `pub`, which is why cargo did not warn). .gov/.edu/wikipedia
-        // and canonical docs now actually outrank random blogspam.
-        score *= crate::llm::trust_score(&candidates[idx].url) as f64;
+        // ── Universal dynamic authority & entity-domain affinity ──
+        // Matches query entities directly against host labels, demotes third-party
+        // aggregators when an official domain is in the pool, and keeps Wikipedia
+        // secondary (1.0x) by default unless Study or History/Static is active.
+        score *= crate::llm::dynamic_authority_score(
+            &candidates[idx].url,
+            candidates[idx].site_name.as_deref(),
+            &candidates[idx].title,
+            intel,
+            opts.mode,
+            has_official_in_pool,
+        );
 
-        // ── Mode / domain source preference (v8.1) ──
-        // Study prefers educational sources, Academic scholarly ones, and a
-        // domain prefers its authorities (health: WHO/NIH/NHS, ...).
+        // ── Structural mode / domain alignment ──
         score *= crate::modes::source_boost(&candidates[idx].url, opts.mode, opts.domain);
 
-        // ── Freshness prior (P2-2) ──
-        // Off for evergreen modes (Study, Academic) even on dated queries:
-        // recency bias there demotes the canonical explanation.
+        // ── Per-chunk freshness prior (P2-2 + Stage 2 inline chunk date decay) ──
+        // Off for evergreen modes (Study, Academic) even on dated queries.
         if let (true, Some(it)) = (opts.freshness, intel) {
+            let effective_intent = if it.is_time_sensitive
+                && matches!(
+                    it.semantic_category,
+                    crate::query_intel::SemanticCategory::LiveNews
+                        | crate::query_intel::SemanticCategory::ProductOrg
+                ) {
+                &crate::query_intel::QueryIntent::Temporal
+            } else {
+                &it.intent
+            };
             score *= freshness_multiplier(
                 candidates[idx].published,
                 it.is_time_sensitive,
-                &it.intent,
+                effective_intent,
             );
         }
 
@@ -1354,5 +1395,297 @@ mod tests {
     fn empty_input_is_handled() {
         assert!(compute_rrf_scores(&[]).is_empty());
         assert!(family_agreement(&[]).is_empty());
+    }
+}
+
+
+/// Parses month names (3-letter abbreviation or full English name) to 1..=12.
+fn parse_month_token(tok: &str) -> Option<u32> {
+    let clean = tok.trim_matches(|c: char| !c.is_ascii_alphabetic()).to_ascii_lowercase();
+    match clean.as_str() {
+        "jan" | "january" => Some(1),
+        "feb" | "february" => Some(2),
+        "mar" | "march" => Some(3),
+        "apr" | "april" => Some(4),
+        "may" => Some(5),
+        "jun" | "june" => Some(6),
+        "jul" | "july" => Some(7),
+        "aug" | "august" => Some(8),
+        "sep" | "sept" | "september" => Some(9),
+        "oct" | "october" => Some(10),
+        "nov" | "november" => Some(11),
+        "dec" | "december" => Some(12),
+        _ => None,
+    }
+}
+
+fn parse_day_token(tok: &str) -> Option<u32> {
+    let clean = tok
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_ascii_lowercase();
+    let digits = clean
+        .strip_suffix("st")
+        .or_else(|| clean.strip_suffix("nd"))
+        .or_else(|| clean.strip_suffix("rd"))
+        .or_else(|| clean.strip_suffix("th"))
+        .unwrap_or(&clean);
+    if digits.is_empty() || digits.len() > 2 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u32>().ok().filter(|&d| (1..=31).contains(&d))
+}
+
+fn parse_year_token(tok: &str, max_year: i32) -> Option<i32> {
+    let clean = tok.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    if clean.len() != 4 || !clean.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    clean
+        .parse::<i32>()
+        .ok()
+        .filter(|&y| (1995..=max_year).contains(&y))
+}
+
+/// Scans an individual chunk for inline date stamps (`YYYY-MM-DD`, `YYYY/MM/DD`,
+/// `Month DD, YYYY`, `DD Month YYYY`, or `Month YYYY`) so historical changelog
+/// entries on a recently modified page decay by their own entry date.
+pub fn extract_chunk_inline_date(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{Datelike, TimeZone, Utc};
+
+    let now = Utc::now();
+    let max_year = now.year() + 1;
+    let max_valid_dt = now + chrono::Duration::days(2);
+
+    let mut day_precision_dates: Vec<chrono::DateTime<Utc>> = Vec::new();
+    let mut month_precision_dates: Vec<chrono::DateTime<Utc>> = Vec::new();
+
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+
+    // 1. Check for ISO dates (YYYY-MM-DD or YYYY/MM/DD) inside tokens
+    for raw_tok in &tokens {
+        let clean = raw_tok.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '/');
+        if clean.len() >= 10 {
+            let head = &clean[..10];
+            let sep = head.as_bytes()[4];
+            if (sep == b'-' || sep == b'/') && head.as_bytes()[7] == sep {
+                if let (Ok(y), Ok(m), Ok(d)) = (
+                    head[0..4].parse::<i32>(),
+                    head[5..7].parse::<u32>(),
+                    head[8..10].parse::<u32>(),
+                ) {
+                    if (1995..=max_year).contains(&y) {
+                        if let Some(dt) = Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).single() {
+                            if dt <= max_valid_dt {
+                                day_precision_dates.push(dt);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Check for "Month DD, YYYY", "DD Month YYYY", and "Month YYYY"
+    let mut i = 0;
+    while i < tokens.len() {
+        if let Some(m) = parse_month_token(tokens[i]) {
+            // Pattern A: Month DD, YYYY
+            if i + 2 < tokens.len() {
+                if let (Some(d), Some(y)) = (
+                    parse_day_token(tokens[i + 1]),
+                    parse_year_token(tokens[i + 2], max_year),
+                ) {
+                    if let Some(dt) = Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).single() {
+                        if dt <= max_valid_dt {
+                            day_precision_dates.push(dt);
+                            i += 3;
+                            continue;
+                        }
+                    }
+                }
+            }
+            // Pattern B: Month YYYY (no day)
+            if i + 1 < tokens.len() {
+                if let Some(y) = parse_year_token(tokens[i + 1], max_year) {
+                    if let Some(dt) = Utc.with_ymd_and_hms(y, m, 15, 0, 0, 0).single() {
+                        if dt <= max_valid_dt {
+                            month_precision_dates.push(dt);
+                            i += 2;
+                            continue;
+                        }
+                    }
+                }
+            }
+        } else if let Some(d) = parse_day_token(tokens[i]) {
+            // Pattern C: DD Month YYYY
+            if i + 2 < tokens.len() {
+                if let (Some(m), Some(y)) = (
+                    parse_month_token(tokens[i + 1]),
+                    parse_year_token(tokens[i + 2], max_year),
+                ) {
+                    if let Some(dt) = Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).single() {
+                        if dt <= max_valid_dt {
+                            day_precision_dates.push(dt);
+                            i += 3;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    if !day_precision_dates.is_empty() {
+        day_precision_dates.into_iter().max()
+    } else {
+        month_precision_dates.into_iter().max()
+    }
+}
+
+#[cfg(test)]
+mod stage2_tests {
+    use super::*;
+    use chrono::{Datelike, Utc};
+
+    #[test]
+    fn extract_chunk_inline_date_parses_iso_and_month_formats() {
+        let current_year = Utc::now().year();
+        let past_year = current_year - 1;
+
+        let iso_chunk = format!("Release v1.20.0 shipped on {past_year}-02-19 with new features.");
+        let d1 = extract_chunk_inline_date(&iso_chunk).expect("should parse ISO date");
+        assert_eq!((d1.year(), d1.month(), d1.day()), (past_year, 2, 19));
+
+        let named_chunk = format!("Feb 19, {past_year} — Added sidebar workspace controls.");
+        let d2 = extract_chunk_inline_date(&named_chunk).expect("should parse Month DD, YYYY");
+        assert_eq!((d2.year(), d2.month(), d2.day()), (past_year, 2, 19));
+
+        let dmy_chunk = format!("Published 25 March {past_year} by the release team.");
+        let d3 = extract_chunk_inline_date(&dmy_chunk).expect("should parse DD Month YYYY");
+        assert_eq!((d3.year(), d3.month(), d3.day()), (past_year, 3, 25));
+    }
+
+    #[test]
+    fn older_changelog_chunk_on_recently_modified_page_gets_its_own_inline_date() {
+        let now = Utc::now();
+        let recent_page_modified = now - chrono::Duration::days(1);
+        let old_entry_dt = now - chrono::Duration::days(60);
+        let recent_entry_dt = now - chrono::Duration::days(2);
+
+        let old_iso = old_entry_dt.format("%Y-%m-%d").to_string();
+        let recent_iso = recent_entry_dt.format("%Y-%m-%d").to_string();
+
+        // Single rolling changelog page with two paragraphs separated by \n\n
+        let rolling_changelog = SourceResult {
+            url: "https://clickup.com/changelog".to_string(),
+            title: "ClickUp Changelog".to_string(),
+            extracted_text: format!(
+                "{old_iso} — ClickUp release update: legacy sidebar polish and old bug fixes. {}\n\n\
+                 {recent_iso} — ClickUp release update: brand new AI autopilot workflows and API v3. {}",
+                "Details about the older release update. ".repeat(15),
+                "Details about the newest release update. ".repeat(15)
+            ),
+            char_count: 1400,
+            engine: "brave".to_string(),
+            published: Some(recent_page_modified),
+            language: Some("en".to_string()),
+            byline: None,
+            site_name: Some("ClickUp".to_string()),
+            confidence: 0.95,
+            extractor: "dom_smoothie",
+        };
+
+        let mut intel = crate::query_intel::analyze_query("ClickUp latest release update");
+        intel.is_time_sensitive = true;
+        intel.intent = crate::query_intel::QueryIntent::Temporal;
+        intel.semantic_category = crate::query_intel::SemanticCategory::ProductOrg;
+        intel.key_entities = vec!["ClickUp".to_string()];
+
+        let ranked = rank_with_options(
+            "ClickUp latest release update",
+            &[rolling_changelog],
+            2,
+            None,
+            Some(&intel),
+            &RankOptions::default(),
+        );
+        assert_eq!(ranked.len(), 2);
+        // The recent chunk must rank #1 ahead of the 60-day-old chunk
+        assert!(
+            ranked[0].extracted_text.contains(&recent_iso),
+            "newest changelog chunk should rank #1, got: {}",
+            ranked[0].extracted_text
+        );
+        // The older chunk must have its effective published date overridden to old_entry_dt
+        assert!(
+            ranked[1].extracted_text.contains("[Entry Date:"),
+            "older chunk on modified page should carry [Entry Date:] provenance tag: {}",
+            ranked[1].extracted_text
+        );
+    }
+
+    #[test]
+    fn official_entity_domain_outranks_wikipedia_and_third_party_aggregators_dynamically() {
+        let now = Utc::now();
+        let mut intel = crate::query_intel::analyze_query("Google Antigravity latest update");
+        intel.is_time_sensitive = true;
+        intel.intent = crate::query_intel::QueryIntent::Temporal;
+        intel.semantic_category = crate::query_intel::SemanticCategory::ProductOrg;
+        intel.key_entities = vec!["Google Antigravity".to_string()];
+
+        let official_score = crate::llm::dynamic_authority_score(
+            "https://antigravity.google/changelog",
+            Some("Google Antigravity"),
+            "Google Antigravity Changelog",
+            Some(&intel),
+            crate::modes::Mode::Auto,
+            true,
+        );
+        let aggregator_score = crate::llm::dynamic_authority_score(
+            "https://releasebot.io/updates/google/antigravity",
+            Some("Releasebot"),
+            "Google Antigravity Release Notes",
+            Some(&intel),
+            crate::modes::Mode::Auto,
+            true,
+        );
+        let wiki_score = crate::llm::dynamic_authority_score(
+            "https://en.wikipedia.org/wiki/Google_Play",
+            Some("Wikipedia"),
+            "Google Play - Wikipedia",
+            Some(&intel),
+            crate::modes::Mode::Auto,
+            true,
+        );
+
+        assert!(
+            official_score >= 1.65,
+            "official entity domain should get primary boost: {official_score}"
+        );
+        assert!(
+            aggregator_score < 0.85,
+            "third-party aggregator should be demoted when official domain exists: {aggregator_score}"
+        );
+        assert!(
+            wiki_score <= 1.0,
+            "Wikipedia must stay secondary/demoted on live product queries: {wiki_score}"
+        );
+        assert!(official_score > aggregator_score * 2.0);
+        assert!(official_score > wiki_score * 1.6);
+
+        // Now verify another unseen entity (Stripe / ISRO) with zero hardcoded lists
+        let mut stripe_intel = crate::query_intel::analyze_query("Stripe webhook signature verification");
+        stripe_intel.key_entities = vec!["Stripe".to_string()];
+        let stripe_official = crate::llm::dynamic_authority_score(
+            "https://docs.stripe.com/webhooks/signatures",
+            Some("Stripe Docs"),
+            "Verify webhook signatures",
+            Some(&stripe_intel),
+            crate::modes::Mode::Auto,
+            true,
+        );
+        assert!(stripe_official >= 1.65, "docs.stripe.com should match entity 'Stripe': {stripe_official}");
+        let _ = now;
     }
 }

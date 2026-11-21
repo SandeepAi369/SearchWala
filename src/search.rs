@@ -530,10 +530,12 @@ pub async fn execute_search_full(
     // pages are read, too.
     let selection_score = |c: &Candidate| -> f64 {
         let mut s = c.rrf * modes::source_boost(&c.url, mode, domain);
-        // Engine-supplied abstracts are free to "scrape" and dense with
-        // evidence; prefer them where evidence quality matters most.
-        // Not Deep: there it floated off-topic papers above the canonical
-        // answer for factual questions (measured on "capital of France").
+        // Prioritize scraping official entity-matched domains even if only 1-2 engines returned them.
+        let (matched_ent, _) =
+            crate::llm::url_matches_query_entities(&c.url, None, &intel.key_entities);
+        if matched_ent > 0 {
+            s *= 1.45 + (0.15 * (matched_ent.min(2) as f64));
+        }
         if c.full_text.is_some() && matches!(mode, modes::Mode::Academic | modes::Mode::Study) {
             s *= 1.5;
         }
