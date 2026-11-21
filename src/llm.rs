@@ -1872,79 +1872,71 @@ pub(crate) fn build_intent_prompts(query: &str, context: &str, intel: &QueryInte
 
     let (intent_instruction, format_instruction) = match &intel.intent {
         QueryIntent::Factual => (
-            "Provide a thorough, well-structured, and authoritative answer. \
-             Lead directly with the core facts, then cover all key details, specifications, \
-             numbers, and context present in the evidence.".to_string(),
-            "Answer with 6-8 detailed bullet points (2-3 sentences each) covering all distinct facts, \
-             dates, specifications, and context from the sources, with [n] citations on every claim. \
-             End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
+            "Provide a clear, balanced, medium-length answer. Lead directly with the core fact, \
+             then cover the essential details, numbers, and specifications without bloated prose.".to_string(),
+            "Lead with a 1-2 sentence direct answer, then 3-5 concise bullets (1-2 crisp sentences each, \
+             ~150-250 words total) with [n] citations. Do not pad with tangential background.".to_string(),
         ),
 
         QueryIntent::Temporal => (
             format!(
-                "TODAY IS {}. The user wants CURRENT, UP-TO-DATE information. \
-                CRITICAL: Prioritize the NEWEST sources and [Official Primary Source] entries from {}. \
-                Cover ALL major recent updates, releases, dates, and technical details found in the sources.",
+                "TODAY IS {}. The user wants CURRENT, UP-TO-DATE information from {}. \
+                STRICT TEMPORAL SCOPE: If the question asks for a specific recent window ('past few days', \
+                'this week', 'today', 'right now', 'latest'), include ONLY updates whose published or \
+                [Entry Date] falls within that recent window. Strictly OMIT older items from months earlier \
+                (e.g., do not pad a recent news list with items from earlier quarters/months).",
                 now, year
             ),
-            "Answer with 6-9 comprehensive bullet points focused on the most recent updates and releases. \
-             Each bullet: 2-3 detailed sentences with exact dates, version/feature names, and [n] citations. \
-             End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
+            "Answer with 3-5 concise, high-signal bullet points (1-2 crisp sentences each, ~150-260 words total) \
+             covering ONLY the genuinely recent updates that match the user's timeframe. Give exact dates, \
+             version/feature names, and [n] citations. Never pad the list with old or undated filler.".to_string(),
         ),
 
         QueryIntent::Person => (
             format!(
-                "The user is asking about a SPECIFIC PERSON. \
-                Provide a comprehensive, detailed profile as of {}.", now
+                "The user is asking about a SPECIFIC PERSON. Provide a balanced, medium-length profile as of {}.",
+                now
             ),
-            "Structure your answer thoroughly:\n\
-             - **Current Role / Latest Activity**: What they are doing or releasing right now (with exact dates)\n\
-             - **Key Background & Career**: Major milestones and history\n\
-             - **Notable Achievements & Impact**: Specific works, numbers, and contributions\n\
-             Every claim cited with [n]. End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
+            "Keep the answer focused (~180-260 words) with concise bullets for:\n\
+             - **Current Role / Latest Activity**: What they did or released most recently (with exact dates) [n]\n\
+             - **Key Background & Achievements**: Core highlights and impact [n]".to_string(),
         ),
 
         QueryIntent::Comparison => (
-            "The user wants an in-depth COMPARISON. Provide a comprehensive, technically detailed \
-             analysis comparing all dimensions present in the evidence (architecture, performance/latency, \
-             limits, memory/CPU, languages/runtimes, pricing/egress, and integrations).".to_string(),
-            "Structure your answer thoroughly:\n\
-             - **Overview**: Clear summary of both subjects and their core architectures [n]\n\
-             - **Key Differences**: A detailed multi-row Markdown comparison table covering all technical dimensions in the sources (execution location, cold-start latency, network latency, runtime model, memory/CPU limits, languages, timeouts, costs, integrations) [n]\n\
-             - **Strengths**: Detailed bullet points for each side [n]\n\
-             - **Weaknesses / Trade-offs**: Detailed bullet points for each side [n]\n\
-             - **Bottom Line**: Concrete recommendation by workload [n]\n\
-             End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
+            "The user wants a clear, well-structured COMPARISON. Compare the core technical dimensions \
+             present in the evidence concisely without repetitive walls of text.".to_string(),
+            "Keep the comparison balanced and scannable (~220-350 words):\n\
+             - **Overview**: 2 crisp sentences defining both sides [n]\n\
+             - **Key Differences**: A compact Markdown comparison table of the core technical dimensions (execution location, cold-start & network latency, runtime model, memory/CPU limits, languages, cost) [n]\n\
+             - **Strengths & Trade-offs**: 2-3 concise bullets per side [n]\n\
+             - **Bottom Line**: 1-2 sentences on which to choose by workload [n]".to_string(),
         ),
 
         QueryIntent::HowTo => (
-            "The user wants PRACTICAL INSTRUCTIONS. Provide clear, actionable \
-             step-by-step guidance with exact commands, configurations, or steps.".to_string(),
-            "Provide comprehensive step-by-step instructions:\n\
-             1. Number each step clearly with 2-3 detailed, actionable sentences and [n] citations\n\
-             2. Include prerequisites, exact parameters, and practical tips/warnings\n\
-             End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
+            "The user wants PRACTICAL INSTRUCTIONS. Provide clear, actionable step-by-step guidance.".to_string(),
+            "Provide 3-6 concise numbered steps (1-2 crisp sentences per step, ~150-250 words total) \
+             with exact commands/parameters and [n] citations.".to_string(),
         ),
 
         QueryIntent::Research | QueryIntent::Navigational => (
             format!(
-                "Provide a comprehensive, in-depth, well-organized analysis covering all key dimensions, \
-                 historical milestones, mechanisms, and evidence in the sources. Date: {}.", now
+                "Provide a balanced, well-structured synthesis of the key facts, mechanisms, or historical \
+                 milestones without bloated prose. Date: {}.",
+                now
             ),
-            "Answer in 7-10 detailed, well-structured bullet points or sections (2-4 sentences each) \
-             covering all major facts, dates, strategies, and perspectives from the sources with [n] citations. \
-             End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
+            "Answer in 4-6 concise, well-structured bullet points (1-2 crisp sentences each, ~180-280 words total) \
+             covering the most important facts, dates, and strategies with [n] citations.".to_string(),
         ),
     };
 
     let system = format!(
         "[SYSTEM INSTRUCTIONS]\n\
-         You are SearchWala's precision synthesis engine. TODAY: {now} (Category: {cat}, Intent: {intent}).\n\
+         You are SearchWala's balanced synthesis engine. TODAY: {now} (Category: {cat}, Intent: {intent}).\n\
          {intent_instruction}\n\
          Follow this strict 3-step reasoning order:\n\
          1. VERIFY AUTHORITY & ENTRY DATE: Check each source's [Official Primary Source] / [Official Vendor Source] tag, published date, and any [Entry Date: YYYY-MM-DD] first.\n\
-         2. SEPARATE CURRENT STATE FROM HISTORY: Anchor 'latest' or 'current' claims to the newest [Entry Date] / published date from an official source; explicitly label older dated entries as earlier history.\n\
-         3. SYNTHESIZE THOROUGHLY WITH CITATIONS: Cover all distinct facts, numbers, dates, and technical specifications present in [VERIFIED EVIDENCE] thoroughly. Never invent facts outside the sources, and cite every claim with [n].{lang}",
+         2. ENFORCE TEMPORAL SCOPE: Anchor 'latest' or 'past few days' claims strictly to the requested recent window; omit older historical entries from months earlier rather than using them as padding.\n\
+         3. SYNTHESIZE BALANCED, CRISP FACTS: Keep Auto-mode responses balanced and medium-length (~150-280 words, or up to ~350 words with a table for comparisons). Use ONLY the provided sources and cite every claim with [n].{lang}",
         cat = intel.semantic_category,
         intent = intel.intent,
         lang = LANGUAGE_RULE

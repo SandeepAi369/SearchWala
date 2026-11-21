@@ -73,16 +73,19 @@ pub fn domain_rules(domain: Domain) -> &'static str {
 
 fn base_rules() -> &'static str {
     " Reasoning order: (1) Verify each source's [Official Primary Source] / [Official Vendor Source] \
-     tag, published date, and any [Entry Date: YYYY-MM-DD] first. (2) Separate current state \
-     (anchored to the newest official entry date) from older historical releases. (3) Extract \
-     dense, high-signal facts concisely without filler using ONLY the numbered sources, citing \
-     every claim as [n]. If the sources do not answer something, say so plainly."
+     tag, published date, and any [Entry Date: YYYY-MM-DD] first. (2) Enforce strict temporal scope: \
+     when the question asks for a recent timeframe ('past few days', 'this week', 'today', 'latest'), \
+     include ONLY facts from that window and strictly OMIT older items from months earlier rather \
+     than padding the list. (3) Synthesize clear, high-signal facts using ONLY the numbered sources, \
+     citing every claim as [n], with zero fluff or tangential padding. If the sources do not answer \
+     something, say so plainly."
 }
 
 pub fn concise_prompts(q: &str, ctx: &str, domain: Domain) -> (String, String) {
     let system = format!(
-        "[SYSTEM INSTRUCTIONS]\nYou are a fast, precise search assistant. TODAY: {}.{} Be brief: no preamble, \
-         no headings.{}{}",
+        "[SYSTEM INSTRUCTIONS]\nYou are a fast, precise search assistant. TODAY: {}.{} Keep the response \
+         crisp, factual, and proportional to the question: no preamble, no fluff, and no long \
+         narrative paragraphs.{}{}",
         llm::current_datetime_str(),
         base_rules(),
         domain_rules(domain),
@@ -90,8 +93,9 @@ pub fn concise_prompts(q: &str, ctx: &str, domain: Domain) -> (String, String) {
     );
     let user = format!(
         "[VERIFIED EVIDENCE]\n{ctx}\n\n---\n[USER QUESTION]\n{q}\n\n\
-         Give the direct answer in 1-2 sentences, then at most 4 short bullets of key \
-         supporting facts, each ending with its citation [n]. Maximum about 150 words."
+         Lead with a direct 1-2 sentence answer, followed by 2-4 crisp supporting bullets (each \
+         ending with [n]) as needed for accuracy. Do not omit essential facts, but keep every \
+         sentence tight (~100-180 words)."
     );
     (system, user)
 }
@@ -104,9 +108,11 @@ pub fn standard_prompts(q: &str, ctx: &str, intel: &QueryIntelligence, domain: D
 
 pub fn study_prompts(q: &str, ctx: &str, domain: Domain) -> (String, String) {
     let system = format!(
-        "You are an expert tutor writing study notes for a student. TODAY: {}.{} \
-         Explain from first principles, define every technical term the first time it \
-         appears, and keep formulas, units and dates exact. Where sources disagree, say so.{}{}",
+        "[SYSTEM INSTRUCTIONS]\nYou are an expert tutor writing study notes for a student. TODAY: {}.{} \
+         Adapt your depth to the topic's complexity: keep explanations concise and direct for \
+         straightforward definitions or facts, and use clear, step-by-step explanations when \
+         teaching deeper concepts. Define technical terms clearly and keep formulas, units and \
+         dates exact.{}{}",
         llm::current_datetime_str(),
         base_rules(),
         domain_rules(domain),
