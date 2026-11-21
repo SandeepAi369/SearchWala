@@ -781,23 +781,26 @@ fn is_retryable(err: &str) -> bool {
         || err.contains("response_read_error")
 }
 
-/// Detects HTTP 413 or token/context-limit overflow errors that can be recovered
-/// immediately by trimming the lowest-ranked context chunks from the prompt.
+/// Detects genuine single-request HTTP 413 or context_length_exceeded errors.
+/// Rolling-window HTTP 429 rate limits ("Used X / Limit Y, try again in Zs")
+/// must NEVER be treated as payload-too-large (they are handled by waiting, not shrinking).
 pub(crate) fn is_payload_too_large(err: &str) -> bool {
     if err.starts_with("http_413") {
         return true;
     }
+    if !err.starts_with("http_400") {
+        return false;
+    }
     let lower = err.to_ascii_lowercase();
-    (err.starts_with("http_400") || err.starts_with("http_429"))
-        && (lower.contains("request too large")
-            || lower.contains("context_length_exceeded")
-            || lower.contains("maximum context length")
-            || lower.contains("prompt is too long")
-            || (lower.contains("limit") && lower.contains("requested") && lower.contains("tokens")))
+    lower.contains("request too large")
+        || lower.contains("context_length_exceeded")
+        || lower.contains("maximum context length")
+        || lower.contains("prompt is too long")
+        || lower.contains("reduce your message size")
 }
 
 /// Parses provider error strings such as "Limit 8000, Requested 9655" to compute
-/// an exact safe keep-ratio, falling back to 0.62 when no numbers are present.
+/// an exact safe keep-ratio, falling back to 0.72 when no numbers are present.
 pub(crate) fn parse_token_limit_ratio(err: &str) -> Option<f64> {
     let lower = err.to_ascii_lowercase();
     let limit_pos = lower.find("limit")?;
@@ -815,10 +818,31 @@ pub(crate) fn parse_token_limit_ratio(err: &str) -> Option<f64> {
     let limit_val = parse_first_num(&lower[limit_pos..])?;
     let req_val = parse_first_num(&lower[req_pos..])?;
     if req_val > limit_val {
-        Some(((limit_val as f64 / req_val as f64) * 0.80).clamp(0.25, 0.82))
+        Some(((limit_val as f64 / req_val as f64) * 0.85).clamp(0.35, 0.88))
     } else {
         None
     }
+}
+
+/// Parses provider rate-limit wait hints such as "Please try again in 3.57s"
+/// or "try again in 457.5ms" from HTTP 429 error messages.
+pub(crate) fn parse_retry_after_delay(err: &str) -> Option<Duration> {
+    let lower = err.to_ascii_lowercase();
+    let marker = "try again in ";
+    let pos = lower.find(marker)?;
+    let after = &lower[pos + marker.len()..];
+    let num_str: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let val = num_str.parse::<f64>().ok()?;
+    let unit_rest = after[num_str.len()..].trim_start();
+    let ms = if unit_rest.starts_with("ms") {
+        val as u64
+    } else {
+        (val * 1000.0) as u64
+    };
+    Some(Duration::from_millis((ms + 300).clamp(300, 15_000)))
 }
 
 /// Process-wide cache of dynamically discovered provider/model token limits
@@ -845,12 +869,13 @@ pub fn learned_token_limit(provider: &str, model: &str) -> Option<usize> {
         .and_then(|m| m.get(&key).copied())
 }
 
-/// Records a discovered provider token limit (keeping an 82% safety margin for single-call prompts).
+/// Records a discovered provider token limit (keeping a 92% window so single-call
+/// prompts can pack ~5,400-5,600 tokens / ~20,500 chars on an 8,000 TPM tier).
 pub fn record_learned_token_limit(provider: &str, model: &str, raw_limit_tokens: usize) {
     if !(1_500..=500_000).contains(&raw_limit_tokens) {
         return;
     }
-    let safe_window = ((raw_limit_tokens * 82) / 100).max(2_000);
+    let safe_window = ((raw_limit_tokens * 92) / 100).max(2_000);
     let key = provider_model_key(provider, model);
     if let Ok(mut map) = LEARNED_TOKEN_LIMITS.lock() {
         let prev = map.get(&key).copied();
@@ -974,11 +999,12 @@ pub(crate) async fn call_llm_retrying(
                 if attempt == ATTEMPTS || !is_retryable(&last) {
                     break;
                 }
+                let wait_dur = parse_retry_after_delay(&last).unwrap_or(delay);
                 tracing::warn!(
-                    "LLM attempt {}/{} failed ({}), retrying in {:?}",
-                    attempt, ATTEMPTS, last, delay
+                    "LLM attempt {}/{} hit retryable limit ({}), waiting {:?} with full context intact",
+                    attempt, ATTEMPTS, last, wait_dur
                 );
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep(wait_dur).await;
                 delay = (delay * 2).min(Duration::from_secs(8));
             }
         }
@@ -1680,6 +1706,15 @@ pub(crate) fn post_process_answer(raw: &str, _query: &str) -> String {
         }
     }
 
+    // 3. Normalize full-width citation brackets (e.g. 【5】 or ［5］ -> [5])
+    if answer.contains('【') || answer.contains('】') || answer.contains('［') || answer.contains('］') {
+        answer = answer
+            .replace('【', "[")
+            .replace('】', "]")
+            .replace('［', "[")
+            .replace('］', "]");
+    }
+
     answer.trim().to_string()
 }
 
@@ -1837,71 +1872,68 @@ pub(crate) fn build_intent_prompts(query: &str, context: &str, intel: &QueryInte
 
     let (intent_instruction, format_instruction) = match &intel.intent {
         QueryIntent::Factual => (
-            "Give a DIRECT, CONCISE answer to the specific question. \
-            Lead with the KEY FACT the user is looking for. \
-            Then expand with supporting context and details.".to_string(),
-            "Answer with 3-5 focused bullet points. Each bullet: 1-2 sentences with [n] citations. \
-             Start with the direct answer, then add context.".to_string(),
+            "Provide a thorough, well-structured, and authoritative answer. \
+             Lead directly with the core facts, then cover all key details, specifications, \
+             numbers, and context present in the evidence.".to_string(),
+            "Answer with 6-8 detailed bullet points (2-3 sentences each) covering all distinct facts, \
+             dates, specifications, and context from the sources, with [n] citations on every claim. \
+             End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
         ),
 
         QueryIntent::Temporal => (
             format!(
                 "TODAY IS {}. The user wants CURRENT, UP-TO-DATE information. \
-                CRITICAL: Prioritize the NEWEST sources. \
-                If a source is from {} or later, it takes priority. \
-                Flag ANY information that appears outdated. \
-                If sources conflict on dates/facts, go with the most recent one.",
+                CRITICAL: Prioritize the NEWEST sources and [Official Primary Source] entries from {}. \
+                Cover ALL major recent updates, releases, dates, and technical details found in the sources.",
                 now, year
             ),
-            "Answer with 5-8 bullet points focused on the MOST CURRENT information. \
-             Each bullet: 2-3 sentences with [n] citations. \
-             If the user asks about 'latest', 'current', or 'now', ensure your answer \
-             reflects the absolute most recent data. Explicitly mention dates when available.".to_string(),
+            "Answer with 6-9 comprehensive bullet points focused on the most recent updates and releases. \
+             Each bullet: 2-3 detailed sentences with exact dates, version/feature names, and [n] citations. \
+             End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
         ),
 
         QueryIntent::Person => (
             format!(
                 "The user is asking about a SPECIFIC PERSON. \
-                Provide a comprehensive but focused profile. Date: {}.", now
+                Provide a comprehensive, detailed profile as of {}.", now
             ),
-            "Structure your answer as:\n\
-             - **Current Role/Position**: What they do NOW\n\
-             - **Key Background**: Brief career/life highlights\n\
-             - **Notable Achievements**: What they're known for\n\
-             - **Recent Activity**: What they've done recently\n\
-             Each point with [n] citations.".to_string(),
+            "Structure your answer thoroughly:\n\
+             - **Current Role / Latest Activity**: What they are doing or releasing right now (with exact dates)\n\
+             - **Key Background & Career**: Major milestones and history\n\
+             - **Notable Achievements & Impact**: Specific works, numbers, and contributions\n\
+             Every claim cited with [n]. End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
         ),
 
         QueryIntent::Comparison => (
-            "The user wants a COMPARISON. Provide a balanced, structured analysis \
-             comparing the subjects. Be fair to both sides.".to_string(),
-            "Structure your answer as a comparison:\n\
-             - **Overview**: Brief intro to both subjects\n\
-             - **Key Differences**: The most important distinctions\n\
-             - **Strengths**: What each excels at\n\
-             - **Weaknesses**: Where each falls short\n\
-             - **Bottom Line**: Summary recommendation if applicable\n\
-             Each point with [n] citations.".to_string(),
+            "The user wants an in-depth COMPARISON. Provide a comprehensive, technically detailed \
+             analysis comparing all dimensions present in the evidence (architecture, performance/latency, \
+             limits, memory/CPU, languages/runtimes, pricing/egress, and integrations).".to_string(),
+            "Structure your answer thoroughly:\n\
+             - **Overview**: Clear summary of both subjects and their core architectures [n]\n\
+             - **Key Differences**: A detailed multi-row Markdown comparison table covering all technical dimensions in the sources (execution location, cold-start latency, network latency, runtime model, memory/CPU limits, languages, timeouts, costs, integrations) [n]\n\
+             - **Strengths**: Detailed bullet points for each side [n]\n\
+             - **Weaknesses / Trade-offs**: Detailed bullet points for each side [n]\n\
+             - **Bottom Line**: Concrete recommendation by workload [n]\n\
+             End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
         ),
 
         QueryIntent::HowTo => (
             "The user wants PRACTICAL INSTRUCTIONS. Provide clear, actionable \
-             step-by-step guidance. Be specific and concrete.".to_string(),
-            "Provide step-by-step instructions:\n\
-             1. Number each step clearly\n\
-             2. Each step: 1-2 sentences, practical and actionable\n\
-             3. Include prerequisites or requirements first\n\
-             4. Add tips or warnings where relevant\n\
-             5. Cite sources with [n] for verification".to_string(),
+             step-by-step guidance with exact commands, configurations, or steps.".to_string(),
+            "Provide comprehensive step-by-step instructions:\n\
+             1. Number each step clearly with 2-3 detailed, actionable sentences and [n] citations\n\
+             2. Include prerequisites, exact parameters, and practical tips/warnings\n\
+             End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
         ),
 
         QueryIntent::Research | QueryIntent::Navigational => (
             format!(
-                "Provide a comprehensive, well-organized analysis. Date: {}.", now
+                "Provide a comprehensive, in-depth, well-organized analysis covering all key dimensions, \
+                 historical milestones, mechanisms, and evidence in the sources. Date: {}.", now
             ),
-            "Answer in 6-10 detailed bullet points covering all aspects. \
-             Each bullet: 2-3 sentences with [n] citations. \
-             Cover multiple perspectives where relevant.".to_string(),
+            "Answer in 7-10 detailed, well-structured bullet points or sections (2-4 sentences each) \
+             covering all major facts, dates, strategies, and perspectives from the sources with [n] citations. \
+             End with: **Sources Used:** listing the cited [n] <url> entries.".to_string(),
         ),
     };
 
@@ -1912,7 +1944,7 @@ pub(crate) fn build_intent_prompts(query: &str, context: &str, intel: &QueryInte
          Follow this strict 3-step reasoning order:\n\
          1. VERIFY AUTHORITY & ENTRY DATE: Check each source's [Official Primary Source] / [Official Vendor Source] tag, published date, and any [Entry Date: YYYY-MM-DD] first.\n\
          2. SEPARATE CURRENT STATE FROM HISTORY: Anchor 'latest' or 'current' claims to the newest [Entry Date] / published date from an official source; explicitly label older dated entries as earlier history.\n\
-         3. EXTRACT DENSE CITED FACTS: Use ONLY the provided sources, avoid filler, and cite every factual statement with [n].{lang}",
+         3. SYNTHESIZE THOROUGHLY WITH CITATIONS: Cover all distinct facts, numbers, dates, and technical specifications present in [VERIFIED EVIDENCE] thoroughly. Never invent facts outside the sources, and cite every claim with [n].{lang}",
         cat = intel.semantic_category,
         intent = intel.intent,
         lang = LANGUAGE_RULE
@@ -2416,10 +2448,23 @@ mod tests {
 
         let learned = learned_token_limit("groq", "test-dynamic-model-120b")
             .expect("should learn token limit dynamically");
-        assert_eq!(learned, (8000 * 82) / 100);
+        assert_eq!(learned, (8000 * 92) / 100);
 
         let budget = ContextBudget::for_config_with_override(&test_cfg, None, None);
         assert_eq!(budget.max_tokens, learned);
+
+        // Rolling-window HTTP 429 must NEVER be misclassified as payload-too-large (HTTP 413)
+        let rate_limit_429 = "http_429: Rate limit reached for model openai/gpt-oss-120b on tokens per minute (TPM): Limit 8000, Used 6773, Requested 4161. Please try again in 3.57s.";
+        assert!(
+            !is_payload_too_large(rate_limit_429),
+            "HTTP 429 rolling rate limit must never trigger context shrinking"
+        );
+        let delay = parse_retry_after_delay(rate_limit_429).expect("should parse 3.57s retry delay");
+        assert!(delay >= Duration::from_millis(3570) && delay <= Duration::from_millis(4500));
+
+        // Full-width citations 【5】 normalize cleanly to [5]
+        let norm = post_process_answer("Latest video released on Nov 20, 2026 【5】.", "q");
+        assert_eq!(norm, "Latest video released on Nov 20, 2026 [5].");
     }
 
     #[test]

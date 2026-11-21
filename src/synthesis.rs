@@ -267,7 +267,12 @@ pub fn reduce_prompts(
 /// an answer citing [5] and [7] was judged "uncited" and triggered a wasted
 /// retry call.
 pub fn has_any_citation(answer: &str) -> bool {
-    let b = answer.as_bytes();
+    let normalized = answer
+        .replace('【', "[")
+        .replace('】', "]")
+        .replace('［', "[")
+        .replace('］', "]");
+    let b = normalized.as_bytes();
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'[' {
@@ -821,7 +826,7 @@ async fn adaptive_batch_distill(
     }
 
     let mut map_cfg = cfg.clone();
-    map_cfg.max_output_tokens = Some(550);
+    map_cfg.max_output_tokens = Some(1_200);
     map_cfg.timeout_ms = Some(cfg.timeout_ms.unwrap_or(12_000).min(12_000));
 
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(3));
@@ -912,8 +917,20 @@ async fn synthesize_inner(
         return map_reduce(query, &cfg, sources, intel, profile, memory, temp_db, session_id).await;
     }
 
+    // On TPM-capped cloud providers (e.g. learned safe_window <= 20,000 from an 8,000 TPM tier),
+    // prioritize a single rich call packing ~73% of the TPM window (~5,400 source tokens,
+    // which is ~20,500-21,500 English chars or ~6,500 Devanagari chars) rather than reserving
+    // 3,000 output tokens against the input prompt budget.
+    let learned_tpm = llm::learned_token_limit(&cfg.provider, &cfg.model);
+    let is_tight_tpm_tier = learned_tpm.map(|lim| lim <= 20_000).unwrap_or(false);
+    let source_token_budget = if is_tight_tpm_tier {
+        ((budget.max_tokens * 73) / 100).max(1_200)
+    } else {
+        budget.context_tokens(out)
+    };
+
     // Memory shares the window with the sources.
-    let max_ctx = llm::chars_for_tokens(budget.context_tokens(out), sources)
+    let max_ctx = llm::chars_for_tokens(source_token_budget, sources)
         .min(profile.context_char_cap)
         .saturating_sub(crate::util::char_len(memory));
     let mut ctx = llm::build_ranked_context_with_intel(sources, max_ctx, Some(intel));
@@ -922,12 +939,12 @@ async fn synthesize_inner(
     }
 
     // ── Adaptive Threshold Batch Distillation ──
-    // When compressed evidence across ranked sources still overflows the model's
-    // single-call token budget (fitting < 65% of ranked chunks on a >= 6-chunk pool),
-    // split the sources into safe token-sized batches, run a fast micro-extraction
-    // pass per batch to distill dated facts + [n] citations, and synthesize from the
-    // distilled facts so no high-value evidence is lost to token truncation.
-    if profile.synthesis != Synthesis::Concise
+    // Disabled on tight TPM tiers (<= 20,000 TPM) because firing multiple parallel
+    // map batches burns the rolling 60-second TPM quota before the final synthesis call.
+    // On high-TPM providers (> 20,000 tokens), distills overflowing pools into cited facts.
+    if !is_tight_tpm_tier
+        && budget.max_tokens > 20_000
+        && profile.synthesis != Synthesis::Concise
         && sources.len() >= 6
         && ctx.citation_map.len() * 100 < sources.len() * 65
     {

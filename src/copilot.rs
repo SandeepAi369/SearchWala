@@ -221,9 +221,9 @@ pub fn parse_semantic_plan(
     let primary_year_clean = neutralize_stale_years(raw_user_query, raw_primary);
     let primary_query = enforce_entity_retention(raw_user_query, &primary_year_clean, &entities);
 
-    let intent = parsed.intent.as_deref().and_then(parse_intent_label);
+    let raw_intent = parsed.intent.as_deref().and_then(parse_intent_label);
     let category = SemanticCategory::from_label(&parsed.category).unwrap_or_else(|| {
-        let fallback_intent = intent.clone().unwrap_or(QueryIntent::Factual);
+        let fallback_intent = raw_intent.clone().unwrap_or(QueryIntent::Factual);
         SemanticCategory::default_for_intent(
             &fallback_intent,
             parsed.is_time_sensitive.unwrap_or(false),
@@ -232,17 +232,32 @@ pub fn parse_semantic_plan(
     let is_time_sensitive =
         parsed.is_time_sensitive.unwrap_or(false) || category == SemanticCategory::LiveNews;
 
+    // Coerce intent so History/Static "how did..." questions never trigger DIY HowTo tutorials,
+    // and time-sensitive / Live News factual questions get the rich Temporal synthesis format.
+    let intent = match raw_intent {
+        Some(QueryIntent::HowTo) if category == SemanticCategory::HistoryStatic => {
+            Some(QueryIntent::Research)
+        }
+        Some(QueryIntent::Factual) if is_time_sensitive => Some(QueryIntent::Temporal),
+        other => other,
+    };
+
     let mut sub_queries = Vec::new();
     let mut seen = HashSet::new();
     seen.insert(primary_query.to_lowercase());
 
+    let primary_entity_slice: &[String] = if entities.is_empty() {
+        &[]
+    } else {
+        &entities[..1]
+    };
     for sq in parsed.sub_queries {
         let clean = sq.trim().trim_matches(['"', '\'', '`']).trim();
         if clean.chars().count() < 3 || clean.chars().count() > 140 {
             continue;
         }
         let year_clean = neutralize_stale_years(raw_user_query, clean);
-        let retained = enforce_entity_retention(raw_user_query, &year_clean, &entities);
+        let retained = enforce_entity_retention(raw_user_query, &year_clean, primary_entity_slice);
         if seen.insert(retained.to_lowercase()) {
             sub_queries.push(retained);
             if sub_queries.len() >= max_sub_queries.max(1) {
@@ -303,9 +318,9 @@ pub async fn understand_query(
         "You are SearchWala's Semantic Query Understanding Engine. Today's live date is {today_iso} (current year {current_year}).\n\
          Analyze the user's question (and optional prior conversation turns) and output ONLY a single valid JSON object with these keys:\n\
          - \"category\": exactly one of \"Product/Org\", \"Live News\", \"History/Static\", or \"General Everyday\"\n\
-         - \"intent\": one of \"factual\", \"temporal\", \"person\", \"comparison\", \"howto\", \"navigational\", or \"research\"\n\
+         - \"intent\": one of \"factual\", \"temporal\", \"person\", \"comparison\", \"howto\", \"navigational\", or \"research\" (use \"howto\" ONLY for practical step-by-step tutorials the user performs themselves; historical questions like 'how did X build Y' must use \"research\", and latest/recent update questions must use \"temporal\")\n\
          - \"is_time_sensitive\": boolean (true if the user asks for latest, recent, current, or time-dependent facts as of {current_year})\n\
-         - \"entities\": array of canonical subject/brand/product/person/organization names mentioned in the question\n\
+         - \"entities\": array of SPECIFIC proper named entities ONLY (specific companies, products, people, agencies, or places; leave empty [] for general topic questions without a specific proper noun)\n\
          - \"primary_query\": concise, high-signal search query string. Fix obvious voice-dictation or phonetic spelling errors in context, strip conversational filler, resolve pronouns from prior turns ONLY if the question refers to them, and NEVER drop any entity named in the user's question. When a year is needed for recency, always use {current_year}\n\
          - \"sub_queries\": array of 1 to {max_sub} distinct search queries covering complementary angles. If the question is in a non-Latin script and asks about global science, software, or international topics, include both a native-script query and an English technical query\n\
          - \"corrective_query\": a targeted search query aimed at official primary sources or documentation for the extracted entities if initial search results are insufficient",
@@ -482,5 +497,21 @@ mod tests {
                 .unwrap_or("")
                 .contains(&current_year.to_string())
         );
+    }
+
+    #[test]
+    fn history_static_never_gets_howto_intent() {
+        let raw_q = "how did chhatrapati shivaji maharaj build the maratha empire and what guerrilla warfare tactics did he use";
+        let llm_json = r#"{
+            "category": "History/Static",
+            "intent": "howto",
+            "is_time_sensitive": false,
+            "entities": ["Chhatrapati Shivaji Maharaj", "Maratha Empire"],
+            "primary_query": "Chhatrapati Shivaji Maharaj Maratha Empire guerrilla warfare tactics",
+            "sub_queries": ["Shivaji Maharaj Ganimi Kava military strategy forts"]
+        }"#;
+        let plan = parse_semantic_plan(llm_json, raw_q, 2).expect("should parse plan");
+        assert_eq!(plan.category, SemanticCategory::HistoryStatic);
+        assert_eq!(plan.intent, Some(QueryIntent::Research));
     }
 }

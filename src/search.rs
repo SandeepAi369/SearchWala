@@ -287,6 +287,14 @@ pub async fn execute_search_full(
         if plan.is_time_sensitive {
             intel.is_time_sensitive = true;
         }
+        if intel.semantic_category == query_intel::SemanticCategory::HistoryStatic
+            && intel.intent == query_intel::QueryIntent::HowTo
+        {
+            intel.intent = query_intel::QueryIntent::Research;
+        }
+        if intel.is_time_sensitive && intel.intent == query_intel::QueryIntent::Factual {
+            intel.intent = query_intel::QueryIntent::Temporal;
+        }
         intel.boost_news_engines = intel.is_time_sensitive
             || intel.intent == query_intel::QueryIntent::Temporal
             || intel.semantic_category == query_intel::SemanticCategory::LiveNews;
