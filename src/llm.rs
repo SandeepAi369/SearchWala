@@ -101,19 +101,13 @@ impl ContextBudget {
             let t = ollama_ctx.unwrap_or(LOCAL_SERVER_DEFAULT_TOKENS);
             return Self { max_tokens: t.clamp(2_000, 900_000) };
         }
-        // Providers with strict per-request/per-minute token caps on standard
-        // tiers (e.g. Groq 8,000 TPM limit) get a safe default window so
-        // prompt + output fit inside one request without triggering HTTP 413.
-        let is_tpm_capped_provider = cfg.provider.eq_ignore_ascii_case("groq")
-            || cfg
-                .base_url
-                .as_deref()
-                .map(|u| u.to_ascii_lowercase().contains("groq.com"))
-                .unwrap_or(false);
-        if is_tpm_capped_provider {
-            return Self { max_tokens: 6_500 };
+        let base_budget = Self::for_model_with_override(&cfg.model, None);
+        if let Some(learned_max) = learned_token_limit(&cfg.provider, &cfg.model) {
+            return Self {
+                max_tokens: base_budget.max_tokens.min(learned_max).clamp(2_000, 900_000),
+            };
         }
-        Self::for_model_with_override(&cfg.model, None)
+        base_budget
     }
 
     pub fn for_model(model: &str) -> Self {
@@ -827,8 +821,90 @@ pub(crate) fn parse_token_limit_ratio(err: &str) -> Option<f64> {
     }
 }
 
+/// Process-wide cache of dynamically discovered provider/model token limits
+/// learned from live HTTP response headers (`x-ratelimit-limit-tokens`, etc.)
+/// or provider error messages (`Limit XXXX, Requested YYYY`).
+static LEARNED_TOKEN_LIMITS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn provider_model_key(provider: &str, model: &str) -> String {
+    format!(
+        "{}:{}",
+        provider.trim().to_ascii_lowercase(),
+        model.trim().to_ascii_lowercase()
+    )
+}
+
+/// Returns any dynamically learned safe token window for `(provider, model)`.
+pub fn learned_token_limit(provider: &str, model: &str) -> Option<usize> {
+    let key = provider_model_key(provider, model);
+    LEARNED_TOKEN_LIMITS
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).copied())
+}
+
+/// Records a discovered provider token limit (keeping an 82% safety margin for single-call prompts).
+pub fn record_learned_token_limit(provider: &str, model: &str, raw_limit_tokens: usize) {
+    if !(1_500..=500_000).contains(&raw_limit_tokens) {
+        return;
+    }
+    let safe_window = ((raw_limit_tokens * 82) / 100).max(2_000);
+    let key = provider_model_key(provider, model);
+    if let Ok(mut map) = LEARNED_TOKEN_LIMITS.lock() {
+        let prev = map.get(&key).copied();
+        if prev != Some(safe_window) {
+            tracing::info!(
+                "Learned dynamic token limit for {}: raw={} -> safe_window={}",
+                key,
+                raw_limit_tokens,
+                safe_window
+            );
+            map.insert(key, safe_window);
+        }
+    }
+}
+
+/// Inspects standard provider HTTP rate-limit headers to learn TPM / token ceilings dynamically.
+fn learn_rate_limits_from_headers(config: &LlmConfig, headers: &reqwest::header::HeaderMap) {
+    for h_name in [
+        "x-ratelimit-limit-tokens",
+        "x-ratelimit-limit-tokens_usage_based",
+        "anthropic-ratelimit-tokens-limit",
+        "anthropic-ratelimit-input-tokens-limit",
+    ] {
+        if let Some(val) = headers.get(h_name).and_then(|v| v.to_str().ok()) {
+            let digits: String = val
+                .trim()
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if let Ok(limit_tokens) = digits.parse::<usize>() {
+                record_learned_token_limit(&config.provider, &config.model, limit_tokens);
+                break;
+            }
+        }
+    }
+}
+
+/// Inspects an error string for `"Limit XXXX, Requested YYYY"` and records the discovered limit.
+pub(crate) fn learn_rate_limit_from_error(config: &LlmConfig, err: &str) {
+    let lower = err.to_ascii_lowercase();
+    if let Some(limit_pos) = lower.find("limit") {
+        let num_str: String = lower[limit_pos..]
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if let Ok(limit_tokens) = num_str.parse::<usize>() {
+            record_learned_token_limit(&config.provider, &config.model, limit_tokens);
+        }
+    }
+}
+
 /// Trims the source context inside `messages` while preserving the trailing
-/// question/instruction block (`\n---\n...`) so a retry fits the provider's TPM cap.
+/// `[USER QUESTION]` or `\n---\n` block so a retry fits the provider's TPM cap.
 pub(crate) fn shrink_messages_for_retry(messages: &[ChatMessage], ratio: f64) -> Vec<ChatMessage> {
     let keep_ratio = ratio.clamp(0.25, 0.85);
     messages
@@ -838,13 +914,14 @@ pub(crate) fn shrink_messages_for_retry(messages: &[ChatMessage], ratio: f64) ->
                 return m.clone();
             }
             let content = &m.content;
-            // Preserve the trailing "\n---\n" question block if present
-            let new_content = if let Some(sep_idx) = content.rfind("\n---\n") {
+            let footer_idx = content
+                .rfind("\n---\n")
+                .or_else(|| content.rfind("\n[USER QUESTION]"));
+            let new_content = if let Some(sep_idx) = footer_idx {
                 let (sources_part, question_footer) = content.split_at(sep_idx);
                 let target_chars =
                     ((crate::util::char_len(sources_part) as f64) * keep_ratio) as usize;
                 let truncated = crate::util::truncate_chars(sources_part, target_chars.max(600));
-                // Back up to the last complete source paragraph boundary if possible
                 let clean_sources = truncated
                     .rfind("\n\n[")
                     .filter(|&pos| pos >= 400)
@@ -943,6 +1020,7 @@ pub(crate) async fn call_llm(
         .map_err(|e| redact_key(&format!("http_request_failed: {e}"), &config.api_key))?;
 
     let status = resp.status();
+    learn_rate_limits_from_headers(config, resp.headers());
     let resp_text = resp.text().await.map_err(|e| format!("response_read_error: {e}"))?;
 
     if !status.is_success() {
@@ -950,7 +1028,9 @@ pub(crate) async fn call_llm(
             Ok(json) => extract_error_message(&json, &info.format),
             Err(_) => resp_text.chars().take(500).collect(),
         };
-        return Err(redact_key(&format!("http_{}: {}", status.as_u16(), error_msg), &config.api_key));
+        let full_err = redact_key(&format!("http_{}: {}", status.as_u16(), error_msg), &config.api_key);
+        learn_rate_limit_from_error(config, &full_err);
+        return Err(full_err);
     }
 
     let json: serde_json::Value = serde_json::from_str(&resp_text)
@@ -1088,6 +1168,17 @@ pub(crate) fn build_ranked_context_with_intel(
     let mut text = String::with_capacity(budget_chars.min(64 * 1024));
     let mut citation_map: Vec<usize> = Vec::new();
     let mut used = 0usize;
+    let mut seen_sentence_hashes: HashSet<u64> = HashSet::new();
+    let entity_tokens: Vec<String> = intel
+        .map(|it| {
+            it.key_entities
+                .iter()
+                .flat_map(|e| e.split_whitespace())
+                .map(|t| t.trim_matches(|c: char| !crate::util::is_word_char(c)).to_lowercase())
+                .filter(|t| t.chars().count() >= 3)
+                .collect()
+        })
+        .unwrap_or_default();
 
     for idx in order {
         let src = &sources[idx];
@@ -1104,7 +1195,13 @@ pub(crate) fn build_ranked_context_with_intel(
         let header_budget = 240;
         let body_budget = remaining.saturating_sub(header_budget);
 
-        let body = crate::util::truncate_chars(body_raw, body_budget);
+        let pruned_body = prune_and_dedup_chunk_sentences(
+            body_raw,
+            &entity_tokens,
+            &mut seen_sentence_hashes,
+            body_budget,
+        );
+        let body = crate::util::truncate_chars(&pruned_body, body_budget);
         if crate::util::char_len(body) < 80 {
             continue;
         }
@@ -1133,6 +1230,113 @@ pub(crate) fn build_ranked_context_with_intel(
 /// Models show a U-shaped accuracy curve over context position, so the most
 /// relevant items go first and last and the least relevant in the middle.
 /// Returns indices into a relevance-descending list.
+
+/// Pre-LLM sentence pruning and cross-chunk deduplication.
+/// 1. Deduplicates repeated multi-word sentences (>= 6 words) across chunks using a 64-bit hash.
+/// 2. Prunes zero-signal filler sentences from oversized chunks while preserving
+///    dates, entity mentions, numbers/versions, headings/tables, and lead sentences.
+pub(crate) fn prune_and_dedup_chunk_sentences(
+    text: &str,
+    entity_tokens: &[String],
+    seen_hashes: &mut HashSet<u64>,
+    max_chars: usize,
+) -> String {
+    use std::hash::{Hash, Hasher};
+
+    let raw_len = crate::util::char_len(text);
+    if raw_len <= 320 {
+        return crate::util::truncate_chars(text, max_chars).to_string();
+    }
+
+    // Split into lines/sentences while keeping structure
+    let mut segments: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        if l.starts_with('#') || l.starts_with('|') || l.starts_with("[Entry Date:") {
+            segments.push(l);
+            continue;
+        }
+        let mut start = 0;
+        let bytes = l.as_bytes();
+        for i in 0..bytes.len() {
+            if matches!(bytes[i], b'.' | b'!' | b'?')
+                && (i + 1 == bytes.len() || bytes[i + 1] == b' ')
+            {
+                let seg = l[start..=i].trim();
+                if !seg.is_empty() {
+                    segments.push(seg);
+                }
+                start = i + 1;
+            }
+        }
+        if start < l.len() {
+            let tail = l[start..].trim();
+            if !tail.is_empty() {
+                segments.push(tail);
+            }
+        }
+    }
+
+    if segments.len() <= 2 {
+        return crate::util::truncate_chars(text, max_chars).to_string();
+    }
+
+    let mut kept: Vec<&str> = Vec::with_capacity(segments.len());
+    let mut kept_chars = 0usize;
+
+    for (seg_idx, seg) in segments.iter().copied().enumerate() {
+        let words: Vec<String> = seg
+            .split(|c: char| !crate::util::is_word_char(c))
+            .filter(|w| w.chars().count() >= 2)
+            .map(|w| w.to_lowercase())
+            .collect();
+
+        // Cross-chunk deduplication for substantial sentences (>= 6 words)
+        if words.len() >= 6 {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for w in &words {
+                w.hash(&mut hasher);
+            }
+            let sig = hasher.finish();
+            if !seen_hashes.insert(sig) {
+                continue;
+            }
+        }
+
+        // For long chunks (> 500 chars), once we have at least 120 chars of core
+        // content, prune mid-body filler sentences that carry zero entity tokens,
+        // zero digits/dates/versions, and aren't headings/tables/lead.
+        if raw_len > 500 && seg_idx > 0 && kept_chars >= 120 && !entity_tokens.is_empty() {
+            let is_structural = seg.starts_with('#')
+                || seg.starts_with('|')
+                || seg.starts_with("[Entry Date:");
+            let has_digit = seg.chars().any(|c| c.is_ascii_digit());
+            let seg_lower = seg.to_lowercase();
+            let has_entity = entity_tokens.iter().any(|et| seg_lower.contains(et.as_str()));
+            if !is_structural && !has_digit && !has_entity && words.len() < 10 {
+                continue;
+            }
+        }
+
+        let seg_len = crate::util::char_len(seg);
+        if kept_chars + seg_len + 1 > max_chars && kept_chars >= 120 {
+            break;
+        }
+        kept.push(seg);
+        kept_chars += seg_len + 1;
+    }
+
+    let joined = kept.join(" ");
+    if kept.is_empty() {
+        crate::util::truncate_chars(text, max_chars).to_string()
+    } else {
+        joined
+    }
+}
+
 fn lost_in_middle_order(len: usize) -> Vec<usize> {
     if len <= 2 {
         return (0..len).collect();
@@ -1702,28 +1906,25 @@ pub(crate) fn build_intent_prompts(query: &str, context: &str, intel: &QueryInte
     };
 
     let system = format!(
-        "You are a precise search synthesis engine. \
-         TODAY'S DATE: {}. \
-         INTENT: {}. \
-         {} \
-         CRITICAL RULES: \
-         1. STRICTLY answer the SPECIFIC question asked. Do NOT discuss unrelated topics. \
-         2. If the user asks about 'X', answer ONLY about X. \
-         3. Use ONLY information from the provided sources — NEVER hallucinate. \
-         4. Every factual statement MUST cite the source like [1], [2]. \
-         5. Prioritize [High Trust] sources over [General Web]. \
-         6. If no source directly answers the query, say so HONESTLY. \
-         7. NEVER present outdated data as current unless explicitly noting it is historical.{}",
-        now, intel.intent, intent_instruction, LANGUAGE_RULE
+        "[SYSTEM INSTRUCTIONS]\n\
+         You are SearchWala's precision synthesis engine. TODAY: {now} (Category: {cat}, Intent: {intent}).\n\
+         {intent_instruction}\n\
+         Follow this strict 3-step reasoning order:\n\
+         1. VERIFY AUTHORITY & ENTRY DATE: Check each source's [Official Primary Source] / [Official Vendor Source] tag, published date, and any [Entry Date: YYYY-MM-DD] first.\n\
+         2. SEPARATE CURRENT STATE FROM HISTORY: Anchor 'latest' or 'current' claims to the newest [Entry Date] / published date from an official source; explicitly label older dated entries as earlier history.\n\
+         3. EXTRACT DENSE CITED FACTS: Use ONLY the provided sources, avoid filler, and cite every factual statement with [n].{lang}",
+        cat = intel.semantic_category,
+        intent = intel.intent,
+        lang = LANGUAGE_RULE
     );
 
     let user = format!(
-        "USER'S EXACT QUESTION: {}\n\n\
-         SOURCES (use ONLY relevant ones):\n{}\n\n\
-         {} \
-         IGNORE sources that are not directly relevant to the question. \
-         End with: Sources Used: [n] <url>",
-        query, context, format_instruction
+        "[VERIFIED EVIDENCE]\n\
+         {context}\n\
+         ---\n\
+         [USER QUESTION]\n\
+         {query}\n\n\
+         {format_instruction}"
     );
 
     (system, user)
@@ -2205,6 +2406,42 @@ mod tests {
             "Question footer must be preserved after auto-trim: {}",
             trimmed[1].content
         );
+    }
+
+    #[test]
+    fn dynamic_rate_limit_discovery_learns_from_provider_error_and_updates_budget() {
+        let test_cfg = cfg("groq", "test-dynamic-model-120b", Some("https://api.groq.com/openai/v1"));
+        let err = "http_413: Request too large for model test-dynamic-model-120b: Limit 8000, Requested 9200";
+        learn_rate_limit_from_error(&test_cfg, err);
+
+        let learned = learned_token_limit("groq", "test-dynamic-model-120b")
+            .expect("should learn token limit dynamically");
+        assert_eq!(learned, (8000 * 82) / 100);
+
+        let budget = ContextBudget::for_config_with_override(&test_cfg, None, None);
+        assert_eq!(budget.max_tokens, learned);
+    }
+
+    #[test]
+    fn sentence_pruning_deduplicates_repeated_sentences_across_chunks() {
+        let mut seen = HashSet::new();
+        let entities = vec!["clickup".to_string()];
+        let repeated = "ClickUp 4.0 introduces autonomous AI agents for workspace automation in 2026.";
+        let unique_a = "The release also adds sub-second search indexing across docs and tasks.";
+        let unique_b = "Enterprise workspaces can configure custom webhook rate limits per token.";
+
+        let chunk1 = format!("{repeated} {unique_a} {}", "Extra context words here for length. ".repeat(10));
+        let chunk2 = format!("{repeated} {unique_b} {}", "Different supporting details for chunk two. ".repeat(10));
+
+        let out1 = prune_and_dedup_chunk_sentences(&chunk1, &entities, &mut seen, 2000);
+        let out2 = prune_and_dedup_chunk_sentences(&chunk2, &entities, &mut seen, 2000);
+
+        assert!(out1.contains("autonomous AI agents"));
+        assert!(
+            !out2.contains("autonomous AI agents"),
+            "duplicate sentence from chunk1 should be deduplicated in chunk2: {out2}"
+        );
+        assert!(out2.contains("custom webhook rate limits"));
     }
 
     // ── v8.1: API key / config handling ──

@@ -528,18 +528,9 @@ pub async fn execute_search_full(
     // Wikipedia filled the top 11 slots and only 3 abstracts were used. The
     // same preferences already applied to chunk ranking; they now decide which
     // pages are read, too.
+    let triage_terms = ranking::query_terms(&format!("{} {}", query, effective_query));
     let selection_score = |c: &Candidate| -> f64 {
-        let mut s = c.rrf * modes::source_boost(&c.url, mode, domain);
-        // Prioritize scraping official entity-matched domains even if only 1-2 engines returned them.
-        let (matched_ent, _) =
-            crate::llm::url_matches_query_entities(&c.url, None, &intel.key_entities);
-        if matched_ent > 0 {
-            s *= 1.45 + (0.15 * (matched_ent.min(2) as f64));
-        }
-        if c.full_text.is_some() && matches!(mode, modes::Mode::Academic | modes::Mode::Study) {
-            s *= 1.5;
-        }
-        s
+        pre_scrape_triage_score(c, &query, &triage_terms, &intel, mode, domain)
     };
     ranked.sort_by(|a, b| {
         selection_score(b)
@@ -1786,6 +1777,128 @@ fn build_corrective_query(
 }
 
 
+
+/// Adaptive Pre-Scrape Title, Subdomain & Snippet Triage (zero hardcoded domain or year lists).
+/// Evaluates a SERP candidate's title, URL/subdomain structure, and snippet against
+/// target entities, query terms, and dynamic temporal context BEFORE scraping full HTML.
+fn pre_scrape_triage_score(
+    c: &Candidate,
+    raw_query: &str,
+    query_terms: &[String],
+    intel: &query_intel::QueryIntelligence,
+    mode: modes::Mode,
+    domain: modes::Domain,
+) -> f64 {
+    let mut s = c.rrf * modes::source_boost(&c.url, mode, domain);
+    let (host, path) = modes::parse_host_and_path(&c.url);
+
+    // 1. Subdomain & Host Entity Alignment
+    let (matched_ent, _) =
+        crate::llm::url_matches_query_entities(&c.url, None, &intel.key_entities);
+    if matched_ent > 0 {
+        s *= 1.50 + (0.15 * (matched_ent.min(2) as f64));
+        if modes::is_structural_docs_url(&host, &path)
+            || path.contains("/changelog")
+            || path.contains("/releases")
+            || path.contains("/release-notes")
+            || path.contains("/announcements")
+            || path.starts_with("/blog")
+            || path.starts_with("/news")
+        {
+            s *= 1.20;
+        }
+    }
+
+    // 2. Title & Snippet Entity + Query Term Overlap
+    let title_lower = c.title.to_lowercase();
+    let snippet_lower = c.snippet.to_lowercase();
+    let url_lower = c.url.to_lowercase();
+
+    let mut entity_hits_in_meta = 0usize;
+    for ent in &intel.key_entities {
+        let hit = ent
+            .split_whitespace()
+            .map(|t| t.trim_matches(|ch: char| !crate::util::is_word_char(ch)).to_lowercase())
+            .filter(|t| t.chars().count() >= 3)
+            .any(|t| {
+                title_lower.contains(&t) || snippet_lower.contains(&t) || url_lower.contains(&t)
+            });
+        if hit {
+            entity_hits_in_meta += 1;
+        }
+    }
+
+    let mut term_hits_title = 0usize;
+    let mut term_hits_snippet = 0usize;
+    for term in query_terms {
+        if term.chars().count() < 3 {
+            continue;
+        }
+        if title_lower.contains(term.as_str()) || url_lower.contains(term.as_str()) {
+            term_hits_title += 1;
+        } else if snippet_lower.contains(term.as_str()) {
+            term_hits_snippet += 1;
+        }
+    }
+
+    if entity_hits_in_meta > 0 && term_hits_title > 0 {
+        s *= 1.25;
+    } else if !query_terms.is_empty()
+        && matched_ent == 0
+        && entity_hits_in_meta == 0
+        && term_hits_title == 0
+        && term_hits_snippet == 0
+    {
+        // Off-topic SERP noise with zero entity or query term overlap in title/URL/snippet
+        s *= 0.30;
+    }
+
+    // 3. Dynamic Temporal Alignment in Title, URL & Snippet (resolved via chrono::Utc::now().year())
+    if intel.is_time_sensitive && !matches!(mode, modes::Mode::Study | modes::Mode::Academic) {
+        let current_year = chrono::Utc::now().year();
+        let cur_year_str = current_year.to_string();
+        let meta_text = format!("{} {} {}", title_lower, snippet_lower, path);
+
+        let mentions_current_year = meta_text.contains(&cur_year_str)
+            || c.published.map(|d| d.year() >= current_year).unwrap_or(false);
+
+        if mentions_current_year {
+            s *= 1.25;
+        } else {
+            // Penalize candidates whose title/URL/date explicitly anchors to an unrequested past year
+            let raw_lower = raw_query.to_lowercase();
+            let has_stale_year = ((current_year - 10)..current_year).any(|y| {
+                let ys = y.to_string();
+                !raw_lower.contains(&ys)
+                    && (title_lower.contains(&ys)
+                        || path.contains(&ys)
+                        || c.published.map(|d| d.year() == y).unwrap_or(false))
+            });
+            if has_stale_year {
+                s *= 0.55;
+            }
+        }
+    }
+
+    // 4. Encyclopedia Pre-Scrape Demotion on Live / Product Queries
+    if crate::llm::is_encyclopedia_url(&c.url, None) && mode != modes::Mode::Study {
+        if intel.is_time_sensitive
+            || matches!(
+                intel.semantic_category,
+                query_intel::SemanticCategory::LiveNews | query_intel::SemanticCategory::ProductOrg
+            )
+        {
+            s *= 0.65;
+        }
+    }
+
+    if c.full_text.is_some() && matches!(mode, modes::Mode::Academic | modes::Mode::Study) {
+        s *= 1.5;
+    }
+
+    s
+}
+
 #[cfg(test)]
 mod stage1_sufficiency_tests {
     use super::*;
@@ -1835,5 +1948,77 @@ mod stage1_sufficiency_tests {
             evidence_is_sufficient(&fresh_matching, &intel),
             "fresh entity-matching source should pass sufficiency"
         );
+    }
+
+    #[test]
+    fn pre_scrape_triage_prioritizes_official_current_candidates_over_stale_or_offtopic() {
+        let current_year = chrono::Utc::now().year();
+        let stale_year = current_year - 2;
+
+        let raw_q = "Google Antigravity latest release features";
+        let mut intel = crate::query_intel::analyze_query(raw_q);
+        intel.is_time_sensitive = true;
+        intel.semantic_category = crate::query_intel::SemanticCategory::ProductOrg;
+        intel.key_entities = vec!["Google Antigravity".to_string()];
+        let terms = crate::ranking::query_terms(raw_q);
+
+        let official_cand = Candidate {
+            url: "https://antigravity.google/changelog".to_string(),
+            title: format!("Google Antigravity Changelog ({current_year})"),
+            snippet: "Latest release features, agentic IDE tools, and workspace updates.".to_string(),
+            engines: vec!["brave".to_string()],
+            families: vec!["brave"],
+            rrf: 0.02,
+            published: None,
+            full_text: None,
+        };
+        let stale_blog_cand = Candidate {
+            url: format!("https://some-random-techblog.test/review-{stale_year}"),
+            title: format!("Early review from {stale_year}"),
+            snippet: "An old post about Google Antigravity.".to_string(),
+            engines: vec!["brave".to_string()],
+            families: vec!["brave"],
+            rrf: 0.02,
+            published: None,
+            full_text: None,
+        };
+        let offtopic_wiki_cand = Candidate {
+            url: "https://en.wikipedia.org/wiki/Google_Doodle".to_string(),
+            title: "Google Doodle - Wikipedia".to_string(),
+            snippet: "A special temporary alteration of the logo on homepages.".to_string(),
+            engines: vec!["wikipedia".to_string()],
+            families: vec!["wikipedia"],
+            rrf: 0.02,
+            published: None,
+            full_text: None,
+        };
+
+        let s_official = pre_scrape_triage_score(
+            &official_cand,
+            raw_q,
+            &terms,
+            &intel,
+            modes::Mode::Auto,
+            modes::Domain::General,
+        );
+        let s_stale = pre_scrape_triage_score(
+            &stale_blog_cand,
+            raw_q,
+            &terms,
+            &intel,
+            modes::Mode::Auto,
+            modes::Domain::General,
+        );
+        let s_wiki = pre_scrape_triage_score(
+            &offtopic_wiki_cand,
+            raw_q,
+            &terms,
+            &intel,
+            modes::Mode::Auto,
+            modes::Domain::General,
+        );
+
+        assert!(s_official > s_stale * 3.0, "official ({s_official}) must beat stale ({s_stale})");
+        assert!(s_official > s_wiki * 3.0, "official ({s_official}) must beat off-topic wiki ({s_wiki})");
     }
 }

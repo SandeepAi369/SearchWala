@@ -72,18 +72,16 @@ pub fn domain_rules(domain: Domain) -> &'static str {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn base_rules() -> &'static str {
-    " Use ONLY the numbered sources — never add outside facts. Cite every factual \
-     statement with its source number like [3] or [3][7]. Prefer [Official Primary Source] \
-     and [Official Vendor Source] citations over third-party sites or encyclopedias. \
-     Pay strict attention to each chunk's published date and any [Entry Date: YYYY-MM-DD]: \
-     anchor 'latest' or 'current' claims to the most recent entry date, and never present \
-     an older historical changelog entry as the newest release. If the sources do not \
-     answer something, say so plainly rather than guessing."
+    " Reasoning order: (1) Verify each source's [Official Primary Source] / [Official Vendor Source] \
+     tag, published date, and any [Entry Date: YYYY-MM-DD] first. (2) Separate current state \
+     (anchored to the newest official entry date) from older historical releases. (3) Extract \
+     dense, high-signal facts concisely without filler using ONLY the numbered sources, citing \
+     every claim as [n]. If the sources do not answer something, say so plainly."
 }
 
 pub fn concise_prompts(q: &str, ctx: &str, domain: Domain) -> (String, String) {
     let system = format!(
-        "You are a fast, precise search assistant. TODAY: {}.{} Be brief: no preamble, \
+        "[SYSTEM INSTRUCTIONS]\nYou are a fast, precise search assistant. TODAY: {}.{} Be brief: no preamble, \
          no headings.{}{}",
         llm::current_datetime_str(),
         base_rules(),
@@ -91,7 +89,7 @@ pub fn concise_prompts(q: &str, ctx: &str, domain: Domain) -> (String, String) {
         LANGUAGE_RULE
     );
     let user = format!(
-        "QUESTION: {q}\n\nSOURCES:\n{ctx}\n\n\
+        "[VERIFIED EVIDENCE]\n{ctx}\n\n---\n[USER QUESTION]\n{q}\n\n\
          Give the direct answer in 1-2 sentences, then at most 4 short bullets of key \
          supporting facts, each ending with its citation [n]. Maximum about 150 words."
     );
@@ -803,6 +801,93 @@ pub async fn synthesize(
     out
 }
 
+
+/// Adaptive Threshold Batch Distillation: splits overflowing sources into up to 3
+/// safe token-sized batches, runs concurrent micro-extractions to pull dated facts
+/// with `[n]` citations, and returns a compact `BuiltContext` with an identity
+/// citation map across `sources`.
+async fn adaptive_batch_distill(
+    query: &str,
+    cfg: &LlmConfig,
+    sources: &[SourceResult],
+    intel: &QueryIntelligence,
+    max_ctx_chars: usize,
+) -> Option<BuiltContext> {
+    let batch_cap = max_ctx_chars.clamp(3_500, 14_000);
+    let mut batches = plan_batches(sources, batch_cap);
+    batches.truncate(3);
+    if batches.len() <= 1 {
+        return None;
+    }
+
+    let mut map_cfg = cfg.clone();
+    map_cfg.max_output_tokens = Some(550);
+    map_cfg.timeout_ms = Some(cfg.timeout_ms.unwrap_or(12_000).min(12_000));
+
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(3));
+    let mut set = tokio::task::JoinSet::new();
+
+    for (bi, range) in batches.iter().cloned().enumerate() {
+        let mut block = String::new();
+        for i in range.clone() {
+            let src = &sources[i];
+            let date = src
+                .published
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "undated".into());
+            let cred = llm::credibility_tag_for_source(src, Some(intel));
+            let body = crate::util::truncate_chars(src.extracted_text.trim(), 1_400);
+            block.push_str(&format!(
+                "[{}] {} {} — published {} ({})\n{}\n\n",
+                i + 1,
+                cred,
+                src.title,
+                date,
+                src.url,
+                body
+            ));
+        }
+        let (sys, user) = map_prompts(query, &block, range.start + 1, range.end);
+        let c = map_cfg.clone();
+        let s = sem.clone();
+        set.spawn(async move {
+            let _p = s.acquire().await.ok();
+            let msgs = vec![ChatMessage::system(sys), ChatMessage::user(user)];
+            (bi, range, call_with_timeout(&c, &msgs).await)
+        });
+    }
+
+    let mut notes: Vec<(usize, String)> = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok((bi, range, Ok(raw))) = joined {
+            let cleaned = clean_notes(&raw, &range);
+            if !cleaned.is_empty() {
+                notes.push((
+                    bi,
+                    format!(
+                        "Distilled facts from sources [{}]-[{}]:\n{}",
+                        range.start + 1,
+                        range.end,
+                        cleaned
+                    ),
+                ));
+            }
+        }
+    }
+    if notes.is_empty() {
+        return None;
+    }
+    notes.sort_by_key(|(bi, _)| *bi);
+    let combined = notes
+        .into_iter()
+        .map(|(_, n)| n)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let text = crate::util::truncate_chars(&combined, max_ctx_chars).to_string();
+    let citation_map: Vec<usize> = (0..sources.len()).collect();
+    Some(BuiltContext { text, citation_map })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn synthesize_inner(
     query: &str,
@@ -831,10 +916,33 @@ async fn synthesize_inner(
     let max_ctx = llm::chars_for_tokens(budget.context_tokens(out), sources)
         .min(profile.context_char_cap)
         .saturating_sub(crate::util::char_len(memory));
-    let ctx = llm::build_ranked_context_with_intel(sources, max_ctx, Some(intel));
+    let mut ctx = llm::build_ranked_context_with_intel(sources, max_ctx, Some(intel));
     if ctx.is_empty() {
         return result(None, Some("llm_skipped: no usable source text".into()), 0);
     }
+
+    // ── Adaptive Threshold Batch Distillation ──
+    // When compressed evidence across ranked sources still overflows the model's
+    // single-call token budget (fitting < 65% of ranked chunks on a >= 6-chunk pool),
+    // split the sources into safe token-sized batches, run a fast micro-extraction
+    // pass per batch to distill dated facts + [n] citations, and synthesize from the
+    // distilled facts so no high-value evidence is lost to token truncation.
+    if profile.synthesis != Synthesis::Concise
+        && sources.len() >= 6
+        && ctx.citation_map.len() * 100 < sources.len() * 65
+    {
+        if let Some(distilled_ctx) =
+            adaptive_batch_distill(query, &cfg, sources, intel, max_ctx).await
+        {
+            tracing::info!(
+                "Adaptive batch distillation compressed {} sources into {} chars of dated cited facts",
+                sources.len(),
+                crate::util::char_len(&distilled_ctx.text)
+            );
+            ctx = distilled_ctx;
+        }
+    }
+
     tracing::info!(
         "Synthesis {:?}: {} sources, {} cited, {} context chars (cap {})",
         profile.synthesis,
