@@ -108,12 +108,17 @@ pub fn enforce_entity_retention(
     let cand_lower = cand_trimmed.to_lowercase();
 
     let mut candidate_entities: Vec<String> = extracted_entities.to_vec();
-    for structural in crate::query_intel::analyze_query(raw_user_query).key_entities {
-        if !candidate_entities
-            .iter()
-            .any(|e| e.eq_ignore_ascii_case(&structural))
-        {
-            candidate_entities.push(structural);
+    // Only fall back to structural regex/lowercase entity extraction when the
+    // caller did not supply canonical LLM-extracted entities (prevents lowercase
+    // question framing like "historical details" or "exact terms" from being prepended).
+    if candidate_entities.is_empty() {
+        for structural in crate::query_intel::analyze_query(raw_user_query).key_entities {
+            if !candidate_entities
+                .iter()
+                .any(|e| e.eq_ignore_ascii_case(&structural))
+            {
+                candidate_entities.push(structural);
+            }
         }
     }
 

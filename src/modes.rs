@@ -333,23 +333,23 @@ pub fn resolve(
             engines: fast_roster(),
             page_budget: 1,
             engine_deadline: Duration::from_millis(2_500),
-            engine_early_exit: Some((24, 3)),
+            engine_early_exit: Some((28, 3)),
             site_filter: None,
             max_sub_queries: 1,
             facets: Facets::Basic,
             llm_query_planning: false,
-            max_urls: 10,
+            max_urls: 12,
             scrape_timeout: Duration::from_secs(3),
             scrape_stage_deadline: Duration::from_millis(3_500),
-            scrape_min_sources: 6,
-            scrape_min_chars: 25_000,
+            scrape_min_sources: 8,
+            scrape_min_chars: 35_000,
             snippet_fallback: false,
-            llm_top_k: 8,
-            max_chunks_per_url: 2,
+            llm_top_k: 12,
+            max_chunks_per_url: 3,
             freshness: true,
             synthesis: Synthesis::Concise,
             context_char_cap: 12_000,
-            max_output_tokens: 700,
+            max_output_tokens: 1_400,
         },
 
         // ── AUTO ────────────────────────────────────────────────────────────
@@ -358,7 +358,7 @@ pub fn resolve(
             let (name, engines_list, pages, deadline_ms, urls, min_src, min_chars, subs, top_k, out) =
                 match tier {
                     AutoTier::Lookup => {
-                        ("auto:lookup", fast_roster(), 1, 2_500, 8, 5, 15_000, 1, 8, 600)
+                        ("auto:lookup", fast_roster(), 1, 2_500, 8, 5, 15_000, 1, 8, 1_400)
                     }
                     AutoTier::Light => (
                         "auto:light",
@@ -988,7 +988,9 @@ mod tests {
         assert!(p.engine_deadline <= Duration::from_millis(2_500));
         assert!(p.scrape_stage_deadline <= Duration::from_secs(4));
         assert_eq!(p.synthesis, Synthesis::Concise);
-        assert!(p.max_output_tokens <= 800);
+        // 1,400 completion tokens ensures reasoning models (e.g. gpt-oss-120b) never
+        // truncate mid-sentence after spending ~600 tokens on internal reasoning.
+        assert!(p.max_output_tokens >= 1_400 && p.max_output_tokens <= 1_600);
     }
 
     #[test]

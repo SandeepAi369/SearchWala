@@ -300,19 +300,22 @@ pub async fn execute_search_full(
             || intel.semantic_category == query_intel::SemanticCategory::LiveNews;
         intel.corrective_query = plan.corrective_query.clone();
 
-        // Put canonical LLM-extracted entities at the front of key_entities
-        let mut merged_entities = Vec::new();
-        for ent in plan.entities.iter().chain(intel.key_entities.iter()) {
-            let trimmed = ent.trim();
-            if !trimmed.is_empty()
-                && !merged_entities
-                    .iter()
-                    .any(|e: &String| e.eq_ignore_ascii_case(trimmed))
-            {
-                merged_entities.push(trimmed.to_string());
+        // When the LLM Semantic Query Plan extracted canonical entities, use them
+        // directly (avoiding naive lowercase prefix tokens from raw query fallback).
+        if !plan.entities.is_empty() {
+            let mut clean_entities = Vec::new();
+            for ent in &plan.entities {
+                let trimmed = ent.trim();
+                if !trimmed.is_empty()
+                    && !clean_entities
+                        .iter()
+                        .any(|e: &String| e.eq_ignore_ascii_case(trimmed))
+                {
+                    clean_entities.push(trimmed.to_string());
+                }
             }
+            intel.key_entities = clean_entities;
         }
-        intel.key_entities = merged_entities;
     }
 
     let intel_query = effective_query.clone();
@@ -1817,20 +1820,25 @@ fn pre_scrape_triage_score(
         }
     }
 
-    // 2. Title & Snippet Entity + Query Term Overlap
+    // 2. Title & Snippet Entity + Specific Sub-Topic Qualifier Overlap
     let title_lower = c.title.to_lowercase();
     let snippet_lower = c.snippet.to_lowercase();
     let url_lower = c.url.to_lowercase();
 
+    let mut entity_token_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut entity_hits_in_meta = 0usize;
     for ent in &intel.key_entities {
-        let hit = ent
+        let mut hit = false;
+        for t in ent
             .split_whitespace()
             .map(|t| t.trim_matches(|ch: char| !crate::util::is_word_char(ch)).to_lowercase())
             .filter(|t| t.chars().count() >= 3)
-            .any(|t| {
-                title_lower.contains(&t) || snippet_lower.contains(&t) || url_lower.contains(&t)
-            });
+        {
+            if title_lower.contains(&t) || snippet_lower.contains(&t) || url_lower.contains(&t) {
+                hit = true;
+            }
+            entity_token_set.insert(t);
+        }
         if hit {
             entity_hits_in_meta += 1;
         }
@@ -1838,14 +1846,25 @@ fn pre_scrape_triage_score(
 
     let mut term_hits_title = 0usize;
     let mut term_hits_snippet = 0usize;
+    let mut subtopic_term_count = 0usize;
+    let mut subtopic_hits = 0usize;
+
     for term in query_terms {
         if term.chars().count() < 3 {
             continue;
         }
-        if title_lower.contains(term.as_str()) || url_lower.contains(term.as_str()) {
+        let in_title_or_url = title_lower.contains(term.as_str()) || url_lower.contains(term.as_str());
+        let in_snippet = snippet_lower.contains(term.as_str());
+        if in_title_or_url {
             term_hits_title += 1;
-        } else if snippet_lower.contains(term.as_str()) {
+        } else if in_snippet {
             term_hits_snippet += 1;
+        }
+        if !entity_token_set.contains(term.as_str()) {
+            subtopic_term_count += 1;
+            if in_title_or_url || in_snippet {
+                subtopic_hits += 1;
+            }
         }
     }
 
@@ -1859,6 +1878,27 @@ fn pre_scrape_triage_score(
     {
         // Off-topic SERP noise with zero entity or query term overlap in title/URL/snippet
         s *= 0.30;
+    }
+
+    // Sub-topic specificity boost: when a query asks about specific aspects/clauses
+    // of an entity (e.g., "administration" and "land grants" in "Aihole inscription"),
+    // strongly boost candidates whose title/snippet explicitly covers those sub-topics,
+    // and demote generic encyclopedia summaries that only name the entity without sub-topics.
+    let is_encyc = crate::llm::is_encyclopedia_url(&c.url, None);
+    if subtopic_term_count > 0 && (entity_hits_in_meta > 0 || matched_ent > 0) {
+        if subtopic_hits > 0 {
+            s *= 1.0 + 0.25 * (subtopic_hits.min(3) as f64);
+        } else if is_encyc && mode != modes::Mode::Study {
+            s *= 0.68;
+        }
+    }
+
+    // Boost scholarly, institutional, or primary documentation sources on research/historical queries
+    if (entity_hits_in_meta > 0 || term_hits_title > 0)
+        && (modes::is_structural_scholarly_url(&host, &path)
+            || modes::is_institutional_host(&host))
+    {
+        s *= 1.28;
     }
 
     // 3. Dynamic Temporal Alignment in Title, URL & Snippet (resolved via chrono::Utc::now().year())

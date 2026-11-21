@@ -393,6 +393,25 @@ pub fn rank_with_options(
         _ => false,
     };
 
+    // Partition query_terms into core entity tokens vs specific sub-topic qualifiers
+    // so chunks that co-mention BOTH the subject entity and the specific sub-topic
+    // (e.g. "Aihole" + "land grants" / "administration") outrank generic intro paragraphs.
+    let entity_token_set: HashSet<String> = intel
+        .map(|it| {
+            it.key_entities
+                .iter()
+                .flat_map(|e| e.split_whitespace())
+                .map(|t| t.trim_matches(|c: char| !crate::util::is_word_char(c)).to_lowercase())
+                .filter(|t| t.chars().count() >= 3)
+                .collect()
+        })
+        .unwrap_or_default();
+    let subtopic_query_terms: Vec<&str> = query_terms
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|t| !entity_token_set.contains(*t))
+        .collect();
+
     // ── Score each chunk with BM25+ ──
     let query_phrase = query.trim().to_lowercase();
     let mut scored: Vec<(usize, f64)> = Vec::with_capacity(candidates.len());
@@ -434,6 +453,29 @@ pub fn rank_with_options(
             .count();
         if title_match_count > 0 {
             score += (title_match_count as f64) * 0.5;
+        }
+
+        // ── Entity + Sub-Topic Co-Occurrence Boost ──
+        // Rewards body paragraphs that contain BOTH the target entity (in chunk or title)
+        // AND the specific sub-topic terms requested by the user.
+        if !entity_token_set.is_empty() && !subtopic_query_terms.is_empty() {
+            let has_entity = entity_token_set
+                .iter()
+                .any(|et| tf.contains_key(et.as_str()) || title_lower.contains(et.as_str()));
+            let subtopic_matches = subtopic_query_terms
+                .iter()
+                .filter(|&&st| tf.contains_key(st))
+                .count();
+            if has_entity && subtopic_matches > 0 {
+                score *= 1.0 + 0.18 * (subtopic_matches.min(3) as f64);
+            } else if subtopic_matches == 0
+                && crate::llm::is_encyclopedia_url(
+                    &candidates[idx].url,
+                    candidates[idx].site_name.as_deref(),
+                )
+            {
+                score *= 0.80;
+            }
         }
 
         // ── RRF cross-engine consensus boost (v6.1.0: normalized, not magic constant) ──
