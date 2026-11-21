@@ -1,3 +1,4 @@
+use chrono::Datelike;
 // ============================================================================
 // SearchWala v7.0.0 - Search Orchestrator (Intelligence-Driven)
 // Features:
@@ -201,18 +202,7 @@ pub async fn execute_search_full(
         }
     }
 
-    // ── Conversation memory ──
-    // A follow-up is searched as a standalone query; the engines never see the
-    // conversation. The LLM gets the earlier turns as context below.
-    let mut effective_query = query.clone();
-    let mut search_query = None;
-    if let (Some(cfg), false) = (&params.llm, params.memory.is_empty()) {
-        if let Some(q) = synthesis::standalone_query(&query, &params.memory, cfg).await {
-            tracing::info!("Follow-up searched as: [{}]", q);
-            effective_query = q.clone();
-            search_query = Some(q);
-        }
-    }
+    // ── Conversation memory formatting ──
     let (memory_text, memory_used) = match &params.llm {
         Some(cfg) if !params.memory.is_empty() => {
             // About a fifth of the model's window, at ~4 characters a token.
@@ -222,63 +212,162 @@ pub async fn execute_search_full(
         _ => (String::new(), 0),
     };
 
-    // ── Optional LLM query rewrite ──
+    // ── Unified Semantic Query Understanding (LLM-First) ──
+    // Runs a single fast semantic understanding pass that classifies category
+    // (Product/Org, Live News, History/Static, General Everyday), resolves
+    // follow-up context while locking entities, fixes phonetic/voice typos,
+    // neutralizes stale years dynamically, and plans semantic sub-queries.
+    let mut effective_query = query.clone();
+    let mut search_query = None;
     let mut copilot_out = None;
-    if params.enable_copilot {
+    let mut semantic_plan: Option<crate::copilot::SemanticQueryPlan> = None;
+
+    let should_run_semantic_plan = params.llm.is_some()
+        && (!matches!(mode, modes::Mode::Fast)
+            || params.enable_copilot
+            || !params.memory.is_empty()
+            || query.split_whitespace().count() > 5
+            || !query.is_ascii());
+
+    if should_run_semantic_plan {
         if let Some(cfg) = &params.llm {
-            let rewritten = crate::copilot::rewrite_query(&effective_query, cfg).await;
-            tracing::info!("Copilot rewrote query: [{}] -> [{}]", effective_query, rewritten);
-            copilot_out = Some(rewritten.clone());
-            effective_query = rewritten;
+            semantic_plan = crate::copilot::understand_query(&query, &params.memory, cfg, 3).await;
+        }
+    }
+
+    if let Some(ref plan) = semantic_plan {
+        tracing::info!(
+            "Semantic Query Plan: category={} intent={:?} time_sensitive={} entities={:?} primary=[{}] sub_queries={:?}",
+            plan.category,
+            plan.intent,
+            plan.is_time_sensitive,
+            plan.entities,
+            plan.primary_query,
+            plan.sub_queries
+        );
+        effective_query = plan.primary_query.clone();
+        if !effective_query.eq_ignore_ascii_case(&query) {
+            search_query = Some(effective_query.clone());
+        }
+        if params.enable_copilot {
+            copilot_out = Some(effective_query.clone());
+        }
+    } else {
+        // Fallback if semantic understanding timed out or was skipped
+        if let (Some(cfg), false) = (&params.llm, params.memory.is_empty()) {
+            if let Some(q) = synthesis::standalone_query(&query, &params.memory, cfg).await {
+                tracing::info!("Follow-up searched as: [{}]", q);
+                effective_query = q.clone();
+                search_query = Some(q);
+            }
+        }
+        if params.enable_copilot {
+            if let Some(cfg) = &params.llm {
+                let rewritten = crate::copilot::rewrite_query(&effective_query, cfg).await;
+                tracing::info!("Copilot rewrote query: [{}] -> [{}]", effective_query, rewritten);
+                copilot_out = Some(rewritten.clone());
+                effective_query = rewritten;
+            }
         }
     }
 
     // ── Query intelligence + mode profile ──
-    let intel = query_intel::analyze_query(&effective_query);
+    let mut intel = query_intel::analyze_query(&effective_query);
+    // Merge entities from raw query as well so nothing from the raw prompt is lost
+    for raw_ent in query_intel::analyze_query(&query).key_entities {
+        if !intel.key_entities.iter().any(|e| e.eq_ignore_ascii_case(&raw_ent)) {
+            intel.key_entities.push(raw_ent);
+        }
+    }
+    if let Some(ref plan) = semantic_plan {
+        intel.semantic_category = plan.category;
+        if let Some(ref sem_intent) = plan.intent {
+            intel.intent = sem_intent.clone();
+        }
+        if plan.is_time_sensitive {
+            intel.is_time_sensitive = true;
+        }
+        intel.boost_news_engines = intel.is_time_sensitive
+            || intel.intent == query_intel::QueryIntent::Temporal
+            || intel.semantic_category == query_intel::SemanticCategory::LiveNews;
+        intel.corrective_query = plan.corrective_query.clone();
+
+        // Put canonical LLM-extracted entities at the front of key_entities
+        let mut merged_entities = Vec::new();
+        for ent in plan.entities.iter().chain(intel.key_entities.iter()) {
+            let trimmed = ent.trim();
+            if !trimmed.is_empty()
+                && !merged_entities
+                    .iter()
+                    .any(|e: &String| e.eq_ignore_ascii_case(trimmed))
+            {
+                merged_entities.push(trimmed.to_string());
+            }
+        }
+        intel.key_entities = merged_entities;
+    }
+
     let intel_query = effective_query.clone();
     let profile = modes::resolve(mode, domain, &intel, params.max_results);
     tracing::info!(
-        "Mode {} [{}] domain={} intent={} complexity={} | engines={} pages={} deadline={:?} \
+        "Mode {} [{}] domain={} category={} intent={} complexity={} | engines={} pages={} deadline={:?} \
          urls={} subq={} top_k={} synthesis={:?}",
-        mode.as_str(), profile.tier, domain.as_str(), intel.intent, intel.complexity,
+        mode.as_str(), profile.tier, domain.as_str(), intel.semantic_category, intel.intent, intel.complexity,
         profile.engines.len(), profile.page_budget, profile.engine_deadline,
         profile.max_urls, profile.max_sub_queries, profile.llm_top_k, profile.synthesis
     );
 
-    // ── Recency hint for engines ──
-    // Skipped for Study and Academic: those topics are evergreen, and a year in
-    // an OpenAlex/arXiv search restricts results to papers containing "2026".
+    // ── Recency hint for engines (resolved dynamically via chrono::Utc::now().year()) ──
+    // Skipped for Study and Academic: those topics are evergreen.
     if intel.is_time_sensitive && !matches!(mode, modes::Mode::Study | modes::Mode::Academic) {
         let q_lower = effective_query.to_lowercase();
-        let has_year = (2015..=2035).any(|y| q_lower.contains(&y.to_string()));
+        let current_year = chrono::Utc::now().year();
+        let has_year = ((current_year - 15)..=(current_year + 10)).any(|y| q_lower.contains(&y.to_string()));
         if !has_year {
-            effective_query = format!("{} {}", effective_query, chrono::Utc::now().format("%Y"));
+            effective_query = format!("{} {}", effective_query, current_year);
         }
     }
 
     // ── Sub-queries ──
+    let sub_query_cap = if semantic_plan.is_some() && !matches!(mode, modes::Mode::Fast) {
+        profile.max_sub_queries.max(2)
+    } else {
+        profile.max_sub_queries
+    };
+
     let mut query_variations: Vec<String> =
-        if profile.max_sub_queries > 1 && query_intel::multi_query_enabled() {
-            let mut planned = None;
-            if profile.llm_query_planning {
-                if let Some(cfg) = &params.llm {
-                    planned = synthesis::plan_subqueries(
-                        &effective_query,
-                        cfg,
-                        profile.max_sub_queries.saturating_sub(1),
-                    )
-                    .await;
+        if sub_query_cap > 1 && query_intel::multi_query_enabled() {
+            if let Some(ref plan) = semantic_plan {
+                let mut v = vec![effective_query.clone()];
+                for sq in &plan.sub_queries {
+                    if !v.iter().any(|existing| existing.eq_ignore_ascii_case(sq)) {
+                        v.push(sq.clone());
+                    }
                 }
-            }
-            match planned {
-                Some(p) => {
-                    tracing::info!("LLM planned {} sub-queries", p.len());
-                    let mut v = vec![effective_query.clone()];
-                    v.extend(p);
-                    v.truncate(profile.max_sub_queries);
-                    v
+                v.truncate(sub_query_cap);
+                v
+            } else {
+                let mut planned = None;
+                if profile.llm_query_planning {
+                    if let Some(cfg) = &params.llm {
+                        planned = synthesis::plan_subqueries(
+                            &effective_query,
+                            cfg,
+                            sub_query_cap.saturating_sub(1),
+                        )
+                        .await;
+                    }
                 }
-                None => modes::facet_queries(&effective_query, &intel, profile.facets, profile.max_sub_queries),
+                match planned {
+                    Some(p) => {
+                        tracing::info!("LLM planned {} sub-queries", p.len());
+                        let mut v = vec![effective_query.clone()];
+                        v.extend(p);
+                        v.truncate(sub_query_cap);
+                        v
+                    }
+                    None => modes::facet_queries(&effective_query, &intel, profile.facets, sub_query_cap),
+                }
             }
         } else {
             vec![effective_query.clone()]
@@ -676,19 +765,191 @@ pub async fn execute_search_full(
     emit(&progress, Progress::Extracted { sources: scraped_count, chars: scraped_chars, ms: scrape_ms }).await;
 
     // ── Rank chunks ──
-    // Every mode takes the ranked path now. v8.0 Deep/Academic/Reddit/YouTube
-    // skipped it: no RRF boost, no freshness, and BM25 scored against the
-    // engine-syntax query (with `site:` and an injected year as terms).
+    // Build the lexical ranking query: preserve the user's raw question while
+    // appending any resolved/typo-corrected entities from semantic understanding
+    // so both native-language and English/resolved entity passages score fairly.
+    let ranking_query = build_ranking_query(&query, &intel_query, &intel);
+    let mut rrf_scores = rrf_scores;
+    let rank_opts = ranking::RankOptions::from_profile(&profile);
+
     let stage_start = std::time::Instant::now();
-    let results = ranking::rank_with_options(
-        &query,
+    let mut results = ranking::rank_with_options(
+        &ranking_query,
         &raw_scraped_results,
         profile.llm_top_k,
         Some(&rrf_scores),
         Some(&intel),
-        &ranking::RankOptions::from_profile(&profile),
+        &rank_opts,
     );
+
+    // ── Self-Correcting Second-Pass Retrieval ──
+    // If the top ranked chunks fail entity or current-year coverage on a non-Fast
+    // query, dispatch a targeted corrective query and merge the new sources.
+    if !matches!(mode, modes::Mode::Fast)
+        && profile.site_filter.is_none()
+        && !evidence_is_sufficient(&results, &intel)
+    {
+        if let Some(corrective_q) = build_corrective_query(&intel, &query_variations) {
+            tracing::info!(
+                "🔄 Self-correcting retrieval triggered (insufficient pass-1 coverage): [{}]",
+                corrective_q
+            );
+            let corr_variations = vec![corrective_q.clone()];
+            let corr_deadline = Duration::from_millis(2_500);
+            let corr_tagged = dispatch_engines(
+                &engine_instances,
+                &corr_variations,
+                &plain_fetcher,
+                &stealth_fetcher,
+                &stealth_engine_set,
+                &stealth_mode,
+                &proxy_pool,
+                &engine_semaphore,
+                config::jitter_min_ms(),
+                config::jitter_max_ms(),
+                engine_concurrency,
+                corr_deadline,
+                1,
+                Some((18, 2)),
+            )
+            .await;
+
+            let corr_raw: Vec<RawSearchResult> =
+                corr_tagged.into_iter().flat_map(|(_, v)| v).collect();
+            if !corr_raw.is_empty() {
+                let corr_rrf = ranking::compute_rrf_scores(&corr_raw);
+                for (k, v) in &corr_rrf {
+                    let entry = rrf_scores.entry(k.clone()).or_insert(0.0);
+                    if *v > *entry {
+                        *entry = *v;
+                    }
+                }
+
+                let mut seen_urls: std::collections::HashSet<String> = selection_rank
+                    .keys()
+                    .map(|u| url_utils::canonical_key(u))
+                    .collect();
+                for r in &raw_scraped_results {
+                    seen_urls.insert(url_utils::canonical_key(&r.url));
+                }
+
+                let mut corr_candidates: Vec<Candidate> = Vec::new();
+                for item in corr_raw {
+                    let key = url_utils::canonical_key(&item.url);
+                    if !seen_urls.insert(key.clone()) || url_utils::should_skip(&item.url) {
+                        continue;
+                    }
+                    corr_candidates.push(Candidate {
+                        url: item.url,
+                        title: item.title,
+                        snippet: item.snippet,
+                        engines: vec![item.engine.clone()],
+                        families: vec![engines::engine_family(&item.engine)],
+                        rrf: corr_rrf.get(&key).copied().unwrap_or(0.01),
+                        published: item.published,
+                        full_text: item.full_text,
+                    });
+                }
+
+                corr_candidates.sort_by(|a, b| {
+                    b.rrf
+                        .partial_cmp(&a.rrf)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                corr_candidates.truncate(6);
+
+                if !corr_candidates.is_empty() {
+                    let mut corr_join = JoinSet::new();
+                    for c in corr_candidates {
+                        let sem = semaphore.clone();
+                        let client = scrape_client.clone();
+                        corr_join.spawn(async move {
+                            let engine_name = c.engines.join(",");
+                            if let Some(cached) = crate::cache_layer::get_page(&c.url).await {
+                                return Some(SourceResult {
+                                    url: c.url.clone(),
+                                    title: pick_title(&c.url, &c.title, cached.title.clone()),
+                                    extracted_text: cached.text.clone(),
+                                    char_count: crate::util::char_len(&cached.text),
+                                    engine: engine_name,
+                                    published: cached.published.or(c.published),
+                                    language: cached.language.clone(),
+                                    byline: cached.byline.clone(),
+                                    site_name: cached.site_name.clone(),
+                                    confidence: cached.confidence,
+                                    extractor: cached.source,
+                                });
+                            }
+                            let _permit = sem.acquire().await.ok()?;
+                            let scraped = scrape_url(
+                                &client,
+                                &c.url,
+                                scrape_timeout,
+                                scrape_max_bytes,
+                                mode,
+                            )
+                            .await?;
+                            crate::cache_layer::put_page(&c.url, scraped.clone()).await;
+                            let title = pick_title(&c.url, &c.title, scraped.title);
+                            Some(SourceResult {
+                                char_count: crate::util::char_len(&scraped.text),
+                                url: c.url,
+                                title,
+                                extracted_text: scraped.text,
+                                engine: engine_name,
+                                published: scraped.published.or(c.published),
+                                language: scraped.language,
+                                byline: scraped.byline,
+                                site_name: scraped.site_name,
+                                confidence: scraped.confidence,
+                                extractor: scraped.source,
+                            })
+                        });
+                    }
+
+                    let corr_scrape_deadline =
+                        tokio::time::Instant::now() + Duration::from_millis(3_000);
+                    let mut added_sources = 0usize;
+                    loop {
+                        let next = tokio::select! {
+                            res = corr_join.join_next() => res,
+                            _ = tokio::time::sleep_until(corr_scrape_deadline) => {
+                                corr_join.abort_all();
+                                break;
+                            }
+                        };
+                        match next {
+                            Some(Ok(Some(src))) => {
+                                raw_scraped_results.push(src);
+                                added_sources += 1;
+                            }
+                            Some(_) => {}
+                            None => break,
+                        }
+                    }
+
+                    if added_sources > 0 {
+                        tracing::info!(
+                            "🔄 Self-correcting pass added {} new sources; re-ranking pool ({} total sources)",
+                            added_sources,
+                            raw_scraped_results.len()
+                        );
+                        results = ranking::rank_with_options(
+                            &ranking_query,
+                            &raw_scraped_results,
+                            profile.llm_top_k,
+                            Some(&rrf_scores),
+                            Some(&intel),
+                            &rank_opts,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     let rank_ms = stage_start.elapsed().as_millis();
+    let scraped_count = raw_scraped_results.len();
     tracing::info!("⏱ Stage [rank]: {}ms — {} chunks from {} sources", rank_ms, results.len(), scraped_count);
 
     // The verbatim answer sentence is known as soon as passages are ranked;
@@ -1380,5 +1641,197 @@ mod title_tests {
         assert_eq!(wikipedia_title("https://hi.wikipedia.org/wiki/%E0%A4%AD%E0%A4%BE%E0%A4%B0%E0%A4%A4").as_deref(), Some("भारत"));
         assert_eq!(wikipedia_title("https://en.wikipedia.org/wiki/Special:Search"), None);
         assert_eq!(wikipedia_title("https://example.org/wiki/X"), None);
+    }
+}
+
+
+/// Combines the user's raw query with any resolved or typo-corrected entities
+/// from Semantic Query Understanding so BM25 scores both raw terms and resolved
+/// canonical entities (including cross-lingual technical entities).
+fn build_ranking_query(
+    raw_query: &str,
+    effective_query: &str,
+    intel: &query_intel::QueryIntelligence,
+) -> String {
+    let mut combined = raw_query.trim().to_string();
+    let lower_combined = combined.to_lowercase();
+
+    // Append resolved entity tokens that aren't already verbatim in raw_query
+    for ent in &intel.key_entities {
+        for tok in ent.split_whitespace() {
+            let clean = tok.trim_matches(|c: char| !crate::util::is_word_char(c));
+            if clean.chars().count() >= 3 && !lower_combined.contains(&clean.to_lowercase()) {
+                combined.push(' ');
+                combined.push_str(clean);
+            }
+        }
+    }
+
+    // If follow-up or typo resolution produced additional content words in effective_query, include them
+    if !effective_query.eq_ignore_ascii_case(raw_query) {
+        let current_lower = combined.to_lowercase();
+        for tok in effective_query.split_whitespace() {
+            let clean = tok.trim_matches(|c: char| !crate::util::is_word_char(c));
+            if clean.chars().count() >= 3
+                && !clean.chars().all(|c| c.is_ascii_digit())
+                && !current_lower.contains(&clean.to_lowercase())
+            {
+                combined.push(' ');
+                combined.push_str(clean);
+            }
+        }
+    }
+
+    combined
+}
+
+/// Evaluates whether the top-5 ranked chunks have sufficient entity coverage
+/// and (when `intel.is_time_sensitive` is true) current-year evidence.
+pub(crate) fn evidence_is_sufficient(
+    results: &[SourceResult],
+    intel: &query_intel::QueryIntelligence,
+) -> bool {
+    if results.is_empty() {
+        return false;
+    }
+
+    let top_chunks: Vec<&SourceResult> = results.iter().take(5).collect();
+
+    // 1. Check entity coverage across the top-5 chunks
+    if !intel.key_entities.is_empty() {
+        let mut matched_entities = 0usize;
+        for ent in &intel.key_entities {
+            let tokens: Vec<String> = ent
+                .split_whitespace()
+                .map(|t| {
+                    t.trim_matches(|c: char| !crate::util::is_word_char(c))
+                        .to_lowercase()
+                })
+                .filter(|t| t.chars().count() >= 3)
+                .collect();
+            if tokens.is_empty() {
+                matched_entities += 1;
+                continue;
+            }
+            let found = top_chunks.iter().any(|chunk| {
+                let hay = format!(
+                    "{} {} {} {}",
+                    chunk.title.to_lowercase(),
+                    chunk.url.to_lowercase(),
+                    chunk.site_name.as_deref().unwrap_or("").to_lowercase(),
+                    chunk.extracted_text.to_lowercase()
+                );
+                tokens.iter().any(|tok| hay.contains(tok.as_str()))
+            });
+            if found {
+                matched_entities += 1;
+            }
+        }
+
+        if matched_entities * 2 < intel.key_entities.len() {
+            return false;
+        }
+    }
+
+    // 2. For time-sensitive queries, verify at least one top-5 chunk carries
+    // current-year evidence (resolved dynamically via chrono::Utc::now().year()).
+    if intel.is_time_sensitive {
+        let current_year = chrono::Utc::now().year();
+        let current_year_str = current_year.to_string();
+        let has_current_year_evidence = top_chunks.iter().any(|chunk| {
+            let date_is_current = chunk
+                .published
+                .map(|d| d.year() >= current_year)
+                .unwrap_or(false);
+            date_is_current
+                || chunk.extracted_text.contains(&current_year_str)
+                || chunk.title.contains(&current_year_str)
+        });
+        if !has_current_year_evidence {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Builds the second-pass corrective query from the semantic plan (or extracted
+/// entities + dynamic current year) if it hasn't already been dispatched.
+fn build_corrective_query(
+    intel: &query_intel::QueryIntelligence,
+    already_searched: &[String],
+) -> Option<String> {
+    let candidate = if let Some(ref cq) = intel.corrective_query {
+        cq.trim().to_string()
+    } else if !intel.key_entities.is_empty() {
+        let base = intel.key_entities.join(" ");
+        if intel.is_time_sensitive {
+            format!("{} {}", base, chrono::Utc::now().year())
+        } else {
+            base
+        }
+    } else {
+        return None;
+    };
+
+    if candidate.chars().count() < 3 {
+        return None;
+    }
+    let already_ran = already_searched
+        .iter()
+        .any(|q| q.eq_ignore_ascii_case(&candidate));
+    (!already_ran).then_some(candidate)
+}
+
+
+#[cfg(test)]
+mod stage1_sufficiency_tests {
+    use super::*;
+    use chrono::{Datelike, TimeZone, Utc};
+
+    #[test]
+    fn evidence_sufficiency_checks_entity_and_dynamic_current_year_coverage() {
+        let current_year = chrono::Utc::now().year();
+        let past_year = current_year - 2;
+
+        let mut intel = crate::query_intel::analyze_query("latest Google Antigravity release");
+        intel.is_time_sensitive = true;
+        intel.key_entities = vec!["Google Antigravity".to_string()];
+
+        let stale_unrelated = vec![SourceResult {
+            url: "https://en.wikipedia.org/wiki/Google_Play".to_string(),
+            title: "Google Play".to_string(),
+            extracted_text: format!("Google Play is a digital distribution service updated in {past_year}."),
+            char_count: 72,
+            engine: "wikipedia".to_string(),
+            published: Utc.with_ymd_and_hms(past_year, 5, 10, 0, 0, 0).single(),
+            language: Some("en".to_string()),
+            byline: None,
+            site_name: Some("Wikipedia".to_string()),
+            confidence: 0.9,
+            extractor: "dom_smoothie",
+        }];
+        assert!(
+            !evidence_is_sufficient(&stale_unrelated, &intel),
+            "stale source should fail sufficiency on time-sensitive query"
+        );
+
+        let fresh_matching = vec![SourceResult {
+            url: "https://antigravity.google/changelog".to_string(),
+            title: "Google Antigravity Changelog".to_string(),
+            extracted_text: format!("Google Antigravity release notes and platform updates ({current_year})."),
+            char_count: 75,
+            engine: "brave".to_string(),
+            published: Utc.with_ymd_and_hms(current_year, 3, 15, 0, 0, 0).single(),
+            language: Some("en".to_string()),
+            byline: None,
+            site_name: Some("Google Antigravity".to_string()),
+            confidence: 0.95,
+            extractor: "dom_smoothie",
+        }];
+        assert!(
+            evidence_is_sufficient(&fresh_matching, &intel),
+            "fresh entity-matching source should pass sufficiency"
+        );
     }
 }

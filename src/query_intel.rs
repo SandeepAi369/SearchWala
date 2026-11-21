@@ -11,7 +11,68 @@
 // All detection is rule-based (zero ML, zero latency, zero dependencies).
 // ============================================================================
 
+use chrono::Datelike;
 use std::collections::HashSet;
+
+/// Dynamic semantic classification of the query's nature.
+/// Populated by the LLM Query Understanding pass (with structural fallback when offline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SemanticCategory {
+    /// Specific product, software, platform, company, organization, agency, or tool ("Product/Org")
+    ProductOrg,
+    /// Breaking news, recent events, latest releases, or current status ("Live News")
+    LiveNews,
+    /// Historical events, biographies, static scientific definitions, or academic background ("History/Static")
+    HistoryStatic,
+    /// General everyday questions, how-to tutorials, comparisons, or broad conceptual topics ("General Everyday")
+    GeneralEveryday,
+}
+
+impl SemanticCategory {
+    pub fn from_label(label: &str) -> Option<Self> {
+        let norm: String = label
+            .trim()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        match norm.as_str() {
+            "productorg" | "product" | "organization" | "org" => Some(Self::ProductOrg),
+            "livenews" | "news" | "live" | "breakingnews" => Some(Self::LiveNews),
+            "historystatic" | "history" | "static" | "biography" | "encyclopedic" => {
+                Some(Self::HistoryStatic)
+            }
+            "generaleveryday" | "general" | "everyday" => Some(Self::GeneralEveryday),
+            _ => None,
+        }
+    }
+
+    pub fn default_for_intent(intent: &QueryIntent, is_time_sensitive: bool) -> Self {
+        if is_time_sensitive || *intent == QueryIntent::Temporal {
+            Self::LiveNews
+        } else {
+            match intent {
+                QueryIntent::Navigational => Self::ProductOrg,
+                QueryIntent::Person | QueryIntent::Factual => Self::HistoryStatic,
+                QueryIntent::Comparison | QueryIntent::HowTo | QueryIntent::Research => {
+                    Self::GeneralEveryday
+                }
+                QueryIntent::Temporal => Self::LiveNews,
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for SemanticCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SemanticCategory::ProductOrg => write!(f, "Product/Org"),
+            SemanticCategory::LiveNews => write!(f, "Live News"),
+            SemanticCategory::HistoryStatic => write!(f, "History/Static"),
+            SemanticCategory::GeneralEveryday => write!(f, "General Everyday"),
+        }
+    }
+}
 
 /// The detected intent category driving prompt selection and ranking behavior.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,9 +109,11 @@ pub enum QueryComplexity {
 pub struct QueryIntelligence {
     /// Primary detected intent
     pub intent: QueryIntent,
+    /// Dynamic semantic category (Product/Org, Live News, History/Static, General Everyday)
+    pub semantic_category: SemanticCategory,
     /// Whether the query needs current/fresh information
     pub is_time_sensitive: bool,
-    /// Extracted temporal hint if any ("2026", "today", "this week")
+    /// Extracted temporal hint if any
     pub temporal_hint: Option<String>,
     /// Key entities extracted from the query (proper nouns, subjects)
     pub key_entities: Vec<String>,
@@ -60,6 +123,8 @@ pub struct QueryIntelligence {
     pub optimal_source_count: usize,
     /// Whether to boost news engines in dispatch
     pub boost_news_engines: bool,
+    /// Semantic second-pass corrective query when initial evidence is insufficient
+    pub corrective_query: Option<String>,
 }
 
 // =============================================================================
@@ -111,14 +176,18 @@ pub fn analyze_query(query: &str) -> QueryIntelligence {
         || q_lower.contains("breaking")
         || q_lower.contains("announced");
 
+    let semantic_category = SemanticCategory::default_for_intent(&intent, is_time_sensitive);
+
     QueryIntelligence {
         intent,
+        semantic_category,
         is_time_sensitive,
         temporal_hint,
         key_entities,
         complexity,
         optimal_source_count,
         boost_news_engines,
+        corrective_query: None,
     }
 }
 
@@ -277,7 +346,7 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
     // "who won the 2025 NBA Finals". v7.0 only checked years in
     // detect_temporal, which runs AFTER intent is already decided.
     {
-        let this_year = chrono::Utc::now().format("%Y").to_string().parse::<i32>().unwrap_or(2026);
+        let this_year = chrono::Utc::now().year();
         if words.iter().any(|w| {
             w.parse::<i32>()
                 .map(|y| (this_year - 3..=this_year + 5).contains(&y))
@@ -373,8 +442,9 @@ fn detect_temporal(q_lower: &str, intent: &QueryIntent) -> (bool, Option<String>
         return (true, Some("current".to_string()));
     }
 
-    // An explicit year in the query is itself a temporal signal.
-    for year in 2020..=2035 {
+    // An explicit year in the query is itself a temporal signal (resolved dynamically).
+    let this_year = chrono::Utc::now().year();
+    for year in (this_year - 10)..=(this_year + 10) {
         let y = year.to_string();
         if toks.iter().any(|t| *t == y) {
             return (true, Some(y));
@@ -387,6 +457,24 @@ fn detect_temporal(q_lower: &str, intent: &QueryIntent) -> (bool, Option<String>
 // =============================================================================
 // Entity Extraction — Lightweight proper noun detection
 // =============================================================================
+
+fn is_contraction_token(raw_word: &str) -> bool {
+    let trimmed = raw_word.trim_matches(|c: char| !crate::util::is_word_char(c) && c != '\'' && c != '’');
+    if let Some( rest) = trimmed.strip_suffix("'s").or_else(|| trimmed.strip_suffix("’s")) {
+        return rest.contains('\'') || rest.contains('’');
+    }
+    trimmed.contains('\'') || trimmed.contains('’')
+}
+
+fn strip_possessive(word: &str) -> &str {
+    word.strip_suffix("'s")
+        .or_else(|| word.strip_suffix("’s"))
+        .unwrap_or(word)
+}
+
+fn has_internal_caps_or_digits(word: &str) -> bool {
+    word.chars().skip(1).any(|c| c.is_uppercase() || c.is_ascii_digit())
+}
 
 fn extract_entities(query: &str) -> Vec<String> {
     let stop_words: HashSet<&str> = [
@@ -401,37 +489,151 @@ fn extract_entities(query: &str) -> Vec<String> {
         "now", "today", "explain", "describe", "analyze",
     ].iter().cloned().collect();
 
+    let total_words = query.split_whitespace().count();
     let mut entities = Vec::new();
-    let mut current_entity = Vec::new();
 
-    for word in query.split_whitespace() {
-        let clean = word.trim_matches(|c: char| !crate::util::is_word_char(c));
-        if clean.is_empty() {
-            continue;
+    // Split on clause/sentence boundaries first so tokens across punctuation
+    // (e.g. "... Cowork? Specifically, I’m ...") never merge into one entity.
+    let clauses = query.split(|c: char| {
+        matches!(
+            c,
+            '.' | '?' | '!' | ',' | ';' | ':' | '\n' | '—' | '–' | '(' | ')' | '[' | ']' | '"' | '“' | '”'
+        )
+    });
+
+    for clause in clauses {
+        let mut current_entity: Vec<(String, bool, bool)> = Vec::new(); // (token, is_clause_start, has_internal_caps)
+        let mut seen_any_token_in_clause = false;
+
+        for raw_word in clause.split_whitespace() {
+            let is_clause_start = !seen_any_token_in_clause;
+            seen_any_token_in_clause = true;
+
+            if is_contraction_token(raw_word) {
+                if !current_entity.is_empty() {
+                    if current_entity.len() >= 2
+                        || !current_entity[0].1
+                        || current_entity[0].2
+                        || total_words <= 4
+                    {
+                        entities.push(
+                            current_entity
+                                .iter()
+                                .map(|(w, _, _)| w.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        );
+                    }
+                    current_entity.clear();
+                }
+                continue;
+            }
+
+            let without_possessive = strip_possessive(raw_word);
+            let clean = without_possessive.trim_matches(|c: char| !crate::util::is_word_char(c));
+            if clean.is_empty() {
+                continue;
+            }
+
+            let first_char = clean.chars().next().unwrap_or(' ');
+            let lower = clean.to_lowercase();
+
+            if first_char.is_uppercase()
+                && !stop_words.contains(lower.as_str())
+                && clean.chars().count() > 1
+            {
+                current_entity.push((
+                    clean.to_string(),
+                    is_clause_start,
+                    has_internal_caps_or_digits(clean),
+                ));
+            } else if !current_entity.is_empty() {
+                // Only keep a single-word clause-initial capitalized token if it has
+                // internal caps/digits (ClickUp, OpenAI, ISRO) or the whole query is short.
+                if current_entity.len() >= 2
+                    || !current_entity[0].1
+                    || current_entity[0].2
+                    || total_words <= 4
+                {
+                    entities.push(
+                        current_entity
+                            .iter()
+                            .map(|(w, _, _)| w.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    );
+                }
+                current_entity.clear();
+            }
         }
 
-        let first_char = clean.chars().next().unwrap_or(' ');
-        let lower = clean.to_lowercase();
+        if !current_entity.is_empty() {
+            if current_entity.len() >= 2
+                || !current_entity[0].1
+                || current_entity[0].2
+                || total_words <= 4
+            {
+                entities.push(
+                    current_entity
+                        .iter()
+                        .map(|(w, _, _)| w.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+            }
+            current_entity.clear();
+        }
+    }
 
-        // Detect capitalized words that aren't stop words and aren't at sentence start
-        if first_char.is_uppercase() && !stop_words.contains(lower.as_str()) && clean.len() > 1 {
-            current_entity.push(clean.to_string());
-        } else {
-            if !current_entity.is_empty() {
-                entities.push(current_entity.join(" "));
-                current_entity.clear();
+    // Fallback for scripts without uppercase/lowercase (e.g. Devanagari/Hindi)
+    // or all-lowercase queries where the user did not capitalize proper nouns.
+    if entities.is_empty() {
+        let has_non_ascii_alpha = query.chars().any(|c| !c.is_ascii() && c.is_alphabetic());
+        let has_any_uppercase = query.chars().any(|c| c.is_uppercase());
+        if has_non_ascii_alpha {
+            let non_ascii_tokens: Vec<String> = query
+                .split_whitespace()
+                .map(|w| w.trim_matches(|c: char| !crate::util::is_word_char(c)))
+                .filter(|w| {
+                    w.chars().any(|c| !c.is_ascii() && c.is_alphabetic())
+                        && w.chars().count() >= 3
+                })
+                .take(4)
+                .map(|w| w.to_string())
+                .collect();
+            if !non_ascii_tokens.is_empty() {
+                entities.push(non_ascii_tokens.join(" "));
+            }
+        } else if !has_any_uppercase {
+            let mut phrase = Vec::new();
+            for raw_word in query.split_whitespace() {
+                if is_contraction_token(raw_word) {
+                    continue;
+                }
+                let clean = strip_possessive(raw_word)
+                    .trim_matches(|c: char| !crate::util::is_word_char(c));
+                let lower = clean.to_lowercase();
+                if clean.chars().count() >= 3
+                    && !stop_words.contains(lower.as_str())
+                    && !clean.chars().all(|c| c.is_ascii_digit())
+                {
+                    phrase.push(clean.to_string());
+                    if phrase.len() >= 3 {
+                        break;
+                    }
+                } else if !phrase.is_empty() {
+                    break;
+                }
+            }
+            if !phrase.is_empty() {
+                entities.push(phrase.join(" "));
             }
         }
     }
 
-    // Flush last entity
-    if !current_entity.is_empty() {
-        entities.push(current_entity.join(" "));
-    }
-
-    // Deduplicate
+    // Deduplicate case-insensitively while preserving order
     let mut seen = HashSet::new();
-    entities.retain(|e| seen.insert(e.clone()));
+    entities.retain(|e| seen.insert(e.to_lowercase()));
 
     entities
 }
@@ -770,5 +972,39 @@ mod tests {
         let intel = analyze_query("");
         assert!(decompose_query("", &intel).is_empty());
         assert!(decompose_query("   ", &intel).is_empty());
+    }
+
+    #[test]
+    fn clause_boundaries_and_contractions_never_form_fake_entities() {
+        let q = "Wait, what is the latest update on Claude Cowork? Specifically, I’m asking about features.";
+        let intel = analyze_query(q);
+        assert!(
+            intel.key_entities.iter().any(|e| e == "Claude Cowork"),
+            "expected 'Claude Cowork' in {:?}",
+            intel.key_entities
+        );
+        assert!(
+            !intel.key_entities.iter().any(|e| e.contains("Specifically") || e.contains("Wait")),
+            "conversational clause starters leaked into entities: {:?}",
+            intel.key_entities
+        );
+    }
+
+    #[test]
+    fn lowercase_and_non_latin_queries_extract_subject_entities() {
+        let lower_intel = analyze_query("what is the dhruv rathi latest video");
+        assert!(
+            !lower_intel.key_entities.is_empty()
+                && lower_intel.key_entities[0].contains("dhruv"),
+            "lowercase query should still extract subject entity: {:?}",
+            lower_intel.key_entities
+        );
+
+        let hindi_intel = analyze_query("केप्लर टेलिस्कोप की प्रमुख खोजें");
+        assert!(
+            !hindi_intel.key_entities.is_empty(),
+            "non-Latin script query should extract script entities: {:?}",
+            hindi_intel.key_entities
+        );
     }
 }

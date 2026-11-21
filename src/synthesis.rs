@@ -679,7 +679,13 @@ pub async fn plan_subqueries(query: &str, cfg: &LlmConfig, n: usize) -> Option<V
     ];
     match call_with_timeout(&c, &msgs).await {
         Ok(raw) => {
-            let v = parse_planned_queries(&raw, query, n);
+            let v: Vec<String> = parse_planned_queries(&raw, query, n)
+                .into_iter()
+                .map(|sq| {
+                    let y = crate::copilot::neutralize_stale_years(query, &sq);
+                    crate::copilot::enforce_entity_retention(query, &y, &[])
+                })
+                .collect();
             if v.is_empty() { None } else { Some(v) }
         }
         Err(e) => {
@@ -725,9 +731,14 @@ pub async fn standalone_query(query: &str, prior: &[crate::chats::PriorTurn], cf
             return None;
         }
     };
-    let q = raw.lines().map(str::trim).find(|l| !l.is_empty())?.trim_matches(['"', '\'', '`']).trim().to_string();
-    let plausible = !q.is_empty() && q.chars().count() <= 200 && !q.to_lowercase().starts_with("here");
-    (plausible && !q.eq_ignore_ascii_case(query.trim())).then_some(q)
+    let q_raw = raw.lines().map(str::trim).find(|l| !l.is_empty())?.trim_matches(['"', '\'', '`']).trim().to_string();
+    let plausible = !q_raw.is_empty() && q_raw.chars().count() <= 200 && !q_raw.to_lowercase().starts_with("here");
+    if !plausible {
+        return None;
+    }
+    let year_clean = crate::copilot::neutralize_stale_years(query, &q_raw);
+    let q = crate::copilot::enforce_entity_retention(query, &year_clean, &[]);
+    (!q.eq_ignore_ascii_case(query.trim())).then_some(q)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
