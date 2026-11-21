@@ -1461,22 +1461,24 @@ pub fn extract_chunk_inline_date(text: &str) -> Option<chrono::DateTime<chrono::
 
     let tokens: Vec<&str> = text.split_whitespace().collect();
 
-    // 1. Check for ISO dates (YYYY-MM-DD or YYYY/MM/DD) inside tokens
+    // 1. Check for ISO dates (YYYY-MM-DD or YYYY/MM/DD) inside tokens (100% UTF-8 safe)
     for raw_tok in &tokens {
         let clean = raw_tok.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '/');
-        if clean.len() >= 10 {
-            let head = &clean[..10];
-            let sep = head.as_bytes()[4];
-            if (sep == b'-' || sep == b'/') && head.as_bytes()[7] == sep {
-                if let (Ok(y), Ok(m), Ok(d)) = (
-                    head[0..4].parse::<i32>(),
-                    head[5..7].parse::<u32>(),
-                    head[8..10].parse::<u32>(),
-                ) {
-                    if (1995..=max_year).contains(&y) {
-                        if let Some(dt) = Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).single() {
-                            if dt <= max_valid_dt {
-                                day_precision_dates.push(dt);
+        if let Some(head) = clean.get(..10) {
+            if head.is_ascii() {
+                let bytes = head.as_bytes();
+                let sep = bytes[4];
+                if (sep == b'-' || sep == b'/') && bytes[7] == sep {
+                    if let (Ok(y), Ok(m), Ok(d)) = (
+                        head[0..4].parse::<i32>(),
+                        head[5..7].parse::<u32>(),
+                        head[8..10].parse::<u32>(),
+                    ) {
+                        if (1995..=max_year).contains(&y) {
+                            if let Some(dt) = Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).single() {
+                                if dt <= max_valid_dt {
+                                    day_precision_dates.push(dt);
+                                }
                             }
                         }
                     }
@@ -1550,6 +1552,8 @@ mod stage2_tests {
 
     #[test]
     fn extract_chunk_inline_date_parses_iso_and_month_formats() {
+        // Regression test for multi-byte UTF-8 char at byte index 9..12 (e.g. "Anthropic’s")
+        assert!(extract_chunk_inline_date("Anthropic’s latest model release and केप्लर टेलिस्कोप").is_none());
         let current_year = Utc::now().year();
         let past_year = current_year - 1;
 

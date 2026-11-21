@@ -293,7 +293,9 @@ pub async fn understand_query(
     let current_year = now.year();
 
     let mut cfg = llm_config.clone();
-    cfg.max_output_tokens = Some(320);
+    // Allow 900 output tokens so reasoning models (e.g. gpt-oss-120b) can complete
+    // their internal reasoning chain before emitting the ~120-token JSON plan.
+    cfg.max_output_tokens = Some(900);
     let timeout_ms = cfg.timeout_ms.unwrap_or(4500).clamp(2000, 6000);
     cfg.timeout_ms = Some(timeout_ms);
 
