@@ -30,16 +30,8 @@ agree on, and answers with citations you can click, using any LLM or none.
 
 - **Consensus, not one index.** Pages rank by how many *independent* search
   indexes agree on them. Seven Bing-derived engines count as one vote.
-- **It reads the pages.** Full text and rich metadata (`published`, `modified`,
-  `byline`, `site_name`, normalized `language`, Markdown tables & LaTeX) are
-  extracted (`dom_smoothie` formatted primary + `rs-trafilatura` second opinion
-  + a deep reader for Next.js, Sandpack, Shadow DOM and hydration payloads),
-  with pre-scrape triage skipping off-topic or stale URLs before fetching.
-- **Answers you can check.** LLM-first semantic query understanding, 100%
-  algorithmic official-domain matching (zero hardcoded site lists), chunk-level
-  inline date freshness, and pre-LLM sentence pruning & deduplication pack more
-  verified facts into fewer tokens. Every `[n]` links to the exact source the
-  model saw, and each citation is checked against the cited text.
+- **It reads the pages.** Full articles, Markdown tables, LaTeX math, and publish dates are extracted cleanly (`dom_smoothie` + `rs-trafilatura`, plus a deep reader for Next.js, Sandpack, and hydration payloads), while off-topic or stale URLs are filtered out before fetching.
+- **Answers you can check.** Semantic query planning, automatic official-domain ranking (zero hardcoded site lists), and smart deduplication pack more verified facts into fewer tokens. Every `[n]` links directly to the exact source text the model saw.
 - **Works without an LLM.** You still get ranked sources and a quick answer
   quoted word for word from them.
 - **Your chats, saved on your machine.** Every conversation is kept locally
