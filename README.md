@@ -42,7 +42,7 @@ agree on, and answers with citations you can click, using any LLM or none.
 - **Private by default.** One binary on `127.0.0.1`. No account, no telemetry,
   and search needs no API key. Your LLM key stays in your browser.
 
-## See it in action
+## See it in action screenshot
 
 <table>
   <tr>
