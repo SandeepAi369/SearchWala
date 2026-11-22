@@ -1,0 +1,1685 @@
+use dom_query::local_name;
+use dom_query::{Document, NodeId, NodeRef, Selection};
+use foldhash::HashMap;
+use tendril::StrTendril;
+
+#[allow(clippy::wildcard_imports)]
+use crate::glob::*;
+#[allow(clippy::wildcard_imports)]
+use crate::helpers::*;
+use crate::is_probably_readable;
+#[allow(clippy::wildcard_imports)]
+use crate::matching::*;
+use crate::strict_visibility::remove_hidden_content;
+use crate::url_helpers::{is_absolute_url, resolve_url, to_absolute_url};
+use crate::{Config, ParsePolicy, ReadabilityError, TextMode};
+
+/// This struct represents the content of the article
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Article {
+    /// The title
+    pub title: String,
+    /// The author
+    pub byline: Option<String>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            serialize_with = "crate::serde_helpers::serialize_str_tendril",
+            deserialize_with = "crate::serde_helpers::deserialize_str_tendril"
+        )
+    )]
+    /// The relevant HTML content
+    pub content: StrTendril,
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            serialize_with = "crate::serde_helpers::serialize_str_tendril",
+            deserialize_with = "crate::serde_helpers::deserialize_str_tendril"
+        )
+    )]
+    /// The relevant text content
+    pub text_content: StrTendril,
+    /// The text length
+    pub length: usize,
+    /// The excerpt
+    pub excerpt: Option<String>,
+    /// The name of the site
+    pub site_name: Option<String>,
+    /// The text direction
+    pub dir: Option<String>,
+    /// The document language
+    pub lang: Option<String>,
+    /// The published time of the document
+    pub published_time: Option<String>,
+    /// The modified time of the document
+    pub modified_time: Option<String>,
+    /// The image of the document
+    pub image: Option<String>,
+    /// The favicon of the document
+    pub favicon: Option<String>,
+    /// The metadata's url
+    pub url: Option<String>,
+}
+
+/// This struct represents the metadata extracted from the document
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct Metadata {
+    pub title: String,
+    pub byline: Option<String>,
+    pub excerpt: Option<String>,
+    pub site_name: Option<String>,
+    pub published_time: Option<String>,
+    pub modified_time: Option<String>,
+    pub image: Option<String>,
+    pub favicon: Option<String>,
+    pub lang: Option<String>,
+    pub url: Option<String>,
+    pub dir: Option<String>,
+}
+
+impl Metadata {
+    fn is_empty(&self) -> bool {
+        self.title.is_empty()
+            && self.byline.is_none()
+            && self.excerpt.is_none()
+            && self.site_name.is_none()
+            && self.published_time.is_none()
+            && self.modified_time.is_none()
+            && self.image.is_none()
+            && self.favicon.is_none()
+            && self.lang.is_none()
+            && self.url.is_none()
+            && self.dir.is_none()
+    }
+
+    fn unescape_html_entities(&mut self) {
+        decode_html_entities(&mut self.title);
+        decode_opt_html_entities(&mut self.byline);
+        decode_opt_html_entities(&mut self.excerpt);
+        decode_opt_html_entities(&mut self.site_name);
+        decode_opt_html_entities(&mut self.published_time);
+        decode_opt_html_entities(&mut self.modified_time);
+        decode_opt_html_entities(&mut self.image);
+        decode_opt_html_entities(&mut self.favicon);
+    }
+}
+
+/// The processed DOM, content root and metadata returned by [`Readability::extract`].
+pub struct Extracted {
+    /// The processed document that owns `root`.
+    pub document: Document,
+    /// The content root node inside `document`.
+    pub root: NodeId,
+    /// Article metadata, including adjustments made during extraction.
+    pub metadata: Metadata,
+}
+
+impl Extracted {
+    /// The content root node.
+    ///
+    /// # Panics
+    /// Panics if `root` no longer belongs to `document` after caller modifications.
+    pub fn root(&self) -> NodeRef<'_> {
+        self.document
+            .tree
+            .get(&self.root)
+            .expect("the extracted root belongs to the returned document")
+    }
+
+    /// The content root as a selection.
+    pub fn selection(&self) -> Selection<'_> {
+        Selection::from(self.root())
+    }
+}
+
+/// A struct that provides readability functionality
+pub struct Readability {
+    /// The [Document] to be processed
+    pub doc: Document,
+    /// The absolute URL of the document
+    pub doc_url: Option<String>,
+    /// Configuration options for the readability
+    pub config: Config,
+}
+
+impl<T: Into<StrTendril>> From<T> for Readability {
+    fn from(html: T) -> Self {
+        Self {
+            doc: Document::from(html),
+            doc_url: None,
+            config: Config::default(),
+        }
+    }
+}
+
+impl Readability {
+    /// Create a new `Readability` instance
+    ///
+    /// # Arguments
+    ///
+    /// - `html` -- HTML content
+    /// - `document_url` -- an absolute URL of the page
+    /// - `cfg` -- an optional `Config` instance
+    ///
+    /// # Returns
+    ///
+    /// A new [`Readability`] instance
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadabilityError::BadDocumentURL`] if `document_url` is not an absolute URL
+    pub fn new<T: Into<StrTendril>>(
+        html: T,
+        document_url: Option<&str>,
+        cfg: Option<Config>,
+    ) -> Result<Self, ReadabilityError> {
+        Self::with_document(Document::from(html), document_url, cfg)
+    }
+
+    /// Create a new `Readability` instance with a `dom_query::Document`
+    ///
+    /// # Arguments
+    ///
+    /// - `document` -- a `dom_query::Document` instance
+    /// - `document_url` -- a document (absolute) URL of the page
+    /// - `cfg` -- an optional `Config` instance
+    ///
+    /// # Returns
+    ///
+    /// A new [`Readability`] instance
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadabilityError::BadDocumentURL`] if `document_url` is not an absolute URL
+    pub fn with_document(
+        document: dom_query::Document,
+        document_url: Option<&str>,
+        cfg: Option<Config>,
+    ) -> Result<Self, ReadabilityError> {
+        let doc_url = if let Some(url) = document_url {
+            if !is_absolute_url(url, true) {
+                return Err(ReadabilityError::BadDocumentURL);
+            }
+            Some(url.to_string())
+        } else {
+            None
+        };
+
+        Ok(Self {
+            doc: document,
+            doc_url,
+            config: cfg.unwrap_or_default(),
+        })
+    }
+}
+
+impl Readability {
+    /// Prepares the document for parsing:
+    ///
+    /// 1. Remove empty images
+    /// 2. Unwrap images inside `noscript` tags
+    /// 3. Remove `script` tags, and hidden text if [`Config::strict_visibility`] is set
+    /// 4. Remove `style` tags
+    /// 5. Replace multiple `br` tags with a single `br` tag
+    /// 6. Replace `font` tags with `span` tags
+    /// 7. Remove comments
+    fn prepare(&mut self) {
+        self.remove_empty_imgs();
+
+        self.unwrap_noscript_images();
+        if self.config.unwrap_noscript_if_small {
+            self.unwrap_noscript_content();
+        }
+
+        // remove scripts
+        self.doc.select_matcher(&MATCHER_SCRIPT).remove();
+
+        if self.config.strict_visibility {
+            remove_hidden_content(&self.doc);
+        }
+
+        // remove styles
+        self.doc.select_matcher(&MATCHER_STYLE).remove();
+
+        // replace duplicating br elements
+        self.replace_brs();
+
+        // replace fonts with spans
+        self.replace_fonts();
+
+        // remove comments
+        self.remove_comments();
+    }
+
+    /// Return the title of the article as a `StrTendril`.
+    ///
+    /// This method will try to guess the title of the article by looking at the
+    /// content of the page. It will first look for a `<title>` tag in the HTML
+    /// document, and if it doesn't find it, it will look for a `<h1>` tag.
+    /// If it still doesn't find one, it will return an empty string.
+    ///
+    /// The method will also try to clean up the title by removing any
+    /// unnecessary characters from it.
+    pub fn get_article_title(&self) -> StrTendril {
+        let title = self.doc.select_single_matcher(&MATCHER_TITLE).text();
+        let orig_title = title.trim();
+        let mut h1: Option<StrTendril> = None;
+
+        let mut cur_title = orig_title;
+        let char_count = orig_title.chars().count();
+        let mut has_hierarchy_sep = false;
+        if orig_title.chars().any(|c| TITLE_SEPARATORS.contains(&c)) {
+            has_hierarchy_sep = orig_title.chars().any(|c| TITLE_HIERARCHY_SEP.contains(&c));
+            if let Some(title_part) = truncate_title_last(orig_title) {
+                cur_title = title_part;
+            }
+
+            if cur_title.split_whitespace().count() < 3 {
+                if let Some(title_part) = truncate_title_first(orig_title) {
+                    cur_title = title_part;
+                }
+            }
+            // Everything below is such a mess
+        } else if cur_title.contains(": ") {
+            let matched = self.doc.select_matcher(&MATCHER_HEADING).iter().any(|h| {
+                let text = h.text();
+                text.trim() == cur_title
+            });
+
+            if !matched {
+                if let Some(tmp_title) = orig_title
+                    .rfind(':')
+                    .map(|idx| orig_title[idx + 1..].trim())
+                {
+                    cur_title = tmp_title;
+                    if cur_title.split_whitespace().count() < 3 {
+                        if let Some(tmp_title) =
+                            orig_title.find(':').map(|idx| orig_title[idx + 1..].trim())
+                        {
+                            cur_title = tmp_title;
+                        }
+                    } else if orig_title
+                        .find(':')
+                        .map_or(0, |idx| orig_title[0..=idx].split_whitespace().count())
+                        > 5
+                    {
+                        cur_title = orig_title;
+                    }
+                }
+            }
+        } else if !(15..=150).contains(&char_count) {
+            let h1_sel = self.doc.select_single("h1");
+            if !h1_sel.is_empty() {
+                h1 = Some(h1_sel.text());
+            }
+        }
+        if let Some(ref h1) = h1 {
+            cur_title = h1;
+        }
+        let normalized_title = normalize_spaces(cur_title);
+        cur_title = &normalized_title;
+
+        // If we now have 4 words or fewer as our title, and either no
+        // 'hierarchical' separators (\, /, > or ») were found in the original
+        // title or we decreased the number of words by more than 1 word, use
+        // the original title.
+        let cur_title_wc = cur_title.split_whitespace().count();
+
+        let orig_wc = orig_title
+            .split(TITLE_SEPARATORS)
+            .flat_map(str::split_whitespace)
+            .count();
+        if cur_title_wc <= 4 && (!has_hierarchy_sep || cur_title_wc + 1 != orig_wc) {
+            cur_title = orig_title;
+        }
+
+        cur_title.into()
+    }
+
+    fn replace_fonts(&mut self) {
+        let sel = self.doc.select_matcher(&MATCHER_FONT);
+        sel.rename("span");
+        sel.remove_all_attrs();
+    }
+
+    fn replace_brs(&mut self) {
+        let sel = self.doc.select_matcher(&MATCHER_BR);
+
+        for br in sel.nodes() {
+            let mut next_sibling = br.next_sibling();
+            let mut replaced = false;
+
+            while let Some(next) = next_significant_node(next_sibling) {
+                if !next.has_name("br") {
+                    break;
+                }
+
+                replaced = true;
+                next_sibling = next.next_sibling();
+                next.remove_from_parent();
+            }
+            if replaced {
+                let p = br.tree.new_element("p");
+                br.replace_with(&p);
+
+                let mut next_sibling = p.next_sibling();
+                while let Some(next) = next_sibling {
+                    if next.has_name("br") {
+                        if let Some(next_elem) = next_significant_node(next.next_sibling()) {
+                            if next_elem.has_name("br") {
+                                break;
+                            }
+                        }
+                    }
+
+                    if !is_phrasing_content(&next) {
+                        break;
+                    }
+
+                    next_sibling = next.next_sibling();
+                    p.append_child(&next);
+                }
+
+                while let Some(last) = p.last_child() {
+                    if is_whitespace(&last) {
+                        last.remove_from_parent();
+                    } else {
+                        break;
+                    }
+                }
+
+                if let Some(parent) = p.parent() {
+                    if parent.has_name("p") {
+                        parent.rename("div");
+                    }
+                }
+            }
+        }
+    }
+
+    fn remove_empty_imgs(&mut self) {
+        for node in self.doc.select_matcher(&MATCHER_IMG).nodes() {
+            let has_src = node.query_or(false, |n| {
+                n.as_element().is_some_and(|el| {
+                    el.attrs.iter().any(|a| {
+                        matches!(
+                            a.name.local.as_ref(),
+                            "src" | "data-src" | "data-srcset" | "srcset"
+                        ) || IMG_EXT.iter().any(|p| a.value.contains(p))
+                    })
+                })
+            });
+
+            if !has_src {
+                node.remove_from_parent();
+            }
+        }
+    }
+
+    fn unwrap_noscript_images(&self) {
+        let noscript_sel = self.doc.select("noscript:has(img:only-child)");
+        for noscript_node in noscript_sel.nodes() {
+            let Some(prev_sibling) = noscript_node.prev_element_sibling() else {
+                continue;
+            };
+            let prev_sel = Selection::from(prev_sibling);
+
+            let prev_img: NodeRef = if prev_sel.is_matcher(&MATCHER_IMG) {
+                prev_sibling
+            } else if prev_sel.is_matcher(&MATCHER_HAS_IMG_ONLY_CHILD) {
+                let prev_sel_img = prev_sel.select_matcher(&MATCHER_IMG_ONLY_CHILD);
+                prev_sel_img.nodes()[0]
+            } else {
+                continue;
+            };
+            let noscript_img_sel = Selection::from(*noscript_node).select_matcher(&MATCHER_IMG);
+            // at this point noscript_img_sel always has one element
+            let new_img = &noscript_img_sel.nodes()[0];
+
+            for attr in prev_img.attrs() {
+                if attr.value.as_ref() == "" {
+                    continue;
+                }
+
+                if matches!(attr.name.local.as_ref(), "src" | "srcset")
+                    || IMG_EXT.iter().any(|p| attr.value.contains(p))
+                {
+                    if new_img.attr_or(&attr.name.local, "") == attr.value {
+                        continue;
+                    }
+                    if new_img.has_attr(&attr.name.local) {
+                        let attr_name = format!("data-old-{}", attr.name.local);
+                        new_img.set_attr(&attr_name, &attr.value);
+                    } else {
+                        new_img.set_attr(&attr.name.local, &attr.value);
+                    }
+                }
+            }
+            prev_img.replace_with(new_img);
+        }
+    }
+
+    fn unwrap_noscript_content(&self) {
+        let noscript_sel = self.doc.select("body noscript");
+        if noscript_sel.is_empty() {
+            return;
+        }
+
+        let min_chars = self.config.char_threshold.min(200);
+        let mut candidates = Vec::new();
+        let mut noscript_p_chars = 0;
+
+        for noscript_node in noscript_sel.nodes() {
+            let p_chars: usize = Selection::from(*noscript_node)
+                .select_matcher(&MATCHER_P)
+                .nodes()
+                .iter()
+                .map(|n| n.normalized_char_count())
+                .sum();
+            noscript_p_chars += p_chars;
+            if p_chars >= min_chars {
+                candidates.push(*noscript_node);
+            }
+        }
+
+        if candidates.is_empty() {
+            return;
+        }
+
+        let total_p_chars: usize = self
+            .doc
+            .select_matcher(&MATCHER_P)
+            .nodes()
+            .iter()
+            .map(|n| n.normalized_char_count())
+            .sum();
+
+        if total_p_chars.saturating_sub(noscript_p_chars) >= self.config.char_threshold {
+            return;
+        }
+
+        for noscript_node in candidates {
+            for child in noscript_node.children() {
+                noscript_node.insert_before(&child);
+            }
+            noscript_node.remove_from_parent();
+        }
+    }
+
+    fn extract_impl(
+        &mut self,
+        policy: Option<ParsePolicy>,
+    ) -> Result<(Metadata, NodeId), ReadabilityError> {
+        self.verify_doc()?;
+
+        let ld_meta = if self.config.disable_json_ld {
+            None
+        } else {
+            self.parse_json_ld()
+        };
+        let mut metadata = self.get_article_metadata(ld_meta);
+
+        if metadata.byline.is_none() {
+            metadata.byline = self.byline_adjustment();
+        }
+
+        self.prepare();
+
+        if let Some(policy) = policy {
+            // When using a specific policy, make a single attempt to extract content
+            if self
+                .attempt_grab_article(&self.doc, &policy.into(), &metadata)
+                .is_none()
+            {
+                return Err(ReadabilityError::GrabFailed);
+            }
+        } else {
+            // When no policy is specified, use the multi-attempt approach for better results
+            let Some(doc) = self.grab_article(&metadata) else {
+                return Err(ReadabilityError::GrabFailed);
+            };
+            self.doc = doc;
+        }
+
+        let root_sel = self.doc.select_single_matcher(&MATCHER_CONTENT_ID);
+
+        let Some(root_node) = root_sel.nodes().first() else {
+            // After `grab_article` successfully returns a document
+            // there is no way that `#readability-page-1 does not exists
+            return Err(ReadabilityError::GrabFailed);
+        };
+
+        metadata.dir = get_dir_attr(root_node);
+
+        self.post_process_content(&root_sel);
+
+        self.fix_relative_uris(&root_sel);
+
+        // If we haven't found an excerpt in the article's metadata, use the article's
+        // first paragraph as the excerpt. This is used for displaying a preview of
+        // the article's content.
+
+        if metadata.excerpt.is_none() {
+            // TODO: Although this matches readability.js,
+            // the procedure is far from perfect and requires improvement.
+            metadata.excerpt = extract_excerpt(&root_sel);
+        }
+        let root_id = root_node.id;
+        Ok((metadata, root_id))
+    }
+
+    fn parse_impl(&mut self, policy: Option<ParsePolicy>) -> Result<Article, ReadabilityError> {
+        let (metadata, root_id) = self.extract_impl(policy)?;
+        let root_node = NodeRef::new(root_id, &self.doc.tree);
+        let text_content = match self.config.text_mode {
+            TextMode::Raw => root_node.text(),
+            TextMode::Formatted => root_node.formatted_text(),
+            TextMode::Markdown => root_node.md(None),
+        };
+        let text_length = text_content.chars().count();
+
+        Ok(Article {
+            title: metadata.title,
+            byline: metadata.byline,
+            dir: metadata.dir,
+            lang: metadata.lang,
+            content: root_node.html(),
+            text_content,
+            length: text_length,
+            excerpt: metadata.excerpt,
+            site_name: metadata.site_name,
+            published_time: metadata.published_time,
+            modified_time: metadata.modified_time,
+            image: metadata.image,
+            favicon: metadata.favicon,
+            url: metadata.url,
+        })
+    }
+
+    /// Extracts the relevant content from the document and provides it as a [`Article`] object.
+    ///
+    /// This is the primary method of the crate. It performs the following steps:
+    ///
+    /// - Verify the document (element nodes length)
+    /// - Extracts the metadata
+    /// - Cleans the document
+    /// - Extracts the main content of the document
+    /// - Post-processes the content
+    /// - Returns the content and the metadata as an [`Article`] object
+    ///
+    /// This method mutates the document. Calling it again on the same instance
+    /// nests the previously extracted article inside a new `<div>`; create a new
+    /// [`Readability`] to parse again.
+    ///
+    /// # Returns
+    ///
+    /// An [`Article`] object containing the content and the metadata.
+    ///
+    /// # Errors
+    /// If `config.max_elements_to_parse` is > 0 and the document's number of element nodes exceeds this limit,
+    /// a [`ReadabilityError::TooManyElements`] error is returned.
+    /// If the document fails to extract the content, a [`ReadabilityError::GrabFailed`] error is returned.
+    pub fn parse(&mut self) -> Result<Article, ReadabilityError> {
+        self.parse_impl(None)
+    }
+
+    /// Extracts the relevant content from the document and provides it as an [`Article`] object.
+    ///
+    /// This method performs the same steps as [`Readability::parse`], but performs only one attempt with the specified [`ParsePolicy`].
+    /// The results of this method are likely to be worse than those of [`Readability::parse`], but it consumes significantly
+    /// less memory because it does not need to keep the best attempt.
+    /// If you need more precise results, use [`Readability::parse`],  
+    /// as it sequentially applies all policies, from strict to raw.
+    ///
+    /// Like [`Readability::parse`], this method mutates the document; create a new
+    /// [`Readability`] to parse again.
+    ///
+    /// # Errors
+    /// If `config.max_elements_to_parse` is > 0 and the document's number of element nodes exceeds this limit,
+    /// a [`ReadabilityError::TooManyElements`] error is returned.
+    /// If the document fails to extract the content, a [`ReadabilityError::GrabFailed`] error is returned.
+    pub fn parse_with_policy(&mut self, policy: ParsePolicy) -> Result<Article, ReadabilityError> {
+        self.parse_impl(Some(policy))
+    }
+
+    /// Consumes `self` to extract the processed DOM and metadata without serializing content.
+    ///
+    /// # Errors
+    /// Returns the same extraction errors as [`Self::parse`].
+    pub fn extract(mut self) -> Result<Extracted, ReadabilityError> {
+        let (metadata, root) = self.extract_impl(None)?;
+        Ok(Extracted {
+            document: self.doc,
+            root,
+            metadata,
+        })
+    }
+
+    /// This method will search for a JSON-LD block in the page and
+    /// extract the metadata from it.
+    ///
+    /// # Returns
+    ///
+    /// A [Metadata] object containing the metadata extracted from the JSON-LD block.
+    /// If no valid JSON-LD block is found, this method returns `None`.
+    #[allow(clippy::too_many_lines)]
+    pub fn parse_json_ld(&self) -> Option<Metadata> {
+        for sel in &self.doc.select_matcher(&MATCHER_JSONLD) {
+            let text = sel.text();
+            let content = strip_cdata(&text);
+
+            /*
+               Because of `gjson` reserved "@" symbol for its own modifiers,
+               it is necessary to replace it with other symbol to be able of using `gjson`.
+               Or decline using `gjson` at all and replace it with other crate.
+               TODO: don't leave it like this!.
+            */
+
+            let content = content.trim().replace(r#""@"#, r#""^"#);
+
+            let mut parsed = gjson::parse(&content);
+            let mut clipped_content: String;
+
+            if parsed.kind() == gjson::Kind::Array {
+                for it in &parsed.array() {
+                    if has_json_ld_article_type(it) {
+                        clipped_content = it.to_string();
+                        parsed = gjson::parse(&clipped_content);
+                        break;
+                    }
+                }
+            }
+
+            let mut context_matched = false;
+
+            let context_val = parsed.get("^context");
+            if context_val.kind() == gjson::Kind::String && is_schema_org_url(context_val.str()) {
+                // validating @context
+                context_matched = true;
+            }
+
+            let context_vocab = parsed.get("^context.^vocab");
+            if context_vocab.kind() == gjson::Kind::String && is_schema_org_url(context_vocab.str())
+            {
+                // validating @context
+                context_matched = true;
+            }
+
+            if !context_matched {
+                continue;
+            }
+
+            // validating @type
+            if !parsed.get("^type").exists() {
+                for it in &parsed.get("^graph").array() {
+                    if has_json_ld_article_type(it) {
+                        clipped_content = it.to_string();
+                        parsed = gjson::parse(&clipped_content);
+                        break;
+                    }
+                }
+            }
+
+            if !has_json_ld_article_type(&parsed) {
+                continue;
+            }
+
+            // Title
+            let name_val = parsed.get("name");
+            let headline_val = parsed.get("headline");
+            let name_is_string = matches!(name_val.kind(), gjson::Kind::String);
+            let headline_is_string = matches!(headline_val.kind(), gjson::Kind::String);
+
+            let name = if name_is_string {
+                name_val.str().trim().to_string()
+            } else {
+                String::new()
+            };
+
+            let headline = if headline_is_string {
+                headline_val.str().trim().to_string()
+            } else {
+                String::new()
+            };
+
+            let mut ld_meta = Metadata::default();
+
+            if name_is_string && headline_is_string && name != headline {
+                let title = self.get_article_title();
+                let name_matches = text_similarity(&name, &title) > 0.75;
+                let headline_matches = text_similarity(&headline, &title) > 0.75;
+                if headline_matches && !name_matches {
+                    ld_meta.title = headline;
+                } else {
+                    ld_meta.title = name;
+                }
+            } else if name_is_string {
+                ld_meta.title = name;
+            } else if headline_is_string {
+                ld_meta.title = headline;
+            }
+
+            //Author
+
+            let author_val = parsed.get("author");
+
+            let byline = match author_val.kind() {
+                gjson::Kind::Object => Some(author_val.get("name").str().trim().to_string()),
+                gjson::Kind::Array => {
+                    let names: Vec<String> = author_val
+                        .get("#.name")
+                        .array()
+                        .iter()
+                        .map(|v| v.str().trim().to_string())
+                        .collect();
+                    Some(names.join(", "))
+                }
+                _ => None,
+            };
+
+            if let Some(byline) = byline.filter(|s| !s.is_empty()) {
+                ld_meta.byline = Some(byline);
+            }
+
+            // Description
+            ld_meta.excerpt = get_json_ld_string_value(&parsed, "description");
+
+            // Publisher
+            ld_meta.site_name = get_json_ld_string_value(&parsed, "publisher.name");
+
+            // DatePublished
+            ld_meta.published_time = get_json_ld_string_value(&parsed, "datePublished");
+
+            // DateModified
+            ld_meta.modified_time = get_json_ld_string_value(&parsed, "dateModified");
+
+            // Url
+            ld_meta.url = get_json_ld_string_value(&parsed, "url");
+
+            // Image
+            ld_meta.image = get_json_ld_string_value(&parsed, "image");
+
+            if !ld_meta.is_empty() {
+                return Some(ld_meta);
+            }
+        }
+        None
+    }
+
+    /// Extracts metadata from a web page.
+    ///
+    /// This function takes into account standard metadata formats like `OpenGraph`, Dublin Core,
+    /// schema.org, and also tries to extract some metadata from HTML tags like `<title>`.
+    ///
+    /// The function takes an optional `Metadata` object as input, which is used as a fallback
+    /// if no metadata can be found on the page. If the input `Metadata` object contains any
+    /// of the following fields, they will not be overwritten by this function:
+    /// - `title`
+    /// - `byline`
+    /// - `excerpt`
+    /// - `site_name`
+    /// - `published_time`
+    /// - `lang`
+    ///
+    /// # Arguments
+    ///
+    /// - `json_ld` -- An optional [`Metadata`] object, containing metadata extracted from JSON-LD.
+    ///
+    /// # Returns
+    ///
+    /// A [`Metadata`] object containing the extracted metadata.
+    pub fn get_article_metadata(&self, json_ld: Option<Metadata>) -> Metadata {
+        let mut values: HashMap<String, String> = HashMap::default();
+        let mut metadata = json_ld.unwrap_or_default();
+
+        let selection = self.doc.select_matcher(&MATCHER_META);
+
+        for node in selection.nodes() {
+            if let Some(content) = node.attr("content") {
+                let content = content.trim();
+                if content.is_empty() {
+                    continue;
+                }
+                if let Some(mut property) = node.attr("property") {
+                    property.make_ascii_lowercase();
+                    if let Some(property_name) = meta_property_name(&property) {
+                        let k = property_name.trim().to_string();
+                        values.insert(k, content.into());
+                        continue;
+                    }
+                }
+                if let Some(mut name) = node.attr("name") {
+                    name.make_ascii_lowercase();
+                    if is_meta_name(&name) {
+                        values.insert(normalize_meta_key(&name), content.into());
+                    }
+                }
+            }
+        }
+
+        // title
+        if metadata.title.is_empty() {
+            if let Some(val) = get_map_any_value(&values, META_TITLE_KEYS) {
+                metadata.title = val;
+            }
+        }
+
+        if metadata.title.is_empty() {
+            metadata.title = self.get_article_title().to_string();
+        }
+
+        // author
+        if metadata.byline.is_none() {
+            metadata.byline = get_map_any_value(&values, META_BYLINE_KEYS);
+        }
+        // if metadata is still none
+        if metadata.byline.is_none() {
+            if let Some(v) = values.get("article:author") {
+                if !is_absolute_url(v, true) {
+                    metadata.byline = Some(v.clone());
+                }
+            }
+        }
+
+        // description
+        if metadata.excerpt.is_none() {
+            metadata.excerpt = get_map_any_value(&values, META_EXCERPT_KEYS);
+        }
+
+        //site name
+        if metadata.site_name.is_none() {
+            metadata.site_name = values.get("og:site_name").cloned();
+        }
+
+        //published time
+        if metadata.published_time.is_none() {
+            metadata.published_time = get_map_any_value(&values, META_PUB_TIME_KEYS);
+        }
+
+        self.assign_extra_article_metadata(&mut metadata, &values);
+
+        metadata.lang = self.get_html_lang().map(|s| s.to_string());
+
+        metadata.unescape_html_entities();
+        metadata
+    }
+
+    fn assign_extra_article_metadata(
+        &self,
+        metadata: &mut Metadata,
+        values: &HashMap<String, String>,
+    ) {
+        // thumbnail
+        if metadata.image.is_none() {
+            metadata.image = get_map_any_value(values, META_IMAGE_KEYS);
+        }
+
+        // modified time
+        if metadata.modified_time.is_none() {
+            metadata.modified_time = get_map_any_value(values, META_MOD_TIME_KEYS);
+        }
+
+        metadata.favicon = extract_favicon(&self.doc, self.parse_base_url());
+    }
+
+    fn byline_adjustment(&self) -> Option<String> {
+        let mut meta_byline: Option<String> = None;
+        let body_node = self.doc.body()?;
+        let mut next_node = next_child_or_sibling(&body_node, false);
+        while let Some(node) = next_node {
+            if is_valid_byline(&node) {
+                let byline = Selection::from(node)
+                    .select_single("[itemprop=name]")
+                    .nodes()
+                    .first()
+                    .map_or_else(|| node.text(), |prop_name| prop_name.text());
+
+                meta_byline = Some(normalize_spaces(&byline));
+                node.remove_from_parent();
+                break;
+            }
+            next_node = next_child_or_sibling(&node, false);
+        }
+        meta_byline
+    }
+
+    fn remove_comments(&self) {
+        let comments: Vec<NodeRef> = self
+            .doc
+            .root()
+            .descendants_it()
+            .filter(NodeRef::is_comment)
+            .collect();
+
+        for comment in comments {
+            comment.remove_from_parent();
+        }
+    }
+
+    fn get_html_lang(&self) -> Option<StrTendril> {
+        let sel = self.doc.select_single_matcher(&MATCHER_HTML_LANG);
+        sel.attr("lang")
+    }
+
+    fn post_process_content(&self, root_sel: &Selection) {
+        // Link cleanup only; absolute-URL rewriting is performed later in `fix_relative_uris`.
+        fix_links(root_sel);
+
+        simplify_nested_elements(root_sel);
+
+        let score_sel = root_sel
+            .parent()
+            .select("*[data-readability-score], *[data-readability-table]");
+        score_sel.remove_attrs(&["data-readability-score", "data-readability-table"]);
+
+        if !self.config.keep_classes {
+            self.clean_classes(root_sel);
+        }
+    }
+
+    fn clean_classes(&self, sel: &Selection) {
+        if self.config.classes_to_preserve.is_empty() {
+            sel.select("*[class]").remove_attr("class");
+            return;
+        }
+        let classes_to_preserve: Vec<&str> = self
+            .config
+            .classes_to_preserve
+            .iter()
+            .map(String::as_str)
+            .collect();
+
+        for node in sel.select("*[class]").nodes() {
+            let Some(class_string) = node.class() else {
+                continue;
+            };
+            let kept_classes = class_string
+                .split_whitespace()
+                .filter(|s| classes_to_preserve.contains(s))
+                .collect::<Vec<&str>>();
+            if kept_classes.is_empty() {
+                node.remove_attr("class");
+            } else {
+                node.set_attr("class", &kept_classes.join(" "));
+            }
+        }
+    }
+
+    fn verify_doc(&self) -> Result<(), ReadabilityError> {
+        if self.config.max_elements_to_parse > 0 {
+            let total_elements = self
+                .doc
+                .root()
+                .descendants_it()
+                .filter(NodeRef::is_element)
+                .count();
+            if total_elements > self.config.max_elements_to_parse {
+                return Err(ReadabilityError::TooManyElements(
+                    total_elements,
+                    self.config.max_elements_to_parse,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Estimates whether the document is readable in a *quick-and-dirty* way.
+    ///
+    /// Must be called before `Readability::parse` because it cleans the document and changes its structure.
+    ///
+    /// # Returns
+    ///
+    /// True if the document is readable, false otherwise.
+    pub fn is_probably_readable(&self) -> bool {
+        is_probably_readable(
+            &self.doc,
+            Some(self.config.readable_min_score),
+            Some(self.config.readable_min_content_length),
+        )
+    }
+}
+
+// Methods related to URL handling
+impl Readability {
+    fn parse_base_url(&self) -> Option<String> {
+        // TODO: Probably, this should be calculated during `Readability` construction,
+        // and later accessed via property `Readability.base_url`
+        let Some(base_uri) = self.doc.base_uri() else {
+            return self.doc_url.clone();
+        };
+
+        if let Some(doc_url) = self.doc_url.as_ref() {
+            resolve_url(doc_url, &base_uri).to_string().into()
+        } else {
+            Some(base_uri.to_string())
+        }
+    }
+
+    fn fix_relative_uris(&self, root_sel: &Selection) {
+        // Getting a base uri from the Readability.document,
+        // which wasn't changed after the grabbing the article
+        let Some(base_url) = self.parse_base_url() else {
+            return;
+        };
+
+        let url_sel = if self.doc_url.as_ref() == Some(&base_url) {
+            r##"a[href]:not([href^="#"]):not([href^="http"])"##
+        } else {
+            r#"a[href]:not([href^="http"])"#
+        };
+        for a in root_sel.select(url_sel).nodes() {
+            set_attr_absolute_url(a, "href", &base_url);
+        }
+
+        for media in root_sel.select_matcher(&MATCHER_SOURCES).nodes() {
+            set_attr_absolute_url(media, "src", &base_url);
+            set_attr_absolute_url(media, "poster", &base_url);
+
+            if let Some(srcset) = media.attr("srcset") {
+                let abs_srcset: Vec<String> = split_srcset(&srcset)
+                    .into_iter()
+                    .map(|(src, descriptor)| {
+                        let abs_src = to_absolute_url(&base_url, src);
+                        if descriptor.is_empty() {
+                            abs_src.into_owned()
+                        } else {
+                            format!("{abs_src} {descriptor}")
+                        }
+                    })
+                    .collect();
+                if !abs_srcset.is_empty() {
+                    media.set_attr("srcset", abs_srcset.join(", ").as_str());
+                }
+            }
+        }
+    }
+}
+
+fn get_map_any_value(map: &HashMap<String, String>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|&key| map.get(key).cloned())
+}
+
+fn next_significant_node(node: Option<NodeRef>) -> Option<NodeRef> {
+    let mut next = node;
+    while let Some(ref n) = next {
+        if !n.is_element() && n.text().trim().is_empty() {
+            next = n.next_sibling();
+        } else {
+            break;
+        }
+    }
+    next
+}
+fn set_attr_absolute_url(node: &NodeRef, attr_key: &str, base_uri: &str) {
+    let Some(attr) = node.attr(attr_key) else {
+        return;
+    };
+    let abs_url = to_absolute_url(base_uri, &attr);
+    node.set_attr(attr_key, &abs_url);
+}
+
+/// Splits a `srcset` value into `(url, descriptor)` candidates, keeping commas
+/// inside URLs (e.g. `data:`) and ending a candidate at a comma after the URL or descriptor.
+fn split_srcset(srcset: &str) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    let mut rest = srcset;
+    while {
+        rest = rest.trim_start_matches(|c: char| c == ',' || c.is_ascii_whitespace());
+        !rest.is_empty()
+    } {
+        let (url, tail) = rest
+            .split_once(|c: char| c.is_ascii_whitespace())
+            .unwrap_or((rest, ""));
+        if url.ends_with(',') {
+            out.push((url.trim_end_matches(','), ""));
+            rest = tail;
+        } else {
+            // shortcut: commas inside parenthesized descriptors are not handled,
+            // upgrade if a future srcset syntax relies on them.
+            let (desc, tail) = tail.split_once(',').unwrap_or((tail, ""));
+            out.push((url, desc.trim()));
+            rest = tail;
+        }
+    }
+    out
+}
+
+fn fix_links(root_sel: &Selection) {
+    // Handle links with javascript: URIs, since
+    // they won't work after scripts have been removed from the page.
+    for a in root_sel.select_matcher(&MATCHER_JS_LINK).nodes() {
+        let children = a.children();
+        if children.len() == 1 {
+            let child = &children[0];
+            if child.is_text() {
+                a.replace_with(child);
+            } else {
+                a.remove_all_attrs();
+                a.rename("span");
+            }
+        } else if children.is_empty() {
+            a.remove_from_parent();
+        } else {
+            a.remove_all_attrs();
+            a.rename("span");
+        }
+    }
+
+    // Handle links without href attributes.
+    for a in root_sel.select("a:not([href])").nodes() {
+        if a.children().is_empty() {
+            a.remove_from_parent();
+        }
+    }
+}
+
+fn simplify_nested_elements(root_sel: &Selection) {
+    for td_node in root_sel.select("*:not(tr) > td").nodes() {
+        if let Some(parent) = td_node.parent() {
+            if let Some(first_child) = td_node.first_child() {
+                parent.append_children(&first_child);
+            }
+        }
+        td_node.remove_from_parent();
+    }
+    simplify_nested_divs(root_sel);
+}
+
+fn simplify_nested_divs(root_sel: &Selection) {
+    let sel = root_sel.select("div, section");
+    for parent in sel.nodes().iter().rev() {
+        let Some(node) = parent.first_element_child() else {
+            continue;
+        };
+
+        if node.next_element_sibling().is_some() {
+            continue;
+        }
+
+        if !node
+            .qual_name_ref()
+            .is_some_and(|name| matches!(name.local, local_name!("div") | local_name!("section")))
+        {
+            continue;
+        }
+
+        for attr in parent.attrs() {
+            node.set_attr(&attr.name.local, &attr.value);
+        }
+        parent.replace_with(&node.id);
+    }
+    root_sel.select(":is(div, section):empty").remove();
+}
+
+fn extract_excerpt(sel: &Selection) -> Option<String> {
+    let p_sel = sel.select_single_matcher(&MATCHER_P);
+    if p_sel.is_empty() {
+        None
+    } else {
+        Some(p_sel.text().trim().to_string())
+    }
+}
+
+fn normalize_meta_key(raw_key: &str) -> String {
+    raw_key
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("")
+        .replace('.', ":")
+}
+
+fn has_json_ld_article_type(value: &gjson::Value) -> bool {
+    let typ = value.get("^type");
+    match typ.kind() {
+        gjson::Kind::String => JSONLD_ARTICLE_TYPES.iter().any(|p| typ.str().contains(p)),
+        gjson::Kind::Array => typ.array().iter().any(|it| {
+            it.kind() == gjson::Kind::String
+                && JSONLD_ARTICLE_TYPES.iter().any(|p| it.str().contains(p))
+        }),
+        _ => false,
+    }
+}
+
+fn get_json_ld_string_value(value: &gjson::Value, path: &str) -> Option<String> {
+    let val = value.get(path);
+    if matches!(val.kind(), gjson::Kind::String) {
+        let val = val.str().trim().to_string();
+        if !val.is_empty() {
+            return Some(val);
+        }
+    }
+    None
+}
+
+fn extract_favicon(root_node: &Document, base_url: Option<String>) -> Option<String> {
+    let head_node = root_node.head()?;
+    let head_sel = Selection::from(head_node);
+
+    let mut urls: Vec<(String, f32)> = Vec::new();
+
+    let icon_priority: f32 = 1000.0;
+    for node in head_sel.select_matcher_iter(&MATCHER_FAVICON) {
+        let Some(href) = node.attr("href") else {
+            continue;
+        };
+        let Some(rel) = node.attr("rel") else {
+            continue;
+        };
+
+        // base priority
+        let mut priority = match rel.as_ref() {
+            "icon" => icon_priority,
+            "shortcut icon" => icon_priority - 100.0,
+            "apple-touch-icon" => icon_priority - 150.0,
+            _ => 0.0,
+        };
+
+        // type bonus
+        if let Some(typ) = node.attr("type") {
+            priority += match typ.as_ref() {
+                "image/svg+xml" => 100.0,
+                "image/png" => 50.0,
+                "image/x-icon" | "image/vnd.microsoft.icon" | "image/ico" => 25.0,
+                _ => 0.0,
+            };
+        }
+
+        // size bonus
+        if let Some(sizes) = node.attr("sizes") {
+            if sizes.as_ref() == "any" {
+                priority += 50.0;
+            } else if let Some(size) = sizes.split('x').next() {
+                if let Ok(px) = size.parse::<f32>() {
+                    if px > 0.0 {
+                        priority += px.log2().min(12.0);
+                    }
+                }
+            }
+        }
+        urls.push((href.to_string(), priority));
+    }
+    let mut favicon_url = urls
+        .into_iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .map(|(href, _)| href);
+    // Transform to absolute URL if base_url is provided
+    if let Some(ref base_url) = base_url {
+        favicon_url = favicon_url.map(|u| to_absolute_url(base_url, &u).into());
+    }
+    favicon_url
+}
+
+fn decode_html_entities(s: &mut String) {
+    let decoded = html_escape::decode_html_entities(s);
+    if let std::borrow::Cow::Owned(new) = decoded {
+        *s = new;
+    }
+}
+
+fn decode_opt_html_entities(opt: &mut Option<String>) {
+    if let Some(s) = opt {
+        decode_html_entities(s);
+    }
+}
+
+fn is_valid_byline(node: &NodeRef) -> bool {
+    let mut is_byline = MATCHER_BYLINE.match_element(node);
+    if !is_byline {
+        let match_string = get_node_matching_string(node);
+        // TODO: use `match_string..split_whitespace().any(||)` for precicion.
+        is_byline = BYLINE_PATTERNS.iter().any(|p| match_string.contains(p));
+    }
+    if !is_byline {
+        return false;
+    }
+    let byline_len = node.text().trim().chars().count();
+    byline_len > 0 && byline_len < 100
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dom_query::Document;
+
+    #[test]
+    fn test_simplify_nested_divs() {
+        let contents = r"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                <div>
+                    <div>
+                        <div>
+                            <div>Text</div>
+                        </div>
+                    </div>
+                </div>
+            </body>
+        </html>";
+        let doc = Document::from(contents);
+        let body_sel = doc.select_single("body");
+
+        simplify_nested_elements(&body_sel);
+        assert_eq!(doc.select("div").length(), 1);
+    }
+
+    #[test]
+    fn test_replace_font_tags() {
+        let contents = r#"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                <font size="4" color="blue" face="Arial">Styled Text Here</font>
+                <font size="4" color="blue" face="Arial">Styled Text Here</font>
+            </body>
+        </html>"#;
+
+        let mut readability = Readability::from(contents);
+        readability.replace_fonts();
+
+        debug_assert_eq!(
+            &readability.doc.select("span").html(),
+            "<span>Styled Text Here</span>"
+        );
+    }
+
+    #[test]
+    fn test_remove_unwanted_urls() {
+        let contents = r#"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                <a href="/home">Home</a>
+                <a href="javascript:void(0)">Click me</a>
+            </body>
+        </html>"#;
+        let readability = Readability::from(contents);
+        fix_links(&readability.doc.select("body"));
+        assert_eq!(readability.doc.select("a").length(), 1);
+    }
+
+    #[test]
+    fn test_get_title() {
+        let contents = include_str!("../test-pages/rustwiki_2024.html");
+        let mut readability = Readability::from(contents);
+        readability.prepare();
+
+        let title = readability.get_article_title();
+
+        assert_eq!(&title, "Rust (programming language) - Wikipedia");
+    }
+
+    #[test]
+    fn test_normalize_spaces() {
+        let text = "  The    quick\t        brown\r\n  fox ";
+        let normalized = normalize_spaces(text);
+        assert_eq!(normalized, "The quick brown fox");
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_parse_json_ld() {
+        let contents = include_str!("../test-pages/ok/aclu/source.html");
+        let ra = Readability::from(contents);
+
+        let meta_contents = include_str!("../test-pages/aclu_ld_meta.json");
+        let expected_meta: Metadata = serde_json::from_str(meta_contents).unwrap();
+
+        let meta = ra.parse_json_ld().unwrap();
+
+        assert_eq!(expected_meta, meta);
+    }
+
+    #[test]
+    fn test_disable_sparse_json_ld() {
+        let contents = include_str!("../test-pages/rustwiki_2024.html");
+        let cfg = Config {
+            disable_json_ld: false,
+            ..Default::default()
+        };
+        let mut readability = Readability::new(contents, None, Some(cfg)).unwrap();
+        // `Article::url` is always taken from JSON-LD.
+        // Therefore, if `config.disable_json_ld` is set to true, `Article::url` will be `None`.
+        let res = readability.parse().unwrap();
+        let expected_url =
+            Some("https://en.wikipedia.org/wiki/Rust_(programming_language)".to_string());
+        assert_eq!(res.url, expected_url);
+
+        let cfg = Config {
+            disable_json_ld: true,
+            ..Default::default()
+        };
+        let mut readability = Readability::new(contents, None, Some(cfg)).unwrap();
+        let res = readability.parse().unwrap();
+        let expected_url = None;
+        assert_eq!(res.url, expected_url);
+    }
+
+    #[test]
+    fn test_max_elements() {
+        let contents = include_str!("../test-pages/rustwiki_2024.html");
+        // each element represent a test parameters, where 0 is max_elements_to_parse, 1 is want_err
+        let tests = [(10, true), (0, false), (10000, false)];
+
+        for (max_elements_to_parse, want_err) in tests {
+            let cfg = Config {
+                max_elements_to_parse,
+                ..Default::default()
+            };
+            let mut readability = Readability::new(contents, None, Some(cfg)).unwrap();
+            let res = readability.parse();
+            if want_err {
+                assert!(matches!(
+                    res.err().unwrap(),
+                    ReadabilityError::TooManyElements(_, _)
+                ));
+            } else {
+                assert!(res.is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_article_metadata_without_json_ld() {
+        let contents = include_str!("../test-pages/rustwiki_2024.html");
+        let config = Config {
+            disable_json_ld: true,
+            ..Default::default()
+        };
+        let ra = Readability::new(contents, None, Some(config)).unwrap();
+        let metadata = ra.get_article_metadata(None);
+
+        assert_eq!("Rust (programming language) - Wikipedia", metadata.title);
+        assert!(metadata.byline.is_none());
+        assert!(metadata.excerpt.is_none());
+        assert!(metadata.site_name.is_none());
+        assert!(metadata.published_time.is_none());
+        assert!(metadata.modified_time.is_none());
+        assert!(metadata.image.is_some());
+        assert!(metadata.favicon.is_some());
+        assert_eq!(Some("en".to_string()), metadata.lang);
+        assert!(metadata.url.is_none());
+        assert!(metadata.dir.is_none());
+    }
+
+    #[test]
+    fn test_base_uri() {
+        let contents = r#"<!DOCTYPE>
+        <html>
+            <head>
+                <base href="https://example.com/">
+                <title>Test</title>
+            </head>
+            <body>
+            </body>
+        </html>"#;
+        let readability = Readability::from(contents);
+        let base_url = readability.parse_base_url();
+        assert_eq!(base_url.unwrap().as_str(), "https://example.com/");
+    }
+
+    #[test]
+    fn test_get_title_with_separator_only() {
+        let contents = r"<!DOCTYPE>
+        <html>
+            <head><title>/</title></head>
+            <body></body>
+        </html>";
+        let readability = Readability::from(contents);
+        let title = readability.get_article_title();
+        assert_eq!(&title, "/");
+    }
+
+    #[test]
+    fn test_bad_document_url() {
+        let contents = r"<!DOCTYPE html>
+    <html>
+        <head><title>Title</title></head>
+        <body>Content</body>
+    </html>";
+
+        let result = Readability::new(contents, Some("example.com"), None);
+        assert!(
+            matches!(result, Err(e) if e.to_string().contains("the document URL must be absolute"))
+        );
+    }
+
+    #[test]
+    fn test_parse_base_url_with_doc_and_base() {
+        let contents = r#"<!DOCTYPE>
+    <html>
+      <head>
+        <base href="/blog/">
+        <title>Test</title>
+      </head>
+      <body></body>
+    </html>"#;
+        let ra =
+            Readability::new(contents, Some("https://example.com/news/page.html"), None).unwrap();
+        // Ensure fix in parse_base_url wraps in Some(...)
+        let base_url = ra.parse_base_url().expect("base url");
+        assert_eq!(base_url, "https://example.com/blog/");
+    }
+
+    #[test]
+    fn test_fix_relative_uris_srcset_without_descriptor() {
+        let contents = r#"
+        <!DOCTYPE html>
+        <html> 
+            <head><base href="https://example.com/"></head>
+            <body>
+                 <video width="320" height="240" controls>
+                    <source src="clip.mp4" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video> 
+                <img src="/img/a.jpg" srcset="img/a.jpg, img/b.jpg 2x">
+            </body>
+        </html>"#;
+        let ra = Readability::new(contents, None, None).unwrap();
+        let body = ra.doc.select("body");
+
+        ra.fix_relative_uris(&body);
+        let got_img = ra.doc.select("img").attr("srcset").unwrap();
+        assert_eq!(
+            &got_img,
+            "https://example.com/img/a.jpg, https://example.com/img/b.jpg 2x"
+        );
+        let got_video = ra.doc.select("video source").attr("src").unwrap();
+        assert_eq!(&got_video, "https://example.com/clip.mp4");
+    }
+
+    #[test]
+    fn test_fix_relative_uris_srcset_candidates() {
+        let contents = r#"
+        <!DOCTYPE html>
+        <html>
+            <head><base href="https://example.com/"></head>
+            <body>
+                <img srcset="img/a.jpg 1x,img/b.jpg 2x">
+                <img srcset="data:image/gif;base64,R0lGOD 1x,img/c.jpg 2x">
+                <img srcset="img/d.jpg,
+                             img/e.jpg 2x">
+            </body>
+        </html>"#;
+        let ra = Readability::new(contents, None, None).unwrap();
+        let body = ra.doc.select("body");
+
+        ra.fix_relative_uris(&body);
+        let got_srcset: Vec<String> = ra
+            .doc
+            .select("img")
+            .nodes()
+            .iter()
+            .map(|n| n.attr("srcset").unwrap().to_string())
+            .collect();
+        assert_eq!(
+            got_srcset,
+            [
+                "https://example.com/img/a.jpg 1x, https://example.com/img/b.jpg 2x",
+                "data:image/gif;base64,R0lGOD 1x, https://example.com/img/c.jpg 2x",
+                "https://example.com/img/d.jpg, https://example.com/img/e.jpg 2x",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_metadata_is_empty() {
+        let empty_meta = Metadata::default();
+        assert!(empty_meta.is_empty());
+
+        let non_empty_meta_1 = Metadata {
+            title: "The Title".into(),
+            ..Default::default()
+        };
+        assert!(!non_empty_meta_1.is_empty());
+        let non_empty_meta_2 = Metadata {
+            lang: Some("en".into()),
+            ..Default::default()
+        };
+        assert!(!non_empty_meta_2.is_empty());
+    }
+
+    #[test]
+    fn test_consume_byline() {
+        let contents = r#"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                <div>
+                 <a class="site-title" rel="author" href="/">Cat's Blog</a>
+                <p>Content</p>
+                 </div>
+            </body>
+        </html>"#;
+
+        let doc = Document::from(contents);
+        let mut ra = Readability::with_document(doc, None, None).unwrap();
+        let _ = ra.parse();
+        // consuming byline during grabbing the article
+        assert!(!ra.doc.select("a").exists());
+    }
+
+    #[test]
+    fn test_skipping_byline() {
+        let contents = r#"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                 <a class="site-title" rel="author" href="/">Cat's Blog</a>
+            </body>
+        </html>"#;
+
+        let doc = Document::from(contents);
+        let metadata = Metadata {
+            byline: Some("Cat".to_string()),
+            ..Default::default()
+        };
+        let ra = Readability::with_document(doc, None, None).unwrap();
+        let _ = ra.get_article_metadata(Some(metadata));
+        // consuming byline during grabbing the article
+        assert!(ra.doc.select("a").exists());
+    }
+}

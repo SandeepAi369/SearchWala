@@ -27,11 +27,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use url::{Host, Url};
 
 /// Hostnames that are never acceptable, opt-in or not.
-const ALWAYS_BLOCKED_HOSTS: &[&str] = &[
-    "metadata.google.internal",
-    "metadata.goog",
-    "instance-data",
-];
+const ALWAYS_BLOCKED_HOSTS: &[&str] =
+    &["metadata.google.internal", "metadata.goog", "instance-data"];
 
 /// Cloud metadata IPs — never reachable regardless of opt-in.
 const ALWAYS_BLOCKED_IPS: &[Ipv4Addr] = &[
@@ -104,7 +101,10 @@ pub fn validate_base_url_with(raw: &str, allow_local: bool) -> Result<Url, Strin
     match host {
         Host::Domain(d) => {
             let dl = d.to_lowercase();
-            if ALWAYS_BLOCKED_HOSTS.iter().any(|b| dl == *b || dl.ends_with(&format!(".{b}"))) {
+            if ALWAYS_BLOCKED_HOSTS
+                .iter()
+                .any(|b| dl == *b || dl.ends_with(&format!(".{b}")))
+            {
                 return Err(format!("base_url host {d:?} is blocked"));
             }
             if (dl == "localhost" || dl.ends_with(".localhost") || dl.ends_with(".local"))
@@ -178,7 +178,10 @@ pub fn scrape_url_allowed(u: &Url) -> bool {
         Some(url::Host::Ipv6(ip)) => is_ip_allowed_with(IpAddr::V6(ip), false),
         Some(url::Host::Domain(d)) => {
             let d = d.trim_end_matches('.').to_ascii_lowercase();
-            !(d == "localhost" || d.ends_with(".localhost") || d.ends_with(".internal") || d.ends_with(".local"))
+            !(d == "localhost"
+                || d.ends_with(".localhost")
+                || d.ends_with(".internal")
+                || d.ends_with(".local"))
         }
         None => false,
     }
@@ -290,7 +293,12 @@ mod tests {
 
     #[test]
     fn rejects_non_http_schemes() {
-        for u in ["file:///etc/passwd", "gopher://x/", "ftp://x/", "javascript:alert(1)"] {
+        for u in [
+            "file:///etc/passwd",
+            "gopher://x/",
+            "ftp://x/",
+            "javascript:alert(1)",
+        ] {
             for allow in [DENY, ALLOW] {
                 assert!(validate_base_url_with(u, allow).is_err(), "{u}");
             }
@@ -307,7 +315,10 @@ mod tests {
             "https://openrouter.ai/api/v1",
             "https://api.deepseek.com/v1",
         ] {
-            assert!(validate_base_url_with(u, DENY).is_ok(), "{u} should be allowed");
+            assert!(
+                validate_base_url_with(u, DENY).is_ok(),
+                "{u} should be allowed"
+            );
         }
     }
 
@@ -316,7 +327,10 @@ mod tests {
         // A public hostname can resolve to 127.0.0.1; this is the second line
         // of defence.
         assert!(!is_ip_allowed_with("127.0.0.1".parse().unwrap(), DENY));
-        assert!(!is_ip_allowed_with("169.254.169.254".parse().unwrap(), ALLOW));
+        assert!(!is_ip_allowed_with(
+            "169.254.169.254".parse().unwrap(),
+            ALLOW
+        ));
         assert!(!is_ip_allowed_with("10.1.2.3".parse().unwrap(), DENY));
         assert!(!is_ip_allowed_with("::1".parse().unwrap(), DENY));
         assert!(is_ip_allowed_with("1.1.1.1".parse().unwrap(), DENY));
@@ -355,10 +369,19 @@ mod tests {
             "http://metadata.google.internal/",
             "file:///etc/passwd",
         ] {
-            assert!(!scrape_url_allowed(&Url::parse(u).unwrap()), "{u} must be blocked");
+            assert!(
+                !scrape_url_allowed(&Url::parse(u).unwrap()),
+                "{u} must be blocked"
+            );
         }
-        for u in ["https://en.wikipedia.org/wiki/Paris", "http://93.184.216.34/"] {
-            assert!(scrape_url_allowed(&Url::parse(u).unwrap()), "{u} must be allowed");
+        for u in [
+            "https://en.wikipedia.org/wiki/Paris",
+            "http://93.184.216.34/",
+        ] {
+            assert!(
+                scrape_url_allowed(&Url::parse(u).unwrap()),
+                "{u} must be allowed"
+            );
         }
     }
 }

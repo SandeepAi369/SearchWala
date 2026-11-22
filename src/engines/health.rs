@@ -90,14 +90,22 @@ pub fn record_transport_err(engine: &str) {
 /// ~28 broken engines through all of v7.0, and reproducing it by hand requires
 /// matching the exact request the server made.
 pub fn dump_zero_result_body(engine: &str, url: &str, body: &str) {
-    let Ok(dir) = std::env::var("DUMP_SERP_DIR") else { return };
+    let Ok(dir) = std::env::var("DUMP_SERP_DIR") else {
+        return;
+    };
     if dir.trim().is_empty() {
         return;
     }
     let _ = std::fs::create_dir_all(&dir);
     let safe: String = engine
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let path = std::path::Path::new(&dir).join(format!(
         "zero_{}_{}.html",
@@ -246,7 +254,7 @@ const CHALLENGE_MARKERS: &[&str] = &[
     "DDoS protection by",
     "Attention Required! | Cloudflare",
     "Please verify you are a human",
-    "captcha-delivery.com",          // DataDome
+    "captcha-delivery.com",                // DataDome
     "Access to this page has been denied", // PerimeterX
     // Yandex redirects bots to /showcaptcha with HTTP 200; the generic
     // fallback selectors then returned its "SmartCaptcha by Yandex Cloud"
@@ -269,12 +277,12 @@ pub fn looks_like_challenge(body: &str) -> bool {
 /// Title-level markers of block / interstitial pages that are served with
 /// HTTP 200 on CONTENT pages (as opposed to SERPs).
 const BLOCKED_PAGE_TITLES: &[&str] = &[
-    "<title>Welcome to Reddit",       // Reddit's CAPTCHA interstitial
-    "<title>Just a moment",           // Cloudflare
-    "<title>Attention Required",      // Cloudflare
-    "<title>Access Denied",           // Akamai / generic
+    "<title>Welcome to Reddit",  // Reddit's CAPTCHA interstitial
+    "<title>Just a moment",      // Cloudflare
+    "<title>Attention Required", // Cloudflare
+    "<title>Access Denied",      // Akamai / generic
     "<title>403 Forbidden",
-    "<title>Robot or human?",         // PerimeterX / Walmart-style
+    "<title>Robot or human?", // PerimeterX / Walmart-style
     "<title>Are you a robot",
     "<title>Pardon Our Interruption", // Distil / Imperva
 ];
@@ -344,7 +352,9 @@ pub fn screen_serp(engine: &str, query: &str, results: &mut Vec<RawSearchResult>
     if UNSCREENED_ENGINES.contains(&engine) {
         return SerpVerdict::Clean;
     }
-    let Some(flags) = on_topic_flags(query, results) else { return SerpVerdict::Clean };
+    let Some(flags) = on_topic_flags(query, results) else {
+        return SerpVerdict::Clean;
+    };
     let on_topic = flags.iter().filter(|f| **f).count();
     let ratio = on_topic as f64 / results.len() as f64;
     if ratio < SOFT_BLOCK_ON_TOPIC_RATIO {
@@ -366,7 +376,10 @@ fn on_topic_flags(query: &str, results: &[RawSearchResult]) -> Option<Vec<bool>>
         return None;
     }
     // Operators such as site: are not content terms.
-    let content: Vec<&str> = query.split_whitespace().filter(|w| !w.contains(':')).collect();
+    let content: Vec<&str> = query
+        .split_whitespace()
+        .filter(|w| !w.contains(':'))
+        .collect();
     let terms: Vec<String> = crate::ranking::query_terms(&content.join(" "))
         .into_iter()
         .map(|t| stem(&t))
@@ -378,11 +391,16 @@ fn on_topic_flags(query: &str, results: &[RawSearchResult]) -> Option<Vec<bool>>
         results
             .iter()
             .map(|r| {
-                let url = urlencoding::decode(&r.url).map(|u| u.into_owned()).unwrap_or_default();
+                let url = urlencoding::decode(&r.url)
+                    .map(|u| u.into_owned())
+                    .unwrap_or_default();
                 let text = format!("{} {} {}", r.title, r.snippet, url).to_lowercase();
-                let hits: Vec<usize> =
-                    (0..terms.len()).filter(|&i| text.contains(terms[i].as_str())).collect();
-                hits.len() >= 2 || hits.iter().any(|&i| i > 0) || (terms.len() == 1 && hits.len() == 1)
+                let hits: Vec<usize> = (0..terms.len())
+                    .filter(|&i| text.contains(terms[i].as_str()))
+                    .collect();
+                hits.len() >= 2
+                    || hits.iter().any(|&i| i > 0)
+                    || (terms.len() == 1 && hits.len() == 1)
             })
             .collect(),
     )
@@ -426,40 +444,93 @@ mod tests {
     fn soft_block_detects_first_word_filler() {
         // Real Bing output for "capital of France" (2026-10-02).
         let filler = vec![
-            res("Bhubaneswar - Wikipedia", "Bhubaneswar is the capital and largest city of Odisha", "https://en.wikipedia.org/wiki/Bhubaneswar"),
-            res("Odisha - Wikipedia", "Odisha is a state in eastern India", "https://en.wikipedia.org/wiki/Odisha"),
-            res("Bhubaneswar - Odisha Tourism", "Temple city and capital", "https://odishatourism.gov.in/x"),
-            res("Online Trading | Capital.com", "Trade CFDs", "https://capital.com/"),
-            res("Capital of Odisha - Vedantu", "Capital of Odisha facts and map", "https://www.vedantu.com/x"),
-            res("Capital of Odisha, What is the Capital? - adda247", "", "https://www.adda247.com/x"),
+            res(
+                "Bhubaneswar - Wikipedia",
+                "Bhubaneswar is the capital and largest city of Odisha",
+                "https://en.wikipedia.org/wiki/Bhubaneswar",
+            ),
+            res(
+                "Odisha - Wikipedia",
+                "Odisha is a state in eastern India",
+                "https://en.wikipedia.org/wiki/Odisha",
+            ),
+            res(
+                "Bhubaneswar - Odisha Tourism",
+                "Temple city and capital",
+                "https://odishatourism.gov.in/x",
+            ),
+            res(
+                "Online Trading | Capital.com",
+                "Trade CFDs",
+                "https://capital.com/",
+            ),
+            res(
+                "Capital of Odisha - Vedantu",
+                "Capital of Odisha facts and map",
+                "https://www.vedantu.com/x",
+            ),
+            res(
+                "Capital of Odisha, What is the Capital? - adda247",
+                "",
+                "https://www.adda247.com/x",
+            ),
         ];
         let mut page = filler;
-        assert_eq!(screen_serp("bing", "capital of France", &mut page), SerpVerdict::Blocked);
+        assert_eq!(
+            screen_serp("bing", "capital of France", &mut page),
+            SerpVerdict::Blocked
+        );
         assert!(page.is_empty());
     }
 
     #[test]
     fn soft_block_detects_unrelated_junk() {
         let junk: Vec<RawSearchResult> = (0..8)
-            .map(|i| res(&format!("Download and install Google Chrome {i}"), "Chrome help", "https://support.google.com/chrome"))
+            .map(|i| {
+                res(
+                    &format!("Download and install Google Chrome {i}"),
+                    "Chrome help",
+                    "https://support.google.com/chrome",
+                )
+            })
             .collect();
-        assert_eq!(screen_serp("bing", "mRNA vaccine mechanism", &mut junk.clone()), SerpVerdict::Blocked);
-        assert_eq!(screen_serp("bing", "mRNA", &mut junk.clone()), SerpVerdict::Blocked);
+        assert_eq!(
+            screen_serp("bing", "mRNA vaccine mechanism", &mut junk.clone()),
+            SerpVerdict::Blocked
+        );
+        assert_eq!(
+            screen_serp("bing", "mRNA", &mut junk.clone()),
+            SerpVerdict::Blocked
+        );
     }
 
     #[test]
     fn soft_block_keeps_pages_matching_only_the_topic_word() {
         // Regression: a "≥2 terms" rule blocked this real page.
         let mut page: Vec<RawSearchResult> = (0..8)
-            .map(|i| res(&format!("Photosynthesis {i}"), "Plants convert light into chemical energy", "https://example.org/p"))
+            .map(|i| {
+                res(
+                    &format!("Photosynthesis {i}"),
+                    "Plants convert light into chemical energy",
+                    "https://example.org/p",
+                )
+            })
             .collect();
-        assert_eq!(screen_serp("bing", "definition of photosynthesis", &mut page), SerpVerdict::Clean);
+        assert_eq!(
+            screen_serp("bing", "definition of photosynthesis", &mut page),
+            SerpVerdict::Clean
+        );
     }
 
     #[test]
     fn curated_index_apis_are_not_screened() {
-        let mut junk: Vec<RawSearchResult> = (0..8).map(|i| res(&format!("Unrelated {i}"), "", "https://a.test/")).collect();
-        assert_eq!(screen_serp("wikipedia", "capital of France", &mut junk), SerpVerdict::Clean);
+        let mut junk: Vec<RawSearchResult> = (0..8)
+            .map(|i| res(&format!("Unrelated {i}"), "", "https://a.test/"))
+            .collect();
+        assert_eq!(
+            screen_serp("wikipedia", "capital of France", &mut junk),
+            SerpVerdict::Clean
+        );
         assert_eq!(junk.len(), 8);
     }
 
@@ -474,7 +545,10 @@ mod tests {
             res("BEST Online Payment", "", "https://best.test/2"),
             res("BEST Online Payment", "", "https://best.test/3"),
         ];
-        assert_eq!(screen_serp("bing", "best budget phone 2026", &mut page), SerpVerdict::Trimmed(3));
+        assert_eq!(
+            screen_serp("bing", "best budget phone 2026", &mut page),
+            SerpVerdict::Trimmed(3)
+        );
         assert_eq!(page.len(), 3);
         assert!(page.iter().all(|r| r.url.starts_with("https://a.test")));
     }
@@ -482,36 +556,100 @@ mod tests {
     #[test]
     fn soft_block_accepts_real_serps() {
         let real = vec![
-            res("Paris - Wikipedia", "Paris is the capital and largest city of France", "https://en.wikipedia.org/wiki/Paris"),
-            res("List of capitals of France - Wikipedia", "", "https://en.wikipedia.org/wiki/List_of_capitals_of_France"),
-            res("What is the Capital of France? - WorldAtlas", "", "https://www.worldatlas.com/x"),
-            res("France | History, Map, Flag, Capital | Britannica", "", "https://www.britannica.com/place/France"),
-            res("Paris travel guide", "Everything to see in Paris", "https://example.com/paris"),
-            res("Capital punishment in France", "", "https://en.wikipedia.org/wiki/Capital_punishment_in_France"),
+            res(
+                "Paris - Wikipedia",
+                "Paris is the capital and largest city of France",
+                "https://en.wikipedia.org/wiki/Paris",
+            ),
+            res(
+                "List of capitals of France - Wikipedia",
+                "",
+                "https://en.wikipedia.org/wiki/List_of_capitals_of_France",
+            ),
+            res(
+                "What is the Capital of France? - WorldAtlas",
+                "",
+                "https://www.worldatlas.com/x",
+            ),
+            res(
+                "France | History, Map, Flag, Capital | Britannica",
+                "",
+                "https://www.britannica.com/place/France",
+            ),
+            res(
+                "Paris travel guide",
+                "Everything to see in Paris",
+                "https://example.com/paris",
+            ),
+            res(
+                "Capital punishment in France",
+                "",
+                "https://en.wikipedia.org/wiki/Capital_punishment_in_France",
+            ),
         ];
-        assert_eq!(screen_serp("bing", "capital of France", &mut real.clone()), SerpVerdict::Clean);
+        assert_eq!(
+            screen_serp("bing", "capital of France", &mut real.clone()),
+            SerpVerdict::Clean
+        );
 
         // Plurals and inflections still count.
         let phones: Vec<RawSearchResult> = (0..6)
-            .map(|i| res(&format!("10 Best Budget Phones {i}"), "cheap smartphones reviewed", "https://example.com/p"))
+            .map(|i| {
+                res(
+                    &format!("10 Best Budget Phones {i}"),
+                    "cheap smartphones reviewed",
+                    "https://example.com/p",
+                )
+            })
             .collect();
-        assert_eq!(screen_serp("bing", "best budget phone 2026", &mut phones.clone()), SerpVerdict::Clean);
+        assert_eq!(
+            screen_serp("bing", "best budget phone 2026", &mut phones.clone()),
+            SerpVerdict::Clean
+        );
     }
 
     #[test]
     fn soft_block_leaves_operators_small_pages_and_other_scripts_alone() {
         let reddit: Vec<RawSearchResult> = (0..6)
-            .map(|i| res(&format!("Best mechanical keyboard for coding? {i}"), "", "https://www.reddit.com/r/x"))
+            .map(|i| {
+                res(
+                    &format!("Best mechanical keyboard for coding? {i}"),
+                    "",
+                    "https://www.reddit.com/r/x",
+                )
+            })
             .collect();
-        assert_eq!(screen_serp("bing", "mechanical keyboard site:reddit.com", &mut reddit.clone()), SerpVerdict::Clean);
+        assert_eq!(
+            screen_serp(
+                "bing",
+                "mechanical keyboard site:reddit.com",
+                &mut reddit.clone()
+            ),
+            SerpVerdict::Clean
+        );
 
-        let few = vec![res("Unrelated", "", "https://a.test/"), res("Also unrelated", "", "https://b.test/")];
-        assert_eq!(screen_serp("bing", "capital of France", &mut few.clone()), SerpVerdict::Clean);
+        let few = vec![
+            res("Unrelated", "", "https://a.test/"),
+            res("Also unrelated", "", "https://b.test/"),
+        ];
+        assert_eq!(
+            screen_serp("bing", "capital of France", &mut few.clone()),
+            SerpVerdict::Clean
+        );
 
         let english: Vec<RawSearchResult> = (0..6)
-            .map(|i| res(&format!("India - Wikipedia {i}"), "New Delhi is the capital", "https://en.wikipedia.org/wiki/India"))
+            .map(|i| {
+                res(
+                    &format!("India - Wikipedia {i}"),
+                    "New Delhi is the capital",
+                    "https://en.wikipedia.org/wiki/India",
+                )
+            })
             .collect();
-        assert_eq!(screen_serp("bing", "भारत की राजधानी", &mut english.clone()), SerpVerdict::Clean);
+        assert_eq!(
+            screen_serp("bing", "भारत की राजधानी", &mut english.clone()),
+            SerpVerdict::Clean
+        );
     }
 
     #[test]
@@ -526,7 +664,9 @@ mod tests {
         let article = "<html><head><title>How CAPTCHAs work - Wired</title></head>\
                        <body>A captcha is a test...</body></html>";
         assert!(!looks_like_blocked_page(article));
-        assert!(looks_like_blocked_page("<html><head><TITLE>Access Denied</TITLE></head></html>"));
+        assert!(looks_like_blocked_page(
+            "<html><head><TITLE>Access Denied</TITLE></head></html>"
+        ));
     }
 
     #[test]
@@ -582,7 +722,10 @@ mod tests {
             record_attempt("trial");
             record_parsed("trial", 0);
         }
-        assert!(should_skip("trial"), "13 attempts with 0 results => quarantine");
+        assert!(
+            should_skip("trial"),
+            "13 attempts with 0 results => quarantine"
+        );
     }
 
     #[test]

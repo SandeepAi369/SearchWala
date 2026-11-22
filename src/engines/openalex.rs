@@ -28,7 +28,9 @@ const PER_PAGE: usize = 20;
 /// Rebuild an abstract from OpenAlex's inverted index
 /// (`{"word": [positions...]}`). Positions can have gaps; those are skipped.
 pub fn rebuild_abstract(inv: &serde_json::Value) -> String {
-    let Some(map) = inv.as_object() else { return String::new() };
+    let Some(map) = inv.as_object() else {
+        return String::new();
+    };
     let mut slots: Vec<(u64, &str)> = Vec::new();
     for (word, positions) in map {
         if let Some(arr) = positions.as_array() {
@@ -43,7 +45,11 @@ pub fn rebuild_abstract(inv: &serde_json::Value) -> String {
         }
     }
     slots.sort_by_key(|(i, _)| *i);
-    slots.into_iter().map(|(_, w)| w).collect::<Vec<_>>().join(" ")
+    slots
+        .into_iter()
+        .map(|(_, w)| w)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn s<'a>(v: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
@@ -57,7 +63,10 @@ fn s<'a>(v: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
 /// Turn one OpenAlex work into a search result. Returns None for works with no
 /// title or no usable URL.
 pub fn work_to_result(w: &serde_json::Value, rank: usize) -> Option<RawSearchResult> {
-    let title = s(w, &["title"]).or_else(|| s(w, &["display_name"]))?.trim().to_string();
+    let title = s(w, &["title"])
+        .or_else(|| s(w, &["display_name"]))?
+        .trim()
+        .to_string();
     if title.is_empty() {
         return None;
     }
@@ -71,7 +80,10 @@ pub fn work_to_result(w: &serde_json::Value, rank: usize) -> Option<RawSearchRes
         .to_string();
 
     let year = w.get("publication_year").and_then(|v| v.as_u64());
-    let cites = w.get("cited_by_count").and_then(|v| v.as_u64()).unwrap_or(0);
+    let cites = w
+        .get("cited_by_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let venue = s(w, &["primary_location", "source", "display_name"]).unwrap_or("");
     let kind = s(w, &["type"]).unwrap_or("");
 
@@ -242,7 +254,11 @@ mod tests {
     fn converts_a_work_with_citable_metadata() {
         let r = work_to_result(&sample_work(), 1).expect("should convert");
         assert_eq!(r.url, "https://www.nature.com/articles/nrd.2017.243");
-        assert!(r.title.contains("2018") && r.title.contains("4727"), "{}", r.title);
+        assert!(
+            r.title.contains("2018") && r.title.contains("4727"),
+            "{}",
+            r.title
+        );
         assert!(r.published.is_some());
         let ft = r.full_text.expect("abstract should become full_text");
         assert!(ft.starts_with("Paper: mRNA vaccines"));
@@ -254,7 +270,10 @@ mod tests {
     fn falls_back_to_doi_when_no_landing_page() {
         let mut w = sample_work();
         w["primary_location"] = serde_json::json!(null);
-        assert_eq!(work_to_result(&w, 1).unwrap().url, "https://doi.org/10.1000/xyz");
+        assert_eq!(
+            work_to_result(&w, 1).unwrap().url,
+            "https://doi.org/10.1000/xyz"
+        );
     }
 
     #[test]
@@ -262,7 +281,10 @@ mod tests {
         let mut w = sample_work();
         w["abstract_inverted_index"] = serde_json::json!({"short": [0]});
         let r = work_to_result(&w, 1).unwrap();
-        assert!(r.full_text.is_none(), "a one-word abstract must not replace scraping");
+        assert!(
+            r.full_text.is_none(),
+            "a one-word abstract must not replace scraping"
+        );
     }
 
     #[test]

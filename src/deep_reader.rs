@@ -151,7 +151,10 @@ fn decode_literal(inner: &str) -> Option<String> {
 
 /// RSC flight data and nested JSON carry their own string literals.
 fn looks_nested(s: &str) -> bool {
-    s.contains("\"children\"") || s.contains("[\"$\"") || s.contains("\":{\"") || s.contains("\":\"")
+    s.contains("\"children\"")
+        || s.contains("[\"$\"")
+        || s.contains("\":{\"")
+        || s.contains("\":\"")
 }
 
 /// Plain text from a string that may contain HTML (CMS bodies stored as HTML).
@@ -196,11 +199,17 @@ pub fn is_prose(s: &str) -> bool {
     if t.starts_with("http") || t.starts_with('/') || t.starts_with("data:") || t.starts_with('{') {
         return false;
     }
-    if ["function(", "=>", "var(--", "{{", "}}", "px;", ";base64,"].iter().any(|m| s.contains(m)) {
+    if ["function(", "=>", "var(--", "{{", "}}", "px;", ";base64,"]
+        .iter()
+        .any(|m| s.contains(m))
+    {
         return false;
     }
     let non_space = s.chars().filter(|c| !c.is_whitespace()).count().max(1);
-    let letters = s.chars().filter(|c| c.is_alphabetic() || crate::util::is_word_char(*c) && !c.is_ascii_digit()).count();
+    let letters = s
+        .chars()
+        .filter(|c| c.is_alphabetic() || crate::util::is_word_char(*c) && !c.is_ascii_digit())
+        .count();
     if (letters as f64) / (non_space as f64) < 0.65 {
         return false;
     }
@@ -209,15 +218,27 @@ pub fn is_prose(s: &str) -> bool {
         return false;
     }
     // Sentences, not a list of tags or a title.
-    s.contains(". ") || s.contains("। ") || s.ends_with('.') || s.ends_with('।') || words.len() >= 25
+    s.contains(". ")
+        || s.contains("। ")
+        || s.ends_with('.')
+        || s.ends_with('।')
+        || words.len() >= 25
 }
 
-fn harvest(text: &str, depth: u8, out: &mut Vec<String>, seen: &mut HashSet<String>, total: &mut usize) {
+fn harvest(
+    text: &str,
+    depth: u8,
+    out: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    total: &mut usize,
+) {
     for cap in STRING_LITERAL.captures_iter(text) {
         if *total >= MAX_HARVEST_CHARS {
             return;
         }
-        let Some(decoded) = decode_literal(&cap[1]) else { continue };
+        let Some(decoded) = decode_literal(&cap[1]) else {
+            continue;
+        };
         if depth < 3 && looks_nested(&decoded) {
             harvest(&decoded, depth + 1, out, seen, total);
             continue;
@@ -250,7 +271,8 @@ pub fn hydration_text(html: &str) -> Option<String> {
             continue;
         }
         let body: String = s.text().collect();
-        if body.len() < 200 || !is_data_script(s.value().attr("type"), s.value().attr("id"), &body) {
+        if body.len() < 200 || !is_data_script(s.value().attr("type"), s.value().attr("id"), &body)
+        {
             continue;
         }
         harvest(&body, 0, &mut out, &mut seen, &mut total);
@@ -276,10 +298,10 @@ pub fn hydration_text(html: &str) -> Option<String> {
 // AMP
 // ----------------------------------------------------------------------------
 
-static AMP_LINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)<link\b[^>]*\brel=["']?amphtml["']?[^>]*>"#).unwrap()
-});
-static HREF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bhref=["']([^"']+)["']"#).unwrap());
+static AMP_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)<link\b[^>]*\brel=["']?amphtml["']?[^>]*>"#).unwrap());
+static HREF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\bhref=["']([^"']+)["']"#).unwrap());
 
 /// The page's AMP variant, resolved against `base`, when it is a different
 /// http(s) URL on the same registrable host.
@@ -292,7 +314,11 @@ pub fn amp_url(html: &str, base: &str) -> Option<String> {
     if !matches!(amp.scheme(), "http" | "https") || amp.as_str() == base_url.as_str() {
         return None;
     }
-    let root = |h: &str| h.trim_start_matches("www.").trim_start_matches("amp.").to_string();
+    let root = |h: &str| {
+        h.trim_start_matches("www.")
+            .trim_start_matches("amp.")
+            .to_string()
+    };
     let same = match (amp.host_str(), base_url.host_str()) {
         (Some(a), Some(b)) => root(a).ends_with(&root(b)) || root(b).ends_with(&root(a)),
         _ => false,
@@ -315,16 +341,28 @@ mod tests {
     fn strips_sandpack_placeholder_pre_without_touching_regular_pre() {
         let html = r#"<article><pre class="sp-cm sp-pristine"><code>const x = 1;</code></pre><div class="sandpack sandpack--playground"><pre class=" sp-pre-placeholder" style="margin-left:0">let data = [1, 2, 3, 4];</pre></div></article>"#;
         let out = strip_sandpack_placeholders(html).expect("should strip sp-pre-placeholder");
-        assert!(out.contains("const x = 1;"), "regular pre must remain: {out}");
-        assert!(!out.contains("let data = [1, 2, 3, 4]"), "placeholder pre must be removed: {out}");
-        assert!(strip_sandpack_placeholders("<article><pre><code>normal()</code></pre></article>").is_none());
+        assert!(
+            out.contains("const x = 1;"),
+            "regular pre must remain: {out}"
+        );
+        assert!(
+            !out.contains("let data = [1, 2, 3, 4]"),
+            "placeholder pre must be removed: {out}"
+        );
+        assert!(
+            strip_sandpack_placeholders("<article><pre><code>normal()</code></pre></article>")
+                .is_none()
+        );
     }
 
     #[test]
     fn unwraps_declarative_shadow_roots_only() {
         let html = r#"<div><template shadowrootmode="open"><p>Shadow text</p></template><template id="t"><p>inert</p></template></div>"#;
         let out = unwrap_shadow_templates(html).unwrap();
-        assert!(out.contains("<div><p>Shadow text</p><template id=\"t\">"), "{out}");
+        assert!(
+            out.contains("<div><p>Shadow text</p><template id=\"t\">"),
+            "{out}"
+        );
         assert!(unwrap_shadow_templates("<p>no shadow</p>").is_none());
     }
 
@@ -344,7 +382,9 @@ mod tests {
         let body = paras("RSC", 3);
         let flight = format!(r#"5:["$","p",null,{{"children":"{body}"}}]"#);
         let literal = serde_json::to_string(&flight).unwrap();
-        let html = format!(r#"<html><body><script>self.__next_f.push([1,{literal}])</script></body></html>"#);
+        let html = format!(
+            r#"<html><body><script>self.__next_f.push([1,{literal}])</script></body></html>"#
+        );
         let t = hydration_text(&html).expect("harvested");
         assert!(t.contains("RSC paragraph 2"), "{t}");
     }
@@ -362,7 +402,9 @@ mod tests {
 
     #[test]
     fn prose_filter_rejects_code_and_urls() {
-        assert!(!is_prose("https://example.org/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/aa/bb/cc"));
+        assert!(!is_prose(
+            "https://example.org/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/aa/bb/cc"
+        ));
         assert!(!is_prose(".btn{color:var(--accent);padding:4px;} .card{margin:0 auto;} .x{display:flex;} .y{gap:2px;}"));
         assert!(is_prose(&paras("OK", 1)));
         assert!(is_prose("भारत दक्षिण एशिया में स्थित एक विशाल देश है जिसकी राजधानी नई दिल्ली है। यह विश्व का सबसे अधिक जनसंख्या वाला देश है और यहाँ अनेक भाषाएँ बोली जाती हैं।"));
@@ -371,7 +413,10 @@ mod tests {
     #[test]
     fn amp_url_same_site_only() {
         let page = r#"<head><link rel="amphtml" href="/amp/story-1"></head>"#;
-        assert_eq!(amp_url(page, "https://www.news.test/story-1").as_deref(), Some("https://www.news.test/amp/story-1"));
+        assert_eq!(
+            amp_url(page, "https://www.news.test/story-1").as_deref(),
+            Some("https://www.news.test/amp/story-1")
+        );
         let sub = r#"<link rel='amphtml' href='https://amp.news.test/story-1'>"#;
         assert!(amp_url(sub, "https://www.news.test/story-1").is_some());
         let other = r#"<link rel="amphtml" href="https://evil.test/x">"#;

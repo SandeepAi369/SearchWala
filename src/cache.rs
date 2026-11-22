@@ -17,8 +17,8 @@ use tokio::sync::RwLock;
 pub struct TempSession {
     pub session_id: String,
     pub query: String,
-    pub status: String,            // "searching" | "scraping" | "llm_batch_N" | "done"
-    pub batch_progress: String,    // "Batch 1/3" etc.
+    pub status: String, // "searching" | "scraping" | "llm_batch_N" | "done"
+    pub batch_progress: String, // "Batch 1/3" etc.
     pub sources_collected: usize,
     pub partial_answer: Option<String>,
     pub created_at: Instant,
@@ -64,7 +64,10 @@ impl TempDb {
             created_at: Instant::now(),
         };
 
-        self.sessions.write().await.insert(session_id.clone(), session);
+        self.sessions
+            .write()
+            .await
+            .insert(session_id.clone(), session);
         session_id
     }
 
@@ -172,6 +175,9 @@ mod tests {
         let db = TempDb::new();
         let fresh = db.create_session("fresh").await;
         db.cleanup_expired().await;
-        assert!(db.get_session(&fresh).await.is_some(), "fresh session must survive");
+        assert!(
+            db.get_session(&fresh).await.is_some(),
+            "fresh session must survive"
+        );
     }
 }

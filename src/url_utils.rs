@@ -28,15 +28,21 @@ const HOST_PREFIXES: &[&str] = &["www.", "m.", "amp.", "mobile.", "www2.", "en."
 
 /// Two-level public suffixes we must not over-trim.
 const TWO_LEVEL_SUFFIXES: &[&str] = &[
-    "co.uk", "co.in", "co.jp", "co.kr", "co.nz", "co.za", "co.il", "com.br",
-    "com.au", "com.mx", "com.tr", "com.cn", "com.sg", "com.hk", "or.jp", "ne.jp",
-    "ac.uk", "gov.uk", "org.uk", "net.au", "org.au", "gov.in", "ac.in", "nic.in",
+    "co.uk", "co.in", "co.jp", "co.kr", "co.nz", "co.za", "co.il", "com.br", "com.au", "com.mx",
+    "com.tr", "com.cn", "com.sg", "com.hk", "or.jp", "ne.jp", "ac.uk", "gov.uk", "org.uk",
+    "net.au", "org.au", "gov.in", "ac.in", "nic.in",
 ];
 
 /// Path suffixes that are the same document as the parent path.
 const PATH_SUFFIXES: &[&str] = &[
-    "/amp", "/amp/", "/index.html", "/index.htm", "/index.php", "/index.asp",
-    "/default.html", "/default.htm",
+    "/amp",
+    "/amp/",
+    "/index.html",
+    "/index.htm",
+    "/index.php",
+    "/index.asp",
+    "/default.html",
+    "/default.htm",
 ];
 
 /// Canonical identity of a page: the single source of truth for
@@ -202,7 +208,9 @@ pub fn deduplicate(urls: Vec<String>, max_count: usize, focus_mode: Option<&str>
     let focus_lower = focus_mode.map(|m| m.to_lowercase());
 
     for raw in urls {
-        let Some(normalized) = normalize_url(&raw) else { continue };
+        let Some(normalized) = normalize_url(&raw) else {
+            continue;
+        };
 
         let host = Url::parse(&normalized)
             .ok()
@@ -267,9 +275,15 @@ mod tests {
         let a = canonical_key("https://x.test/p?id=1");
         let b = canonical_key("https://x.test/p?id=2");
         assert_ne!(a, b);
-        assert_ne!(canonical_key("https://x.test/a"), canonical_key("https://x.test/b"));
+        assert_ne!(
+            canonical_key("https://x.test/a"),
+            canonical_key("https://x.test/b")
+        );
         // Case-sensitive paths stay distinct.
-        assert_ne!(canonical_key("https://x.test/Foo"), canonical_key("https://x.test/foo"));
+        assert_ne!(
+            canonical_key("https://x.test/Foo"),
+            canonical_key("https://x.test/foo")
+        );
     }
 
     #[test]
@@ -278,7 +292,10 @@ mod tests {
         // "wikipedia.org" if that would change identity... it should, actually:
         // en.wikipedia.org/wiki/X and wikipedia.org/wiki/X are the same doc.
         // What must NOT happen is stripping to something without a dot.
-        assert!(canonical_key("https://m.co/x").contains("m.co") || canonical_key("https://m.co/x").contains("co"));
+        assert!(
+            canonical_key("https://m.co/x").contains("m.co")
+                || canonical_key("https://m.co/x").contains("co")
+        );
         // Never produce an empty host.
         assert!(!canonical_key("https://www.com/x").starts_with('/'));
     }
@@ -335,16 +352,20 @@ mod tests {
     fn deduplicate_collapses_variants_and_respects_cap() {
         let urls = vec![
             "https://a.test/x".to_string(),
-            "https://www.a.test/x/".to_string(),       // dup of the above
+            "https://www.a.test/x/".to_string(), // dup of the above
             "https://a.test/x?utm_source=q".to_string(), // dup
             "https://b.test/y".to_string(),
-            "https://twitter.com/z".to_string(),        // blocked
+            "https://twitter.com/z".to_string(), // blocked
             "https://c.test/w".to_string(),
         ];
         let out = deduplicate(urls, 10, None);
         assert_eq!(out.len(), 3, "got {out:?}");
         let out2 = deduplicate(
-            vec!["https://a.test/1".into(), "https://b.test/2".into(), "https://c.test/3".into()],
+            vec![
+                "https://a.test/1".into(),
+                "https://b.test/2".into(),
+                "https://c.test/3".into(),
+            ],
             2,
             None,
         );

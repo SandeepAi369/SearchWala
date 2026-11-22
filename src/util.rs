@@ -106,7 +106,10 @@ mod tests {
     #[test]
     fn indic_conjuncts_stay_whole_words() {
         let split = |s: &str| -> Vec<String> {
-            s.split(|c: char| !is_word_char(c)).filter(|t| !t.is_empty()).map(str::to_string).collect()
+            s.split(|c: char| !is_word_char(c))
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect()
         };
         assert_eq!(split("क्या है"), vec!["क्या", "है"]);
         assert_eq!(split("प्रधानमंत्री।"), vec!["प्रधानमंत्री"]);

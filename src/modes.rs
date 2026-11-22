@@ -114,7 +114,9 @@ impl Domain {
 /// Accepts every legacy spelling so existing API clients keep working:
 /// `lite` → Auto, `research` → Deep, `specialized_<domain>` → Auto + domain.
 pub fn parse(focus_mode: Option<&str>, domain: Option<&str>) -> (Mode, Domain) {
-    let raw = focus_mode.map(|m| m.trim().to_lowercase()).unwrap_or_default();
+    let raw = focus_mode
+        .map(|m| m.trim().to_lowercase())
+        .unwrap_or_default();
 
     let (mode, legacy_domain) = match raw.as_str() {
         "fast" | "quick" => (Mode::Fast, None),
@@ -259,7 +261,10 @@ fn fast_roster() -> Vec<String> {
 /// the query and sent it to EVERY engine — including the Wikipedia and
 /// Marginalia JSON APIs, which searched for the literal string.
 fn site_capable_roster() -> Vec<String> {
-    ["bing", "duckduckgo", "brave", "yahoo"].iter().map(|s| s.to_string()).collect()
+    ["bing", "duckduckgo", "brave", "yahoo"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn add(list: &mut Vec<String>, names: &[&str]) {
@@ -355,48 +360,67 @@ pub fn resolve(
         // ── AUTO ────────────────────────────────────────────────────────────
         Mode::Auto => {
             let tier = auto_tier(intel);
-            let (name, engines_list, pages, deadline_ms, urls, min_src, min_chars, subs, top_k, out) =
-                match tier {
-                    AutoTier::Lookup => {
-                        ("auto:lookup", fast_roster(), 1, 2_500, 8, 5, 15_000, 1, 8, 1_400)
-                    }
-                    AutoTier::Light => (
-                        "auto:light",
-                        engines::primary_engines(),
-                        1,
-                        4_000,
-                        20,
-                        10,
-                        50_000,
-                        1,
-                        15,
-                        1_200,
-                    ),
-                    AutoTier::Standard => (
-                        "auto:standard",
-                        engines::all_engines(),
-                        2,
-                        6_000,
-                        35,
-                        20,
-                        120_000,
-                        2,
-                        25,
-                        2_000,
-                    ),
-                    AutoTier::Heavy => (
-                        "auto:heavy",
-                        engines::all_engines(),
-                        3,
-                        8_000,
-                        55,
-                        30,
-                        250_000,
-                        3,
-                        35,
-                        3_000,
-                    ),
-                };
+            let (
+                name,
+                engines_list,
+                pages,
+                deadline_ms,
+                urls,
+                min_src,
+                min_chars,
+                subs,
+                top_k,
+                out,
+            ) = match tier {
+                AutoTier::Lookup => (
+                    "auto:lookup",
+                    fast_roster(),
+                    1,
+                    2_500,
+                    8,
+                    5,
+                    15_000,
+                    1,
+                    8,
+                    1_400,
+                ),
+                AutoTier::Light => (
+                    "auto:light",
+                    engines::primary_engines(),
+                    1,
+                    4_000,
+                    20,
+                    10,
+                    50_000,
+                    1,
+                    15,
+                    1_200,
+                ),
+                AutoTier::Standard => (
+                    "auto:standard",
+                    engines::all_engines(),
+                    2,
+                    6_000,
+                    35,
+                    20,
+                    120_000,
+                    2,
+                    25,
+                    2_000,
+                ),
+                AutoTier::Heavy => (
+                    "auto:heavy",
+                    engines::all_engines(),
+                    3,
+                    8_000,
+                    55,
+                    30,
+                    250_000,
+                    3,
+                    35,
+                    3_000,
+                ),
+            };
             let mut engines_list = engines_list;
             // Time-sensitive questions get the news verticals.
             if intel.is_time_sensitive || intel.intent == QueryIntent::Temporal {
@@ -409,7 +433,11 @@ pub fn resolve(
                 engines: engines_list,
                 page_budget: pages,
                 engine_deadline: Duration::from_millis(deadline_ms),
-                engine_early_exit: if tier == AutoTier::Lookup { Some((20, 3)) } else { None },
+                engine_early_exit: if tier == AutoTier::Lookup {
+                    Some((20, 3))
+                } else {
+                    None
+                },
                 site_filter: None,
                 max_sub_queries: subs,
                 facets: Facets::Basic,
@@ -501,7 +529,7 @@ pub fn resolve(
             ],
             page_budget: 2,
             engine_deadline: Duration::from_secs(6),
-                engine_early_exit: None,
+            engine_early_exit: None,
             site_filter: None,
             max_sub_queries: 3,
             facets: Facets::Study,
@@ -541,7 +569,7 @@ pub fn resolve(
             ],
             page_budget: 2,
             engine_deadline: Duration::from_secs(8),
-                engine_early_exit: None,
+            engine_early_exit: None,
             site_filter: None,
             max_sub_queries: 2,
             facets: Facets::Academic,
@@ -564,12 +592,20 @@ pub fn resolve(
         Mode::Reddit | Mode::YouTube => ModeProfile {
             mode,
             domain,
-            tier: if mode == Mode::Reddit { "reddit" } else { "youtube" },
+            tier: if mode == Mode::Reddit {
+                "reddit"
+            } else {
+                "youtube"
+            },
             engines: site_capable_roster(),
             page_budget: 2,
             engine_deadline: Duration::from_secs(6),
-                engine_early_exit: None,
-            site_filter: Some(if mode == Mode::Reddit { "reddit.com" } else { "youtube.com" }),
+            engine_early_exit: None,
+            site_filter: Some(if mode == Mode::Reddit {
+                "reddit.com"
+            } else {
+                "youtube.com"
+            }),
             max_sub_queries: 1,
             facets: Facets::Basic,
             llm_query_planning: false,
@@ -585,7 +621,11 @@ pub fn resolve(
             llm_top_k: 25,
             max_chunks_per_url: 2,
             freshness: true,
-            synthesis: if mode == Mode::Reddit { Synthesis::Community } else { Synthesis::Video },
+            synthesis: if mode == Mode::Reddit {
+                Synthesis::Community
+            } else {
+                Synthesis::Video
+            },
             context_char_cap: 40_000,
             max_output_tokens: 2_000,
         },
@@ -623,8 +663,23 @@ pub fn resolve(
 pub fn all_roster_engines() -> Vec<String> {
     let intel = crate::query_intel::analyze_query("example research question about a topic");
     let mut all: Vec<String> = Vec::new();
-    for mode in [Mode::Fast, Mode::Auto, Mode::Deep, Mode::Study, Mode::Academic, Mode::Reddit, Mode::YouTube] {
-        for domain in [Domain::General, Domain::Tech, Domain::Science, Domain::Finance, Domain::Health, Domain::News] {
+    for mode in [
+        Mode::Fast,
+        Mode::Auto,
+        Mode::Deep,
+        Mode::Study,
+        Mode::Academic,
+        Mode::Reddit,
+        Mode::YouTube,
+    ] {
+        for domain in [
+            Domain::General,
+            Domain::Tech,
+            Domain::Science,
+            Domain::Finance,
+            Domain::Health,
+            Domain::News,
+        ] {
             for e in resolve(mode, domain, &intel, None).engines {
                 if !all.contains(&e) {
                     all.push(e);
@@ -638,9 +693,18 @@ pub fn all_roster_engines() -> Vec<String> {
 
 /// One-line summary of a mode's default profile, for `/config`.
 pub fn describe_modes() -> serde_json::Value {
-    let intel = crate::query_intel::analyze_query("how does a typical example topic work in practice");
+    let intel =
+        crate::query_intel::analyze_query("how does a typical example topic work in practice");
     let mut out = serde_json::Map::new();
-    for mode in [Mode::Fast, Mode::Auto, Mode::Deep, Mode::Study, Mode::Academic, Mode::Reddit, Mode::YouTube] {
+    for mode in [
+        Mode::Fast,
+        Mode::Auto,
+        Mode::Deep,
+        Mode::Study,
+        Mode::Academic,
+        Mode::Reddit,
+        Mode::YouTube,
+    ] {
         let p = resolve(mode, Domain::General, &intel, None);
         out.insert(
             mode.as_str().to_string(),
@@ -782,11 +846,30 @@ pub fn core_topic(query: &str) -> String {
     let q = query.trim().trim_end_matches(['?', '.', '!']);
     let lower = q.to_lowercase();
     const PREFIXES: &[&str] = &[
-        "please explain ", "can you explain ", "explain to me ", "explain ",
-        "what is the ", "what is a ", "what is an ", "what is ", "what are the ",
-        "what are ", "who is ", "who was ", "how does ", "how do ", "how is ",
-        "tell me about ", "notes on ", "study notes on ", "study notes for ",
-        "teach me ", "define ", "definition of ", "describe ", "overview of ",
+        "please explain ",
+        "can you explain ",
+        "explain to me ",
+        "explain ",
+        "what is the ",
+        "what is a ",
+        "what is an ",
+        "what is ",
+        "what are the ",
+        "what are ",
+        "who is ",
+        "who was ",
+        "how does ",
+        "how do ",
+        "how is ",
+        "tell me about ",
+        "notes on ",
+        "study notes on ",
+        "study notes for ",
+        "teach me ",
+        "define ",
+        "definition of ",
+        "describe ",
+        "overview of ",
     ];
     for p in PREFIXES {
         if lower.starts_with(p) {
@@ -806,8 +889,16 @@ pub fn core_topic(query: &str) -> String {
     // Hindi question scaffolding usually comes AFTER the topic:
     // "प्रकाश संश्लेषण क्या है" = "photosynthesis what-is".
     const HI_SUFFIXES: &[&str] = &[
-        " क्या होता है", " क्या होती है", " क्या हैं", " क्या है", " कैसे काम करता है",
-        " कैसे काम करती है", " के बारे में बताइए", " के बारे में", " समझाइए", " समझाओ",
+        " क्या होता है",
+        " क्या होती है",
+        " क्या हैं",
+        " क्या है",
+        " कैसे काम करता है",
+        " कैसे काम करती है",
+        " के बारे में बताइए",
+        " के बारे में",
+        " समझाइए",
+        " समझाओ",
     ];
     for s in HI_SUFFIXES {
         if let Some(rest) = q.strip_suffix(s) {
@@ -821,7 +912,12 @@ pub fn core_topic(query: &str) -> String {
 }
 
 /// Mode-specific sub-queries. The original query always comes first.
-pub fn facet_queries(query: &str, intel: &QueryIntelligence, facets: Facets, max: usize) -> Vec<String> {
+pub fn facet_queries(
+    query: &str,
+    intel: &QueryIntelligence,
+    facets: Facets,
+    max: usize,
+) -> Vec<String> {
     let q = query.trim();
     if q.is_empty() || max == 0 {
         return Vec::new();
@@ -889,10 +985,7 @@ pub fn facet_queries(query: &str, intel: &QueryIntelligence, facets: Facets, max
             format!("{topic} examples"),
             format!("{topic} definition key concepts"),
         ],
-        Facets::Academic => vec![
-            format!("{topic} review"),
-            format!("{topic} meta-analysis"),
-        ],
+        Facets::Academic => vec![format!("{topic} review"), format!("{topic} meta-analysis")],
     };
 
     for e in extra {
@@ -914,7 +1007,9 @@ pub fn facet_queries(query: &str, intel: &QueryIntelligence, facets: Facets, max
 /// Apply a `site:` filter for Reddit/YouTube modes.
 pub fn apply_site_filter(query: &str, site: Option<&str>) -> String {
     match site {
-        Some(s) if !query.to_lowercase().contains("site:") => format!("{} site:{}", query.trim(), s),
+        Some(s) if !query.to_lowercase().contains("site:") => {
+            format!("{} site:{}", query.trim(), s)
+        }
         _ => query.trim().to_string(),
     }
 }
@@ -946,7 +1041,10 @@ mod tests {
         assert_eq!(parse(Some("research"), None).0, Mode::Deep);
         assert_eq!(parse(Some("DEEP"), None).0, Mode::Deep);
         assert_eq!(parse(Some("study"), None).0, Mode::Study);
-        assert_eq!(parse(Some("specialized_health"), None), (Mode::Auto, Domain::Health));
+        assert_eq!(
+            parse(Some("specialized_health"), None),
+            (Mode::Auto, Domain::Health)
+        );
         assert_eq!(parse(Some("nonsense"), None).0, Mode::Auto);
     }
 
@@ -954,9 +1052,15 @@ mod tests {
     fn domain_composes_with_mode_instead_of_replacing_it() {
         // v8.0's UI turned "Deep + Health" into "specialized_health" and lost
         // the Deep. Both now survive.
-        assert_eq!(parse(Some("deep"), Some("health")), (Mode::Deep, Domain::Health));
+        assert_eq!(
+            parse(Some("deep"), Some("health")),
+            (Mode::Deep, Domain::Health)
+        );
         // An explicit domain wins over a legacy specialized_ string.
-        assert_eq!(parse(Some("specialized_tech"), Some("news")).1, Domain::News);
+        assert_eq!(
+            parse(Some("specialized_tech"), Some("news")).1,
+            Domain::News
+        );
     }
 
     #[test]
@@ -997,18 +1101,37 @@ mod tests {
     fn only_fast_paths_exit_engines_early() {
         // Early exit trades consensus for speed — right for Fast, wrong for
         // everything that ranks on cross-engine agreement.
-        assert!(prof("fast", None, "capital of france").engine_early_exit.is_some());
-        assert!(prof("auto", None, "github login").engine_early_exit.is_some());
-        for (mode, q) in [("auto", "capital of france"), ("auto", "rust vs go for servers"),
-                          ("deep", "x y z"), ("study", "photosynthesis"), ("academic", "crispr")] {
-            assert!(prof(mode, None, q).engine_early_exit.is_none(), "{mode}/{q}");
+        assert!(prof("fast", None, "capital of france")
+            .engine_early_exit
+            .is_some());
+        assert!(prof("auto", None, "github login")
+            .engine_early_exit
+            .is_some());
+        for (mode, q) in [
+            ("auto", "capital of france"),
+            ("auto", "rust vs go for servers"),
+            ("deep", "x y z"),
+            ("study", "photosynthesis"),
+            ("academic", "crispr"),
+        ] {
+            assert!(
+                prof(mode, None, q).engine_early_exit.is_none(),
+                "{mode}/{q}"
+            );
         }
     }
 
     #[test]
     fn deep_does_not_stop_early() {
-        let p = prof("deep", None, "impact of large language models on software engineering");
-        assert!(p.scrape_min_sources >= 100, "Deep must not early-exit at Auto's thresholds");
+        let p = prof(
+            "deep",
+            None,
+            "impact of large language models on software engineering",
+        );
+        assert!(
+            p.scrape_min_sources >= 100,
+            "Deep must not early-exit at Auto's thresholds"
+        );
         assert!(p.scrape_min_chars >= 1_000_000);
         assert_eq!(p.synthesis, Synthesis::Report);
         assert!(p.max_sub_queries >= 4);
@@ -1019,7 +1142,11 @@ mod tests {
     fn auto_scales_with_the_query() {
         let nav = prof("auto", None, "github login");
         let light = prof("auto", None, "capital of france");
-        let heavy = prof("auto", None, "postgres vs mysql for analytics workloads at scale");
+        let heavy = prof(
+            "auto",
+            None,
+            "postgres vs mysql for analytics workloads at scale",
+        );
         assert_eq!(nav.tier, "auto:lookup");
         assert_eq!(light.tier, "auto:light");
         assert_eq!(heavy.tier, "auto:heavy");
@@ -1043,7 +1170,10 @@ mod tests {
         let p = resolve(Mode::Auto, Domain::General, &intel, Some(20));
         assert_eq!(p.max_urls, 20);
         let f = resolve(Mode::Fast, Domain::General, &intel, Some(500));
-        assert!(f.max_urls <= 20, "Fast must stay fast even if asked for 500");
+        assert!(
+            f.max_urls <= 20,
+            "Fast must stay fast even if asked for 500"
+        );
         let d = resolve(Mode::Deep, Domain::General, &intel, Some(5));
         assert!(d.max_urls >= 40, "Deep has a floor");
         // The early-exit threshold never exceeds what is scraped.
@@ -1056,14 +1186,27 @@ mod tests {
         // startpage, qwant, stract and duckduckgo_news. Every name in every
         // profile must now build an engine.
         let q = "how does mRNA vaccine technology work";
-        for mode in ["fast", "auto", "deep", "study", "academic", "reddit", "youtube"] {
+        for mode in [
+            "fast", "auto", "deep", "study", "academic", "reddit", "youtube",
+        ] {
             for dom in ["", "tech", "science", "finance", "health", "news"] {
                 let p = prof(mode, Some(dom), q);
                 for name in &p.engines {
                     let built = crate::engines::get_engines(std::slice::from_ref(name));
-                    assert_eq!(built.len(), 1, "mode={mode} domain={dom}: {name:?} builds nothing");
+                    assert_eq!(
+                        built.len(),
+                        1,
+                        "mode={mode} domain={dom}: {name:?} builds nothing"
+                    );
                 }
-                for walled in ["google", "google_scholar", "startpage", "qwant", "stract", "duckduckgo_news"] {
+                for walled in [
+                    "google",
+                    "google_scholar",
+                    "startpage",
+                    "qwant",
+                    "stract",
+                    "duckduckgo_news",
+                ] {
                     assert!(
                         !p.engines.iter().any(|e| e == walled),
                         "mode={mode} domain={dom} dispatches walled engine {walled}"
@@ -1080,7 +1223,8 @@ mod tests {
             assert!(p.site_filter.is_some());
             for e in &p.engines {
                 assert!(
-                    !["wikipedia", "marginalia_api", "wiby", "openalex", "arxiv"].contains(&e.as_str()),
+                    !["wikipedia", "marginalia_api", "wiby", "openalex", "arxiv"]
+                        .contains(&e.as_str()),
                     "{mode} sends a site: operator to {e}, which searches for it literally"
                 );
             }
@@ -1094,7 +1238,10 @@ mod tests {
         assert!(p.engines.iter().any(|e| e == "openalex"));
         assert!(p.engines.iter().any(|e| e == "arxiv"));
         assert_eq!(p.synthesis, Synthesis::Literature);
-        assert!(p.site_filter.is_none(), "no more site:edu OR site:gov string");
+        assert!(
+            p.site_filter.is_none(),
+            "no more site:edu OR site:gov string"
+        );
     }
 
     #[test]
@@ -1107,30 +1254,73 @@ mod tests {
 
     #[test]
     fn domains_add_relevant_engines() {
-        assert!(prof("auto", Some("news"), "election results").engines.iter().any(|e| e == "bing_news"));
-        assert!(prof("auto", Some("science"), "dark matter").engines.iter().any(|e| e == "openalex"));
+        assert!(prof("auto", Some("news"), "election results")
+            .engines
+            .iter()
+            .any(|e| e == "bing_news"));
+        assert!(prof("auto", Some("science"), "dark matter")
+            .engines
+            .iter()
+            .any(|e| e == "openalex"));
         assert!(prof("fast", Some("finance"), "nifty today").engines.len() <= 7);
     }
 
     #[test]
     fn source_boost_prefers_mode_and_domain_authorities() {
-        assert!(source_boost("https://en.wikipedia.org/wiki/X", Mode::Study, Domain::General) > 1.0);
-        assert!(source_boost("https://ncert.nic.in/textbook", Mode::Study, Domain::General) > 1.0);
-        assert!(source_boost("https://www.nature.com/articles/x", Mode::Academic, Domain::General) > 1.0);
+        assert!(
+            source_boost(
+                "https://en.wikipedia.org/wiki/X",
+                Mode::Study,
+                Domain::General
+            ) > 1.0
+        );
+        assert!(
+            source_boost(
+                "https://ncert.nic.in/textbook",
+                Mode::Study,
+                Domain::General
+            ) > 1.0
+        );
+        assert!(
+            source_boost(
+                "https://www.nature.com/articles/x",
+                Mode::Academic,
+                Domain::General
+            ) > 1.0
+        );
         assert!(source_boost("https://www.who.int/news", Mode::Auto, Domain::Health) > 1.0);
         assert!(source_boost("https://docs.rs/tokio", Mode::Auto, Domain::Tech) > 1.0);
-        assert_eq!(source_boost("https://random-blog.test/x", Mode::Study, Domain::Health), 1.0);
+        assert_eq!(
+            source_boost("https://random-blog.test/x", Mode::Study, Domain::Health),
+            1.0
+        );
         // Capped.
         assert!(source_boost("https://www.nih.gov/x", Mode::Academic, Domain::Health) <= 1.8);
         // Lookalike hosts do not match.
-        assert_eq!(source_boost("https://notwikipedia.org.evil.test/", Mode::Study, Domain::General), 1.0);
+        assert_eq!(
+            source_boost(
+                "https://notwikipedia.org.evil.test/",
+                Mode::Study,
+                Domain::General
+            ),
+            1.0
+        );
     }
 
     #[test]
     fn core_topic_strips_question_scaffolding() {
-        assert_eq!(core_topic("explain photosynthesis for class 10"), "photosynthesis for class 10");
-        assert_eq!(core_topic("What is quantum entanglement?"), "quantum entanglement");
-        assert_eq!(core_topic("how does TCP congestion control work"), "TCP congestion control");
+        assert_eq!(
+            core_topic("explain photosynthesis for class 10"),
+            "photosynthesis for class 10"
+        );
+        assert_eq!(
+            core_topic("What is quantum entanglement?"),
+            "quantum entanglement"
+        );
+        assert_eq!(
+            core_topic("how does TCP congestion control work"),
+            "TCP congestion control"
+        );
         assert_eq!(core_topic("photosynthesis"), "photosynthesis");
         // Non-ASCII queries pass through untouched and never panic.
         assert_eq!(core_topic("प्रकाश संश्लेषण"), "प्रकाश संश्लेषण");
@@ -1144,7 +1334,12 @@ mod tests {
     fn facets_respect_the_cap_and_keep_the_original_first() {
         let q = "how does mRNA vaccine technology work";
         let intel = analyze_query(q);
-        for (facets, max) in [(Facets::Deep, 5), (Facets::Study, 3), (Facets::Academic, 2), (Facets::Basic, 3)] {
+        for (facets, max) in [
+            (Facets::Deep, 5),
+            (Facets::Study, 3),
+            (Facets::Academic, 2),
+            (Facets::Basic, 3),
+        ] {
             let v = facet_queries(q, &intel, facets, max);
             assert!(!v.is_empty() && v.len() <= max, "{facets:?}: {v:?}");
             assert_eq!(v[0], q);
@@ -1153,7 +1348,10 @@ mod tests {
             lower.dedup();
             assert_eq!(lower.len(), v.len(), "duplicates in {v:?}");
         }
-        assert_eq!(facet_queries(q, &intel, Facets::Deep, 1), vec![q.to_string()]);
+        assert_eq!(
+            facet_queries(q, &intel, Facets::Deep, 1),
+            vec![q.to_string()]
+        );
     }
 
     #[test]
@@ -1161,7 +1359,10 @@ mod tests {
         let q = "capital of France";
         let v = facet_queries(q, &analyze_query(q), Facets::Deep, 5);
         for bad in ["limitations", "research evidence", "challenges"] {
-            assert!(!v.iter().any(|s| s.contains(bad)), "{bad} facet on a factual query: {v:?}");
+            assert!(
+                !v.iter().any(|s| s.contains(bad)),
+                "{bad} facet on a factual query: {v:?}"
+            );
         }
         // Explanatory questions still get the research facets.
         let r = "how does mRNA vaccine technology work";
@@ -1171,9 +1372,18 @@ mod tests {
 
     #[test]
     fn deep_only_adds_scholarly_indices_for_research_questions() {
-        assert!(!prof("deep", None, "capital of France").engines.iter().any(|e| e == "openalex"));
-        assert!(prof("deep", None, "how does mRNA vaccine technology work").engines.iter().any(|e| e == "openalex"));
-        assert!(prof("deep", Some("health"), "capital of France").engines.iter().any(|e| e == "openalex"));
+        assert!(!prof("deep", None, "capital of France")
+            .engines
+            .iter()
+            .any(|e| e == "openalex"));
+        assert!(prof("deep", None, "how does mRNA vaccine technology work")
+            .engines
+            .iter()
+            .any(|e| e == "openalex"));
+        assert!(prof("deep", Some("health"), "capital of France")
+            .engines
+            .iter()
+            .any(|e| e == "openalex"));
     }
 
     #[test]
@@ -1186,12 +1396,27 @@ mod tests {
 
     #[test]
     fn site_filter_helpers() {
-        assert_eq!(apply_site_filter("best keyboard", Some("reddit.com")), "best keyboard site:reddit.com");
-        assert_eq!(apply_site_filter("x site:foo.com", Some("reddit.com")), "x site:foo.com");
+        assert_eq!(
+            apply_site_filter("best keyboard", Some("reddit.com")),
+            "best keyboard site:reddit.com"
+        );
+        assert_eq!(
+            apply_site_filter("x site:foo.com", Some("reddit.com")),
+            "x site:foo.com"
+        );
         assert_eq!(apply_site_filter("x", None), "x");
-        assert!(matches_site_filter("https://old.reddit.com/r/x", Some("reddit.com")));
-        assert!(!matches_site_filter("https://notreddit.com/r/x", Some("reddit.com")));
-        assert!(matches_site_filter("https://youtu.be/abc", Some("youtube.com")));
+        assert!(matches_site_filter(
+            "https://old.reddit.com/r/x",
+            Some("reddit.com")
+        ));
+        assert!(!matches_site_filter(
+            "https://notreddit.com/r/x",
+            Some("reddit.com")
+        ));
+        assert!(matches_site_filter(
+            "https://youtu.be/abc",
+            Some("youtube.com")
+        ));
         assert!(matches_site_filter("https://anything.test/", None));
     }
 }

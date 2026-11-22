@@ -100,7 +100,12 @@ pub fn concise_prompts(q: &str, ctx: &str, domain: Domain) -> (String, String) {
     (system, user)
 }
 
-pub fn standard_prompts(q: &str, ctx: &str, intel: &QueryIntelligence, domain: Domain) -> (String, String) {
+pub fn standard_prompts(
+    q: &str,
+    ctx: &str,
+    intel: &QueryIntelligence,
+    domain: Domain,
+) -> (String, String) {
     let (mut system, user) = llm::build_intent_prompts(q, ctx, intel);
     system.push_str(domain_rules(domain));
     (system, user)
@@ -352,12 +357,16 @@ async fn single_call(
     let mut answer = first;
     let mut calls = 1;
     if insufficient(&answer, synthesis) {
-        tracing::info!("synthesis quality gate failed ({} chars), retrying once", answer.len());
+        tracing::info!(
+            "synthesis quality gate failed ({} chars), retrying once",
+            answer.len()
+        );
         calls = 2;
         if let Ok(retry) = call_with_timeout(cfg, &msgs).await {
             let retry = llm::post_process_answer(&retry, query);
             let better = (has_any_citation(&retry) && !has_any_citation(&answer))
-                || (has_any_citation(&retry) == has_any_citation(&answer) && retry.len() > answer.len());
+                || (has_any_citation(&retry) == has_any_citation(&answer)
+                    && retry.len() > answer.len());
             if better {
                 answer = retry;
             }
@@ -489,10 +498,13 @@ async fn map_reduce(
     // Map calls write terse notes; reserve a modest output for them.
     let map_out = budget.fit_output(1_500);
     let map_ctx_chars = llm::chars_for_tokens(budget.context_tokens(map_out), sources);
-    let batch_chars = map_ctx_chars.min(profile.context_char_cap).clamp(3_000, 60_000);
+    let batch_chars = map_ctx_chars
+        .min(profile.context_char_cap)
+        .clamp(3_000, 60_000);
     // The reduce call must hold all the notes plus the report it writes.
     let reduce_out = budget.fit_output(cfg.max_output_tokens.unwrap_or(profile.max_output_tokens));
-    let max_ctx = llm::chars_for_tokens(budget.context_tokens(reduce_out), sources).min(profile.context_char_cap);
+    let max_ctx = llm::chars_for_tokens(budget.context_tokens(reduce_out), sources)
+        .min(profile.context_char_cap);
     let mut batches = plan_batches(sources, batch_chars);
     // Cap the number of map calls. On a small local window (4k tokens ≈ 7k
     // chars per batch) 120 chunks meant ~12 sequential calls — minutes of
@@ -516,7 +528,15 @@ async fn map_reduce(
             citation_map: identity.clone(),
         };
         let notes_free = reduce_prompts(query, &ctx.text, sources.len(), intel, profile.domain);
-        return single_call(query, cfg, sources, &ctx, with_memory(notes_free, memory), Synthesis::Report).await;
+        return single_call(
+            query,
+            cfg,
+            sources,
+            &ctx,
+            with_memory(notes_free, memory),
+            Synthesis::Report,
+        )
+        .await;
     }
 
     tracing::info!(
@@ -532,7 +552,12 @@ async fn map_reduce(
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(3));
     let mut set = tokio::task::JoinSet::new();
     for (bi, range) in batches.iter().cloned().enumerate() {
-        let (sys, user) = map_prompts(query, &numbered_block(sources, range.clone()), range.start + 1, range.end);
+        let (sys, user) = map_prompts(
+            query,
+            &numbered_block(sources, range.clone()),
+            range.start + 1,
+            range.end,
+        );
         let cfg = map_cfg.clone();
         let sem = sem.clone();
         set.spawn(async move {
@@ -549,7 +574,12 @@ async fn map_reduce(
     while let Some(joined) = set.join_next().await {
         done += 1;
         if let (Some(db), Some(sid)) = (temp_db, session_id) {
-            db.update_status(sid, "deep_map", &format!("Reading sources: batch {done}/{total}")).await;
+            db.update_status(
+                sid,
+                "deep_map",
+                &format!("Reading sources: batch {done}/{total}"),
+            )
+            .await;
         }
         match joined {
             Ok((bi, range, Ok(raw))) => {
@@ -561,7 +591,15 @@ async fn map_reduce(
                     );
                 }
                 if !cleaned.is_empty() {
-                    notes.push((bi, format!("Notes from sources [{}]-[{}]:\n{}", range.start + 1, range.end, cleaned)));
+                    notes.push((
+                        bi,
+                        format!(
+                            "Notes from sources [{}]-[{}]:\n{}",
+                            range.start + 1,
+                            range.end,
+                            cleaned
+                        ),
+                    ));
                 }
             }
             Ok((_, _, Err(e))) => {
@@ -579,21 +617,31 @@ async fn map_reduce(
     if notes.is_empty() {
         return result(
             None,
-            Some(format!("llm_error: all {failed} evidence-extraction batches failed or found nothing")),
+            Some(format!(
+                "llm_error: all {failed} evidence-extraction batches failed or found nothing"
+            )),
             total,
         );
     }
 
-    let mut joined_notes = notes.into_iter().map(|(_, n)| n).collect::<Vec<_>>().join("\n\n");
+    let mut joined_notes = notes
+        .into_iter()
+        .map(|(_, n)| n)
+        .collect::<Vec<_>>()
+        .join("\n\n");
     joined_notes = crate::util::truncate_chars(&joined_notes, max_ctx).to_string();
 
     // ── REDUCE ──
     if let (Some(db), Some(sid)) = (temp_db, session_id) {
-        db.update_status(sid, "deep_reduce", "Writing the report").await;
+        db.update_status(sid, "deep_reduce", "Writing the report")
+            .await;
     }
     // Map calls only extract evidence; the conversation matters when the
     // report is written.
-    let (sys, user) = with_memory(reduce_prompts(query, &joined_notes, sources.len(), intel, profile.domain), memory);
+    let (sys, user) = with_memory(
+        reduce_prompts(query, &joined_notes, sources.len(), intel, profile.domain),
+        memory,
+    );
     let msgs = vec![ChatMessage::system(sys), ChatMessage::user(user)];
     let mut reduce_cfg = cfg.clone();
     reduce_cfg.max_output_tokens = Some(reduce_out);
@@ -606,7 +654,9 @@ async fn map_reduce(
             let checks = llm::verify_citations(&joined_notes, sources, &identity);
             return LlmExecutionResult {
                 llm_answer: Some(format!("## Evidence Notes\n\n{joined_notes}")),
-                llm_error: Some(format!("partial: report step failed ({e}); showing extracted notes")),
+                llm_error: Some(format!(
+                    "partial: report step failed ({e}); showing extracted notes"
+                )),
                 batches_processed: total,
                 citation_map: identity,
                 citation_checks: checks,
@@ -618,7 +668,9 @@ async fn map_reduce(
     LlmExecutionResult {
         llm_answer: Some(report),
         llm_error: if failed > 0 {
-            Some(format!("partial: {failed} of {total} evidence batches failed"))
+            Some(format!(
+                "partial: {failed} of {total} evidence batches failed"
+            ))
         } else {
             None
         },
@@ -645,7 +697,8 @@ pub fn parse_planned_queries(raw: &str, original: &str, max: usize) -> Vec<Strin
         if !(3..=120).contains(&n) || t.ends_with(':') {
             continue;
         }
-        if t.eq_ignore_ascii_case(original.trim()) || out.iter().any(|o| o.eq_ignore_ascii_case(t)) {
+        if t.eq_ignore_ascii_case(original.trim()) || out.iter().any(|o| o.eq_ignore_ascii_case(t))
+        {
             continue;
         }
         out.push(t.to_string());
@@ -699,10 +752,17 @@ pub async fn plan_subqueries(query: &str, cfg: &LlmConfig, n: usize) -> Option<V
                     crate::copilot::enforce_entity_retention(query, &y, &[])
                 })
                 .collect();
-            if v.is_empty() { None } else { Some(v) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
         }
         Err(e) => {
-            tracing::info!("LLM query planning unavailable ({}), using rule-based facets", e);
+            tracing::info!(
+                "LLM query planning unavailable ({}), using rule-based facets",
+                e
+            );
             None
         }
     }
@@ -713,13 +773,23 @@ pub async fn plan_subqueries(query: &str, cfg: &LlmConfig, n: usize) -> Option<V
 /// Engines never see the conversation itself. Returns None when the question
 /// already stands alone, or on any failure (the question is then searched as
 /// asked).
-pub async fn standalone_query(query: &str, prior: &[crate::chats::PriorTurn], cfg: &LlmConfig) -> Option<String> {
+pub async fn standalone_query(
+    query: &str,
+    prior: &[crate::chats::PriorTurn],
+    cfg: &LlmConfig,
+) -> Option<String> {
     let recent: Vec<String> = prior
         .iter()
         .rev()
         .take(3)
         .rev()
-        .map(|t| format!("User: {}\nAssistant: {}", t.query.trim(), crate::util::truncate_chars(t.answer.trim(), 300)))
+        .map(|t| {
+            format!(
+                "User: {}\nAssistant: {}",
+                t.query.trim(),
+                crate::util::truncate_chars(t.answer.trim(), 300)
+            )
+        })
         .collect();
     if recent.is_empty() {
         return None;
@@ -735,7 +805,10 @@ pub async fn standalone_query(query: &str, prior: &[crate::chats::PriorTurn], cf
              own, return it unchanged. Output ONLY the query, on one line."
                 .to_string(),
         ),
-        ChatMessage::user(format!("Conversation:\n{}\n\nFollow-up question: {query}", recent.join("\n\n"))),
+        ChatMessage::user(format!(
+            "Conversation:\n{}\n\nFollow-up question: {query}",
+            recent.join("\n\n")
+        )),
     ];
     let raw = match call_with_timeout(&c, &msgs).await {
         Ok(r) => r,
@@ -744,8 +817,16 @@ pub async fn standalone_query(query: &str, prior: &[crate::chats::PriorTurn], cf
             return None;
         }
     };
-    let q_raw = raw.lines().map(str::trim).find(|l| !l.is_empty())?.trim_matches(['"', '\'', '`']).trim().to_string();
-    let plausible = !q_raw.is_empty() && q_raw.chars().count() <= 200 && !q_raw.to_lowercase().starts_with("here");
+    let q_raw = raw
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?
+        .trim_matches(['"', '\'', '`'])
+        .trim()
+        .to_string();
+    let plausible = !q_raw.is_empty()
+        && q_raw.chars().count() <= 200
+        && !q_raw.to_lowercase().starts_with("here");
     if !plausible {
         return None;
     }
@@ -792,7 +873,10 @@ pub async fn synthesize(
     let window = ContextBudget::for_config(&cfg).max_tokens;
     let (mut out, truncated) = llm::TRUNCATED
         .scope(std::cell::Cell::new(false), async {
-            let r = synthesize_inner(query, cfg, sources, intel, profile, memory, temp_db, session_id).await;
+            let r = synthesize_inner(
+                query, cfg, sources, intel, profile, memory, temp_db, session_id,
+            )
+            .await;
             (r, llm::TRUNCATED.with(|t| t.get()))
         })
         .await;
@@ -811,7 +895,6 @@ pub async fn synthesize(
     }
     out
 }
-
 
 /// Adaptive Threshold Batch Distillation: splits overflowing sources into up to 3
 /// safe token-sized batches, runs concurrent micro-extractions to pull dated facts
@@ -911,7 +994,11 @@ async fn synthesize_inner(
     session_id: Option<&str>,
 ) -> LlmExecutionResult {
     if sources.is_empty() {
-        return result(None, Some("llm_skipped: no scraped content available".into()), 0);
+        return result(
+            None,
+            Some("llm_skipped: no scraped content available".into()),
+            0,
+        );
     }
     let budget = ContextBudget::for_config(&cfg);
     let mut cfg = cfg;
@@ -920,7 +1007,10 @@ async fn synthesize_inner(
     cfg.max_output_tokens = Some(out);
 
     if profile.synthesis == Synthesis::Report {
-        return map_reduce(query, &cfg, sources, intel, profile, memory, temp_db, session_id).await;
+        return map_reduce(
+            query, &cfg, sources, intel, profile, memory, temp_db, session_id,
+        )
+        .await;
     }
 
     // On TPM-capped cloud providers (e.g. learned safe_window <= 20,000 from an 8,000 TPM tier),
@@ -984,7 +1074,15 @@ async fn synthesize_inner(
         Synthesis::Video => video_prompts(query, &ctx.text),
         Synthesis::Report => unreachable!("handled above"),
     };
-    single_call(query, &cfg, sources, &ctx, with_memory(prompts, memory), profile.synthesis).await
+    single_call(
+        query,
+        &cfg,
+        sources,
+        &ctx,
+        with_memory(prompts, memory),
+        profile.synthesis,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -1015,7 +1113,10 @@ mod tests {
 
     #[test]
     fn quality_gate_is_mode_aware() {
-        assert!(!insufficient("Paris is the capital of France [1].", Synthesis::Concise));
+        assert!(!insufficient(
+            "Paris is the capital of France [1].",
+            Synthesis::Concise
+        ));
         assert!(insufficient("Paris.", Synthesis::Concise));
         let long_uncited = "word ".repeat(80);
         assert!(insufficient(&long_uncited, Synthesis::StudyNotes));
@@ -1043,9 +1144,15 @@ mod tests {
     #[test]
     fn study_prompt_has_the_learning_structure() {
         let (_, user) = study_prompts("photosynthesis", "CTX", Domain::General);
-        for section in ["## Overview", "## Key Concepts", "## Detailed Explanation",
-                        "## Worked Example", "## Common Misconceptions", "## Quick Revision",
-                        "## Self-Test"] {
+        for section in [
+            "## Overview",
+            "## Key Concepts",
+            "## Detailed Explanation",
+            "## Worked Example",
+            "## Common Misconceptions",
+            "## Quick Revision",
+            "## Self-Test",
+        ] {
             assert!(user.contains(section), "study notes missing {section}");
         }
         // Must not invent examples.
@@ -1056,7 +1163,9 @@ mod tests {
     fn literature_prompt_labels_preprints() {
         let (sys, user) = literature_prompts("q", "CTX", Domain::General);
         assert!(sys.contains("preprints") && sys.contains("NOT peer-reviewed"));
-        assert!(user.contains("## Areas of Consensus") && user.contains("## Most Influential Works"));
+        assert!(
+            user.contains("## Areas of Consensus") && user.contains("## Most Influential Works")
+        );
     }
 
     #[test]
@@ -1071,8 +1180,14 @@ mod tests {
     #[test]
     fn map_prompt_has_no_exact_phrase_escape_hatch() {
         let (_, user) = map_prompts("q", "CTX", 1, 10);
-        assert!(!user.contains("reply exactly"), "escape hatch makes small models skip every batch");
-        assert!(user.contains("[1]"), "must show the citation format with real numbers");
+        assert!(
+            !user.contains("reply exactly"),
+            "escape hatch makes small models skip every batch"
+        );
+        assert!(
+            user.contains("[1]"),
+            "must show the citation format with real numbers"
+        );
     }
 
     #[test]
@@ -1117,7 +1232,10 @@ mod tests {
     fn numbering_is_global_across_batches() {
         let sources: Vec<SourceResult> = (0..6).map(|i| src(i, 100)).collect();
         let block = numbered_block(&sources, 3..6);
-        assert!(block.starts_with("[4] "), "batch 2 must continue numbering: {block}");
+        assert!(
+            block.starts_with("[4] "),
+            "batch 2 must continue numbering: {block}"
+        );
         assert!(block.contains("[6] ") && !block.contains("[1] "));
     }
 
@@ -1131,7 +1249,10 @@ mod tests {
         let cleaned = clean_notes(raw, &(3..6));
         assert!(cleaned.contains("ribosomes [4]"));
         assert!(cleaned.contains("LNPs protect the mRNA [5][6]"));
-        assert!(!cleaned.contains("hallucinated"), "out-of-range citation kept");
+        assert!(
+            !cleaned.contains("hallucinated"),
+            "out-of-range citation kept"
+        );
         assert!(!cleaned.contains("Here are"), "preamble kept");
         assert!(!cleaned.contains("no citation"));
         assert_eq!(clean_notes("NO RELEVANT FACTS", &(0..3)), "");
@@ -1155,7 +1276,13 @@ mod tests {
         assert_eq!(parse_planned_queries(raw, "q", 1).len(), 1);
         // Leading digits that are part of the query are not numbering.
         let g = parse_planned_queries("1. 5G network latency\n2) 3D printing costs\n", "q", 5);
-        assert_eq!(g, vec!["5G network latency".to_string(), "3D printing costs".to_string()]);
+        assert_eq!(
+            g,
+            vec![
+                "5G network latency".to_string(),
+                "3D printing costs".to_string()
+            ]
+        );
         // Non-ASCII queries survive intact.
         let hi = parse_planned_queries("भारत पाकिस्तान मैच तारीख\n", "q", 3);
         assert_eq!(hi, vec!["भारत पाकिस्तान मैच तारीख".to_string()]);

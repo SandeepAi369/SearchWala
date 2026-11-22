@@ -21,9 +21,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use searchwala::eval::{
-    self, CacheMetrics, EngineHealth as EvalEngineHealth, PipelineLatency,
-};
+use searchwala::eval::{self, CacheMetrics, EngineHealth as EvalEngineHealth, PipelineLatency};
 
 #[derive(Default)]
 struct Args {
@@ -107,7 +105,10 @@ async fn main() {
         }
     };
 
-    let total = args.limit.unwrap_or(golden.queries.len()).min(golden.queries.len());
+    let total = args
+        .limit
+        .unwrap_or(golden.queries.len())
+        .min(golden.queries.len());
     eprintln!(
         "Evaluating {total} of {} golden queries (focus={}, max_results={:?})",
         golden.queries.len(),
@@ -133,7 +134,7 @@ async fn main() {
         )
         .await;
         let elapsed = t0.elapsed();
-            latency.total.record(elapsed);
+        latency.total.record(elapsed);
 
         // Ranked URL list, in the order the pipeline chose to show them.
         let urls: Vec<String> = resp.search_results.iter().map(|h| h.url.clone()).collect();
@@ -144,7 +145,9 @@ async fn main() {
         // Intent classification accuracy — cheap and worth tracking.
         if !gq.expected_intent.is_empty() {
             intent_total += 1;
-            let got = searchwala::query_intel::analyze_query(&gq.query).intent.to_string();
+            let got = searchwala::query_intel::analyze_query(&gq.query)
+                .intent
+                .to_string();
             if got == gq.expected_intent {
                 intent_correct += 1;
             }
@@ -215,7 +218,10 @@ async fn main() {
     );
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap_or_default()
+        );
     } else {
         println!("\n══════════ EVALUATION REPORT ══════════");
         println!("  version            {}", report.version);
@@ -226,19 +232,27 @@ async fn main() {
         println!("  Recall@10          {:.4}", report.mean_recall_at_10);
         println!("  Recall@20          {:.4}", report.mean_recall_at_20);
         println!("  ── latency ──");
-        println!("  p50 / p95 / p99    {:.0} / {:.0} / {:.0} ms",
-                 report.latency_p50_ms, report.latency_p95_ms, report.latency_p99_ms);
+        println!(
+            "  p50 / p95 / p99    {:.0} / {:.0} / {:.0} ms",
+            report.latency_p50_ms, report.latency_p95_ms, report.latency_p99_ms
+        );
         println!("  ── extraction ──");
         println!("  avg confidence     {:.3}", avg_conf);
         if intent_total > 0 {
             println!("  ── query intelligence ──");
-            println!("  intent accuracy    {:.1}% ({}/{})",
-                     intent_correct as f64 / intent_total as f64 * 100.0,
-                     intent_correct, intent_total);
+            println!(
+                "  intent accuracy    {:.1}% ({}/{})",
+                intent_correct as f64 / intent_total as f64 * 100.0,
+                intent_correct,
+                intent_total
+            );
         }
         println!("  ── cache ──");
-        println!("  serp / page hit     {:.0}% / {:.0}%",
-                 cs.serp_hit_ratio * 100.0, cs.page_hit_ratio * 100.0);
+        println!(
+            "  serp / page hit     {:.0}% / {:.0}%",
+            cs.serp_hit_ratio * 100.0,
+            cs.page_hit_ratio * 100.0
+        );
     }
 
     if let Some(p) = &args.save {

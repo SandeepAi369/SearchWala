@@ -26,9 +26,8 @@ const PAGES: usize = 3;
 static SEL_RESULT: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse(".algo-sr, .dd.algo, li.ov-a").unwrap());
 static SEL_H3: LazyLock<Selector> = LazyLock::new(|| Selector::parse("h3").unwrap());
-static SEL_TITLE: LazyLock<Selector> = LazyLock::new(|| {
-    Selector::parse("h3.title a, h3 a, .compTitle a, .title a, a.d-ib").unwrap()
-});
+static SEL_TITLE: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("h3.title a, h3 a, .compTitle a, .title a, a.d-ib").unwrap());
 static SEL_DESC: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse(".compText p, .compText, .fc-falcon, .lh-l, div.compText p").unwrap()
 });
@@ -101,8 +100,12 @@ pub fn parse_yahoo_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
     let mut results = Vec::new();
 
     for element in document.select(&SEL_RESULT) {
-        let Some(link) = element.select(&SEL_TITLE).next() else { continue };
-        let Some(href) = link.value().attr("href") else { continue };
+        let Some(link) = element.select(&SEL_TITLE).next() else {
+            continue;
+        };
+        let Some(href) = link.value().attr("href") else {
+            continue;
+        };
 
         let actual_url = extract_yahoo_url(href);
         if actual_url.is_empty() {
@@ -151,7 +154,12 @@ fn yahoo_title(link: &scraper::ElementRef) -> String {
     }
     // Layout B: the anchor wraps breadcrumb + <h3><span>title</span></h3>.
     if let Some(h3) = link.select(&SEL_H3).next() {
-        let t = h3.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+        let t = h3
+            .text()
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         if !t.is_empty() {
             return t;
         }
@@ -164,14 +172,21 @@ fn yahoo_title(link: &scraper::ElementRef) -> String {
     if !own.is_empty() {
         return own;
     }
-    link.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+    link.text()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Yahoo wraps targets as `.../RU=<percent-encoded>/RK=...`.
 pub fn extract_yahoo_url(href: &str) -> String {
     if let Some(pos) = href.find("RU=") {
         let start = pos + 3;
-        let end = href[start..].find('/').map(|e| start + e).unwrap_or(href.len());
+        let end = href[start..]
+            .find('/')
+            .map(|e| start + e)
+            .unwrap_or(href.len());
         if let Ok(decoded) = urlencoding::decode(&href[start..end]) {
             if decoded.starts_with("http") {
                 return decoded.to_string();
@@ -182,7 +197,8 @@ pub fn extract_yahoo_url(href: &str) -> String {
         // Byte-safe: "/*http" is pure ASCII so pos+2 is a valid boundary.
         return href[pos + 2..].to_string();
     }
-    if (href.starts_with("http://") || href.starts_with("https://")) && !href.contains("yahoo.com") {
+    if (href.starts_with("http://") || href.starts_with("https://")) && !href.contains("yahoo.com")
+    {
         return href.to_string();
     }
     String::new()
@@ -194,13 +210,17 @@ mod tests {
 
     #[test]
     fn unwraps_ru_redirect() {
-        let href = "https://r.search.yahoo.com/_ylt=abc/RU=https%3a%2f%2fexample.com%2fpage/RK=2/RS=xyz";
+        let href =
+            "https://r.search.yahoo.com/_ylt=abc/RU=https%3a%2f%2fexample.com%2fpage/RK=2/RS=xyz";
         assert_eq!(extract_yahoo_url(href), "https://example.com/page");
     }
 
     #[test]
     fn passes_through_direct_external_links() {
-        assert_eq!(extract_yahoo_url("https://example.com/x"), "https://example.com/x");
+        assert_eq!(
+            extract_yahoo_url("https://example.com/x"),
+            "https://example.com/x"
+        );
         assert_eq!(extract_yahoo_url("https://www.yahoo.com/news"), "");
         assert_eq!(extract_yahoo_url("/relative"), "");
     }
@@ -225,10 +245,17 @@ mod tests {
         let with_label = r#"<div class="algo-sr"><h3 class="title"><a href="https://www.youtube.com/watch?v=x"
             aria-label="How do solar panels work? - YouTube"><span class="d-ib p-abs">YouTube<span
             class="fc-pewter">https://www.youtube.com › watch</span></span>How do solar panels work? - YouTube</a></h3></div>"#;
-        assert_eq!(parse_yahoo_html(with_label, 0)[0].title, "How do solar panels work? - YouTube");
+        assert_eq!(
+            parse_yahoo_html(with_label, 0)[0].title,
+            "How do solar panels work? - YouTube"
+        );
 
-        let no_label = with_label.replace(r#"aria-label="How do solar panels work? - YouTube""#, "");
-        assert_eq!(parse_yahoo_html(&no_label, 0)[0].title, "How do solar panels work? - YouTube");
+        let no_label =
+            with_label.replace(r#"aria-label="How do solar panels work? - YouTube""#, "");
+        assert_eq!(
+            parse_yahoo_html(&no_label, 0)[0].title,
+            "How do solar panels work? - YouTube"
+        );
     }
 
     #[test]

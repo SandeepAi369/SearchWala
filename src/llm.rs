@@ -65,13 +65,22 @@ const LOCAL_SERVER_DEFAULT_TOKENS: usize = 4_096;
 
 fn is_local_llm(cfg: &LlmConfig) -> bool {
     let provider = cfg.provider.to_lowercase();
-    if matches!(provider.as_str(), "ollama" | "lmstudio" | "lm_studio" | "llamacpp" | "llama.cpp") {
+    if matches!(
+        provider.as_str(),
+        "ollama" | "lmstudio" | "lm_studio" | "llamacpp" | "llama.cpp"
+    ) {
         return true;
     }
-    let Some(base) = cfg.base_url.as_deref() else { return false };
-    let Ok(u) = url::Url::parse(base.trim()) else { return false };
+    let Some(base) = cfg.base_url.as_deref() else {
+        return false;
+    };
+    let Ok(u) = url::Url::parse(base.trim()) else {
+        return false;
+    };
     match u.host() {
-        Some(url::Host::Domain(d)) => d == "localhost" || d.ends_with(".local") || d.ends_with(".localhost"),
+        Some(url::Host::Domain(d)) => {
+            d == "localhost" || d.ends_with(".local") || d.ends_with(".localhost")
+        }
         Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
         None => false,
@@ -82,8 +91,18 @@ impl ContextBudget {
     /// Budget for a configured provider. Prefer this over `for_model`.
     pub fn for_config(cfg: &LlmConfig) -> Self {
         // The window the user set in Settings, then the server's env.
-        let override_tokens = cfg.context_window.filter(|&t| t > 0).or_else(|| std::env::var("CONTEXT_MAX_TOKENS").ok().and_then(|v| v.parse().ok()));
-        Self::for_config_with_override(cfg, override_tokens, std::env::var("OLLAMA_CONTEXT_LENGTH").ok().and_then(|v| v.parse().ok()))
+        let override_tokens = cfg.context_window.filter(|&t| t > 0).or_else(|| {
+            std::env::var("CONTEXT_MAX_TOKENS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        });
+        Self::for_config_with_override(
+            cfg,
+            override_tokens,
+            std::env::var("OLLAMA_CONTEXT_LENGTH")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+        )
     }
 
     /// Testable core.
@@ -93,18 +112,25 @@ impl ContextBudget {
         ollama_ctx: Option<usize>,
     ) -> Self {
         if let Some(v) = override_tokens {
-            return Self { max_tokens: v.clamp(2_000, 2_000_000) };
+            return Self {
+                max_tokens: v.clamp(2_000, 2_000_000),
+            };
         }
         if is_local_llm(cfg) {
             // Users who raise Ollama's window usually export
             // OLLAMA_CONTEXT_LENGTH in the same shell — honour it.
             let t = ollama_ctx.unwrap_or(LOCAL_SERVER_DEFAULT_TOKENS);
-            return Self { max_tokens: t.clamp(2_000, 900_000) };
+            return Self {
+                max_tokens: t.clamp(2_000, 900_000),
+            };
         }
         let base_budget = Self::for_model_with_override(&cfg.model, None);
         if let Some(learned_max) = learned_token_limit(&cfg.provider, &cfg.model) {
             return Self {
-                max_tokens: base_budget.max_tokens.min(learned_max).clamp(2_000, 900_000),
+                max_tokens: base_budget
+                    .max_tokens
+                    .min(learned_max)
+                    .clamp(2_000, 900_000),
             };
         }
         base_budget
@@ -113,14 +139,18 @@ impl ContextBudget {
     pub fn for_model(model: &str) -> Self {
         Self::for_model_with_override(
             model,
-            std::env::var("CONTEXT_MAX_TOKENS").ok().and_then(|v| v.parse::<usize>().ok()),
+            std::env::var("CONTEXT_MAX_TOKENS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok()),
         )
     }
 
     /// Testable core — the override is a parameter, not an env read.
     pub fn for_model_with_override(model: &str, override_tokens: Option<usize>) -> Self {
         if let Some(v) = override_tokens {
-            return Self { max_tokens: v.clamp(2_000, 900_000) };
+            return Self {
+                max_tokens: v.clamp(2_000, 900_000),
+            };
         }
         let m = model.to_lowercase();
         let max_tokens = if m.contains("gemini") && m.contains("pro") {
@@ -144,8 +174,14 @@ impl ContextBudget {
     /// than a third of it. The old fixed 2,048-token floor, on a 4,096-token
     /// local window, left almost nothing for the sources.
     pub fn max_output_tokens(&self) -> usize {
-        let floor = if self.max_tokens >= 16_000 { 2_048 } else { 256 };
-        (self.max_tokens / 8).clamp(floor, 32_000).min(self.max_tokens / 3)
+        let floor = if self.max_tokens >= 16_000 {
+            2_048
+        } else {
+            256
+        };
+        (self.max_tokens / 8)
+            .clamp(floor, 32_000)
+            .min(self.max_tokens / 3)
     }
 
     /// Cap a mode's requested output so it fits the window.
@@ -183,7 +219,11 @@ pub fn chars_for_tokens(tokens: usize, sources: &[SourceResult]) -> usize {
         chars += crate::util::char_len(sample);
         est += est_tokens(sample);
     }
-    let per_token = if est == 0 { 4.0 } else { (chars as f64 / est as f64).clamp(0.8, 4.5) };
+    let per_token = if est == 0 {
+        4.0
+    } else {
+        (chars as f64 / est as f64).clamp(0.8, 4.5)
+    };
     (tokens as f64 * per_token) as usize
 }
 
@@ -224,10 +264,16 @@ pub(crate) struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: content.into() }
+        Self {
+            role: "system".into(),
+            content: content.into(),
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: content.into() }
+        Self {
+            role: "user".into(),
+            content: content.into(),
+        }
     }
 }
 
@@ -289,7 +335,13 @@ fn resolve_provider(config: &LlmConfig) -> Result<ProviderInfo, String> {
 /// "https://api.anthropic.com/v1" became ".../v1/v1/messages".
 pub(crate) fn normalize_base_url(raw: &str, provider: &str) -> String {
     let mut u = raw.trim().trim_end_matches('/').to_string();
-    for suffix in ["/chat/completions", "/completions", "/v1/messages", "/messages", "/models"] {
+    for suffix in [
+        "/chat/completions",
+        "/completions",
+        "/v1/messages",
+        "/messages",
+        "/models",
+    ] {
         if let Some(stripped) = u.strip_suffix(suffix) {
             u = stripped.trim_end_matches('/').to_string();
             break;
@@ -325,19 +377,26 @@ pub fn prepare_config(mut c: LlmConfig) -> Result<LlmConfig, String> {
         }
     }
     c.api_key = key.to_string();
-    c.base_url = c.base_url.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+    c.base_url = c
+        .base_url
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty());
 
     if c.model.is_empty() {
         return Err("llm_config: no model name was given".into());
     }
-    if c.api_key.chars().any(|ch| ch.is_whitespace() || ch.is_control() || !ch.is_ascii()) {
+    if c.api_key
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch.is_control() || !ch.is_ascii())
+    {
         return Err("llm_config: the API key contains spaces, line breaks or non-ASCII characters; copy it again from your provider".into());
     }
     if c.api_key.is_empty() && !is_local_llm(&c) {
         return Err("llm_config: the API key is empty".into());
     }
     if let Some(b) = &c.base_url {
-        crate::ssrf::validate_llm_base_url(b).map_err(|e| format!("llm_config: base_url rejected: {e}"))?;
+        crate::ssrf::validate_llm_base_url(b)
+            .map_err(|e| format!("llm_config: base_url rejected: {e}"))?;
     } else if !KNOWN_PROVIDERS.contains(&c.provider.as_str()) {
         // Unknown names fell through to api.openai.com — the key went to a
         // provider the user never chose.
@@ -352,8 +411,24 @@ pub fn prepare_config(mut c: LlmConfig) -> Result<LlmConfig, String> {
 
 /// Provider names with a built-in endpoint (see `default_provider_for`).
 const KNOWN_PROVIDERS: &[&str] = &[
-    "gemini", "google", "anthropic", "openai", "groq", "together", "openrouter", "cerebras", "deepseek", "xai",
-    "ollama", "cohere", "fireworks", "perplexity", "mistral_api", "mistral", "sambanova", "nvidia_nim",
+    "gemini",
+    "google",
+    "anthropic",
+    "openai",
+    "groq",
+    "together",
+    "openrouter",
+    "cerebras",
+    "deepseek",
+    "xai",
+    "ollama",
+    "cohere",
+    "fireworks",
+    "perplexity",
+    "mistral_api",
+    "mistral",
+    "sambanova",
+    "nvidia_nim",
 ];
 
 /// Remove the caller's key from any text that may be shown or logged.
@@ -455,8 +530,17 @@ fn build_chat_url(info: &ProviderInfo, model: &str, stream: bool) -> String {
         }
         ApiFormat::Gemini => {
             // Native Gemini API (only used when no base_url override)
-            let action = if stream { "streamGenerateContent?alt=sse" } else { "generateContent" };
-            format!("{}v1beta/models/{}:{}", ensure_trailing_slash(&info.base_url), model, action)
+            let action = if stream {
+                "streamGenerateContent?alt=sse"
+            } else {
+                "generateContent"
+            };
+            format!(
+                "{}v1beta/models/{}:{}",
+                ensure_trailing_slash(&info.base_url),
+                model,
+                action
+            )
         }
         ApiFormat::Anthropic => {
             // v8.1: this was `base.trim_end_matches('/')` + "v1/messages",
@@ -511,12 +595,15 @@ fn build_request_body(
 ) -> serde_json::Value {
     match info.format {
         ApiFormat::OpenAiCompatible => {
-            let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
-                serde_json::json!({
-                    "role": m.role,
-                    "content": m.content,
+            let msgs: Vec<serde_json::Value> = messages
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "role": m.role,
+                        "content": m.content,
+                    })
                 })
-            }).collect();
+                .collect();
 
             let mut body = serde_json::json!({
                 "model": model,
@@ -653,7 +740,9 @@ fn extract_response_text(json: &serde_json::Value, format: &ApiFormat) -> Option
                     let s: String = parts
                         .iter()
                         .filter(|p| {
-                            p.get("type").and_then(|t| t.as_str()).is_none_or(|t| t == "text")
+                            p.get("type")
+                                .and_then(|t| t.as_str())
+                                .is_none_or(|t| t == "text")
                         })
                         .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                         .collect();
@@ -1029,11 +1118,19 @@ pub(crate) async fn call_llm(
     let info = resolve_provider(config)?;
     let url = build_chat_url(&info, &config.model, false);
     let headers = build_auth_headers(config, &info);
-    let body = build_request_body(messages, &config.model, &info, false, output_tokens_for(config));
+    let body = build_request_body(
+        messages,
+        &config.model,
+        &info,
+        false,
+        output_tokens_for(config),
+    );
 
     tracing::info!(
         "LLM call: provider={} model={} format={:?} url={}",
-        config.provider, config.model, info.format,
+        config.provider,
+        config.model,
+        info.format,
         url.split('?').next().unwrap_or(&url) // Don't log API key in Gemini URL params
     );
 
@@ -1047,36 +1144,48 @@ pub(crate) async fn call_llm(
 
     let status = resp.status();
     learn_rate_limits_from_headers(config, resp.headers());
-    let resp_text = resp.text().await.map_err(|e| format!("response_read_error: {e}"))?;
+    let resp_text = resp
+        .text()
+        .await
+        .map_err(|e| format!("response_read_error: {e}"))?;
 
     if !status.is_success() {
         let error_msg = match serde_json::from_str::<serde_json::Value>(&resp_text) {
             Ok(json) => extract_error_message(&json, &info.format),
             Err(_) => resp_text.chars().take(500).collect(),
         };
-        let full_err = redact_key(&format!("http_{}: {}", status.as_u16(), error_msg), &config.api_key);
+        let full_err = redact_key(
+            &format!("http_{}: {}", status.as_u16(), error_msg),
+            &config.api_key,
+        );
         learn_rate_limit_from_error(config, &full_err);
         return Err(full_err);
     }
 
-    let json: serde_json::Value = serde_json::from_str(&resp_text)
-        .map_err(|e| format!("json_parse_error: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&resp_text).map_err(|e| format!("json_parse_error: {e}"))?;
 
     if was_truncated(&json) {
         // Recorded per task so synthesis can tell the user, instead of
         // returning an answer that silently stops mid-section.
         let _ = TRUNCATED.try_with(|t| t.set(true));
-        tracing::info!("LLM output hit the max_tokens limit (model={})", config.model);
+        tracing::info!(
+            "LLM output hit the max_tokens limit (model={})",
+            config.model
+        );
     }
 
-    extract_response_text(&json, &info.format)
-        .ok_or_else(|| {
-            // Log raw response structure for debugging (without API keys)
-            let keys: Vec<&str> = json.as_object()
-                .map(|o| o.keys().map(|k| k.as_str()).collect())
-                .unwrap_or_default();
-            format!("empty_response: could not extract text from response (keys: {:?})", keys)
-        })
+    extract_response_text(&json, &info.format).ok_or_else(|| {
+        // Log raw response structure for debugging (without API keys)
+        let keys: Vec<&str> = json
+            .as_object()
+            .map(|o| o.keys().map(|k| k.as_str()).collect())
+            .unwrap_or_default();
+        format!(
+            "empty_response: could not extract text from response (keys: {:?})",
+            keys
+        )
+    })
 }
 
 tokio::task_local! {
@@ -1101,8 +1210,6 @@ pub fn was_truncated(json: &serde_json::Value) -> bool {
 // Core LLM Call — SSE Streaming (replaces genai client.exec_chat_stream)
 // =============================================================================
 
-
-
 // =============================================================================
 // DIRECT SYNTHESIS — Single-call for lite mode
 // =============================================================================
@@ -1110,7 +1217,6 @@ pub fn was_truncated(json: &serde_json::Value) -> bool {
 // =============================================================================
 // v5.2.0: INTENT-AWARE SYNTHESIS — Selects optimal prompt per query intent
 // =============================================================================
-
 
 // =============================================================================
 // ITERATIVE DEEP RESEARCH — Multi-batch synthesis for long-form reports
@@ -1121,7 +1227,6 @@ pub fn was_truncated(json: &serde_json::Value) -> bool {
 //   3. Batch 2+: Send previous_report + new sources → LLM expands
 //   4. Return final accumulated long-form report
 // =============================================================================
-
 
 // =============================================================================
 // CHANNEL-BASED SYNTHESIS — Used by stream.rs (SSE streaming path)
@@ -1175,6 +1280,7 @@ impl BuiltContext {
 /// the sandwich reorder, but every index from 1 onward pointed at the wrong
 /// source. Citations were systematically misattributed.
 /// ═══════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
 pub(crate) fn build_ranked_context(sources: &[SourceResult], budget_chars: usize) -> BuiltContext {
     build_ranked_context_with_intel(sources, budget_chars, None)
 }
@@ -1185,7 +1291,10 @@ pub(crate) fn build_ranked_context_with_intel(
     intel: Option<&QueryIntelligence>,
 ) -> BuiltContext {
     if sources.is_empty() {
-        return BuiltContext { text: String::new(), citation_map: Vec::new() };
+        return BuiltContext {
+            text: String::new(),
+            citation_map: Vec::new(),
+        };
     }
 
     // Respect the incoming order; only decide WHERE each source sits.
@@ -1200,7 +1309,10 @@ pub(crate) fn build_ranked_context_with_intel(
             it.key_entities
                 .iter()
                 .flat_map(|e| e.split_whitespace())
-                .map(|t| t.trim_matches(|c: char| !crate::util::is_word_char(c)).to_lowercase())
+                .map(|t| {
+                    t.trim_matches(|c: char| !crate::util::is_word_char(c))
+                        .to_lowercase()
+                })
                 .filter(|t| t.chars().count() >= 3)
                 .collect()
         })
@@ -1250,12 +1362,6 @@ pub(crate) fn build_ranked_context_with_intel(
 
     BuiltContext { text, citation_map }
 }
-
-/// Lost-in-Middle ordering (Liu et al., TACL 2024, arXiv 2307.03172).
-///
-/// Models show a U-shaped accuracy curve over context position, so the most
-/// relevant items go first and last and the least relevant in the middle.
-/// Returns indices into a relevance-descending list.
 
 /// Pre-LLM sentence pruning and cross-chunk deduplication.
 /// 1. Deduplicates repeated multi-word sentences (>= 6 words) across chunks using a 64-bit hash.
@@ -1336,12 +1442,13 @@ pub(crate) fn prune_and_dedup_chunk_sentences(
         // content, prune mid-body filler sentences that carry zero entity tokens,
         // zero digits/dates/versions, and aren't headings/tables/lead.
         if raw_len > 500 && seg_idx > 0 && kept_chars >= 120 && !entity_tokens.is_empty() {
-            let is_structural = seg.starts_with('#')
-                || seg.starts_with('|')
-                || seg.starts_with("[Entry Date:");
+            let is_structural =
+                seg.starts_with('#') || seg.starts_with('|') || seg.starts_with("[Entry Date:");
             let has_digit = seg.chars().any(|c| c.is_ascii_digit());
             let seg_lower = seg.to_lowercase();
-            let has_entity = entity_tokens.iter().any(|et| seg_lower.contains(et.as_str()));
+            let has_entity = entity_tokens
+                .iter()
+                .any(|et| seg_lower.contains(et.as_str()));
             if !is_structural && !has_digit && !has_entity && words.len() < 10 {
                 continue;
             }
@@ -1363,6 +1470,11 @@ pub(crate) fn prune_and_dedup_chunk_sentences(
     }
 }
 
+/// Lost-in-Middle ordering (Liu et al., TACL 2024, arXiv 2307.03172).
+///
+/// Models show a U-shaped accuracy curve over context position, so the most
+/// relevant items go first and last and the least relevant in the middle.
+/// Returns indices into a relevance-descending list.
 fn lost_in_middle_order(len: usize) -> Vec<usize> {
     if len <= 2 {
         return (0..len).collect();
@@ -1412,7 +1524,7 @@ pub fn url_matches_query_entities(
     // unless a brand TLD itself matches an entity token like `.google`).
     let host_labels: Vec<String> = host
         .trim_start_matches("www.")
-        .split(|c: char| c == '.' || c == '-' || c == '_')
+        .split(['.', '-', '_'])
         .map(|s| s.trim().to_lowercase())
         .filter(|s| s.len() >= 2)
         .collect();
@@ -1549,7 +1661,10 @@ pub fn dynamic_authority_score(
             return 1.35;
         }
         if let Some(it) = intel {
-            let wants_encyclopedia = it.key_entities.iter().any(|e| e.to_lowercase().contains("wikipedia"));
+            let wants_encyclopedia = it
+                .key_entities
+                .iter()
+                .any(|e| e.to_lowercase().contains("wikipedia"));
             if wants_encyclopedia {
                 return 1.35;
             }
@@ -1560,9 +1675,7 @@ pub fn dynamic_authority_score(
             {
                 return 0.85;
             }
-            if it.semantic_category == SemanticCategory::HistoryStatic
-                && !it.is_time_sensitive
-            {
+            if it.semantic_category == SemanticCategory::HistoryStatic && !it.is_time_sensitive {
                 return 1.35;
             }
         }
@@ -1707,7 +1820,11 @@ pub(crate) fn post_process_answer(raw: &str, _query: &str) -> String {
     }
 
     // 3. Normalize full-width citation brackets (e.g. 【5】 or ［5］ -> [5])
-    if answer.contains('【') || answer.contains('】') || answer.contains('［') || answer.contains('］') {
+    if answer.contains('【')
+        || answer.contains('】')
+        || answer.contains('［')
+        || answer.contains('］')
+    {
         answer = answer
             .replace('【', "[")
             .replace('】', "]")
@@ -1770,8 +1887,12 @@ pub fn verify_citations(
             continue; // report each citation number once
         }
         // n is 1-based into the CONTEXT, not into `sources`.
-        let Some(&src_idx) = citation_map.get(n.wrapping_sub(1)) else { continue };
-        let Some(src) = sources.get(src_idx) else { continue };
+        let Some(&src_idx) = citation_map.get(n.wrapping_sub(1)) else {
+            continue;
+        };
+        let Some(src) = sources.get(src_idx) else {
+            continue;
+        };
 
         let source_text = format!("{} {}", src.title, src.extracted_text).to_lowercase();
         let claim = sentence.to_lowercase();
@@ -1782,7 +1903,10 @@ pub fn verify_citations(
         if claim_tokens.is_empty() {
             continue;
         }
-        let hits = claim_tokens.iter().filter(|t| source_text.contains(**t)).count();
+        let hits = claim_tokens
+            .iter()
+            .filter(|t| source_text.contains(**t))
+            .count();
         let overlap = hits as f64 / claim_tokens.len() as f64;
 
         out.push(CitationCheck {
@@ -1831,7 +1955,10 @@ fn extract_citation_contexts(answer: &str) -> Vec<(usize, String)> {
         if let Ok(n) = num.parse::<usize>() {
             let after = chars[j].0 + chars[j].1.len_utf8();
             // Sentence bounds, snapped to char boundaries.
-            let start = answer[..bracket_byte].rfind(". ").map(|p| p + 2).unwrap_or(0);
+            let start = answer[..bracket_byte]
+                .rfind(". ")
+                .map(|p| p + 2)
+                .unwrap_or(0);
             let end = answer
                 .get(after..)
                 .and_then(|rest| rest.find(". ").map(|p| after + p + 1))
@@ -1857,16 +1984,16 @@ fn snap(s: &str, mut idx: usize) -> usize {
     idx
 }
 
-
-
-
-
 // =============================================================================
 // v5.2.0: INTENT-AWARE PROMPT BUILDER
 // Selects optimal system/user prompt template based on QueryIntelligence
 // =============================================================================
 
-pub(crate) fn build_intent_prompts(query: &str, context: &str, intel: &QueryIntelligence) -> (String, String) {
+pub(crate) fn build_intent_prompts(
+    query: &str,
+    context: &str,
+    intel: &QueryIntelligence,
+) -> (String, String) {
     let now = current_datetime_str();
     let year = chrono::Utc::now().format("%Y").to_string();
 
@@ -1959,7 +2086,6 @@ pub(crate) fn build_intent_prompts(query: &str, context: &str, intel: &QueryInte
 // SSE Streaming Synthesis — Used by stream.rs
 // =============================================================================
 
-
 // =============================================================================
 // Dynamic Model Fetcher — GET /api/models
 //
@@ -1995,13 +2121,19 @@ pub async fn fetch_provider_models(
     if api_key.is_empty() && !is_local_llm(&probe) {
         return Err("an API key is required".to_string());
     }
-    if api_key.chars().any(|c| c.is_whitespace() || c.is_control() || !c.is_ascii()) {
+    if api_key
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || !c.is_ascii())
+    {
         return Err("the API key contains spaces, line breaks or non-ASCII characters".to_string());
     }
 
     let is_anthropic = provider == "anthropic";
     let models_url = if is_anthropic {
-        format!("{}v1/models", ensure_trailing_slash(base.trim_end_matches("/v1")))
+        format!(
+            "{}v1/models",
+            ensure_trailing_slash(base.trim_end_matches("/v1"))
+        )
     } else {
         format!("{}models", ensure_trailing_slash(&base))
     };
@@ -2013,9 +2145,7 @@ pub async fn fetch_provider_models(
         .build()
         .map_err(|e| format!("client_error: {e}"))?;
 
-    let mut req = client
-        .get(&models_url)
-        .header("Accept", "application/json");
+    let mut req = client.get(&models_url).header("Accept", "application/json");
 
     if is_anthropic {
         req = req
@@ -2122,7 +2252,10 @@ mod tests {
                 src(
                     &format!("https://s{i}.test/a"),
                     &format!("Title {i}"),
-                    &format!("Body of source number {i}. {}", "filler words here. ".repeat(20)),
+                    &format!(
+                        "Body of source number {i}. {}",
+                        "filler words here. ".repeat(20)
+                    ),
                 )
             })
             .collect();
@@ -2178,8 +2311,16 @@ mod tests {
             src("https://a.test/1", "Short A", &"alpha words. ".repeat(40)),
             src("https://b.test/2", "HUGE", &"beta ".repeat(50_000)), // ~250k chars
         ];
-        sources.push(src("https://c.test/3", "Short C", &"gamma words. ".repeat(40)));
-        sources.push(src("https://d.test/4", "Short D", &"delta words. ".repeat(40)));
+        sources.push(src(
+            "https://c.test/3",
+            "Short C",
+            &"gamma words. ".repeat(40),
+        ));
+        sources.push(src(
+            "https://d.test/4",
+            "Short D",
+            &"delta words. ".repeat(40),
+        ));
 
         let ctx = build_ranked_context(&sources, 20_000);
         assert!(
@@ -2232,9 +2373,17 @@ mod tests {
         let answer = "The tournament begins in October 2027 across nine venues [1]. \
                       The tournament also features robotic umpires and orbital stadiums [2].";
         let checks = verify_citations(answer, &sources, &ctx.citation_map);
-        assert_eq!(checks.len(), 2, "both citations should be checked: {checks:?}");
+        assert_eq!(
+            checks.len(),
+            2,
+            "both citations should be checked: {checks:?}"
+        );
         let c2 = checks.iter().find(|c| c.number == 2).unwrap();
-        assert!(!c2.supported, "fabricated claim should be unsupported (overlap {})", c2.overlap);
+        assert!(
+            !c2.supported,
+            "fabricated claim should be unsupported (overlap {})",
+            c2.overlap
+        );
     }
 
     #[test]
@@ -2248,8 +2397,16 @@ mod tests {
              nu xi omicron pi rho sigma tau upsilon phi chi psi omega",
         )];
         let ctx = build_ranked_context(&sources, 50_000);
-        assert_eq!(ctx.citation_map.len(), 1, "source should have been included");
-        let checks = verify_citations("Some claim about alpha beta gamma [1].", &sources, &ctx.citation_map);
+        assert_eq!(
+            ctx.citation_map.len(),
+            1,
+            "source should have been included"
+        );
+        let checks = verify_citations(
+            "Some claim about alpha beta gamma [1].",
+            &sources,
+            &ctx.citation_map,
+        );
         assert!(!checks.is_empty());
         assert_eq!(checks[0].url, "https://a.test/1");
     }
@@ -2298,21 +2455,32 @@ mod tests {
         assert!(gemini.max_context_chars() > haiku.max_context_chars());
         assert!(haiku.max_context_chars() > unknown.max_context_chars());
         // All of them must beat the v7.0 fixed 16,000.
-        assert!(unknown.max_context_chars() > 16_000, "even the conservative default should beat v7.0");
+        assert!(
+            unknown.max_context_chars() > 16_000,
+            "even the conservative default should beat v7.0"
+        );
         assert!(gemini.max_context_chars() > 500_000);
     }
 
     #[test]
     fn context_budget_env_override_is_clamped() {
-        assert!(ContextBudget::for_model_with_override("x", Some(999_999_999)).max_tokens <= 900_000);
+        assert!(
+            ContextBudget::for_model_with_override("x", Some(999_999_999)).max_tokens <= 900_000
+        );
         assert!(ContextBudget::for_model_with_override("x", Some(1)).max_tokens >= 2_000);
-        assert_eq!(ContextBudget::for_model_with_override("x", Some(50_000)).max_tokens, 50_000);
+        assert_eq!(
+            ContextBudget::for_model_with_override("x", Some(50_000)).max_tokens,
+            50_000
+        );
     }
 
     #[test]
     fn max_output_tokens_is_never_the_v7_truncating_4096_for_big_models() {
         let b = ContextBudget::for_model_with_override("claude-opus-5", None);
-        assert!(b.max_output_tokens() > 4096, "research reports were truncated at 4096");
+        assert!(
+            b.max_output_tokens() > 4096,
+            "research reports were truncated at 4096"
+        );
     }
 
     fn cfg(provider: &str, model: &str, base: Option<&str>) -> crate::models::LlmConfig {
@@ -2329,28 +2497,61 @@ mod tests {
 
     #[test]
     fn detects_truncated_responses_across_providers() {
-        assert!(was_truncated(&serde_json::json!({"choices":[{"finish_reason":"length"}]})));
-        assert!(was_truncated(&serde_json::json!({"stop_reason":"max_tokens"})));
-        assert!(!was_truncated(&serde_json::json!({"choices":[{"finish_reason":"stop"}]})));
-        assert!(!was_truncated(&serde_json::json!({"stop_reason":"end_turn"})));
+        assert!(was_truncated(
+            &serde_json::json!({"choices":[{"finish_reason":"length"}]})
+        ));
+        assert!(was_truncated(
+            &serde_json::json!({"stop_reason":"max_tokens"})
+        ));
+        assert!(!was_truncated(
+            &serde_json::json!({"choices":[{"finish_reason":"stop"}]})
+        ));
+        assert!(!was_truncated(
+            &serde_json::json!({"stop_reason":"end_turn"})
+        ));
         assert!(!was_truncated(&serde_json::json!({})));
     }
 
     #[test]
     fn local_servers_get_a_window_they_actually_have() {
         // Measured: Ollama truncated a 15k-token prompt to 4,096 tokens.
-        let o = ContextBudget::for_config_with_override(&cfg("ollama", "qwen2.5-coder:7b", Some("http://localhost:11434/v1")), None, None);
+        let o = ContextBudget::for_config_with_override(
+            &cfg(
+                "ollama",
+                "qwen2.5-coder:7b",
+                Some("http://localhost:11434/v1"),
+            ),
+            None,
+            None,
+        );
         assert_eq!(o.max_tokens, 4_096);
         // Any loopback/private base URL is treated as a local server.
-        let lm = ContextBudget::for_config_with_override(&cfg("openai_compatible", "local-model", Some("http://127.0.0.1:1234/v1")), None, None);
+        let lm = ContextBudget::for_config_with_override(
+            &cfg(
+                "openai_compatible",
+                "local-model",
+                Some("http://127.0.0.1:1234/v1"),
+            ),
+            None,
+            None,
+        );
         assert_eq!(lm.max_tokens, 4_096);
         // OLLAMA_CONTEXT_LENGTH is honoured, and CONTEXT_MAX_TOKENS wins over all.
-        let big = ContextBudget::for_config_with_override(&cfg("ollama", "m", None), None, Some(32_768));
+        let big =
+            ContextBudget::for_config_with_override(&cfg("ollama", "m", None), None, Some(32_768));
         assert_eq!(big.max_tokens, 32_768);
-        let forced = ContextBudget::for_config_with_override(&cfg("ollama", "m", None), Some(8_000), Some(32_768));
+        let forced = ContextBudget::for_config_with_override(
+            &cfg("ollama", "m", None),
+            Some(8_000),
+            Some(32_768),
+        );
         assert_eq!(forced.max_tokens, 8_000);
         // Hosted providers keep their model-based budgets.
-        let hosted = ContextBudget::for_config_with_override(&cfg("anthropic", "claude-opus-5", None), None, None);
+        let hosted = ContextBudget::for_config_with_override(
+            &cfg("anthropic", "claude-opus-5", None),
+            None,
+            None,
+        );
         assert!(hosted.max_tokens >= 100_000);
     }
 
@@ -2361,7 +2562,10 @@ mod tests {
             for requested in [600, 2_000, 4_000, 8_000] {
                 let out = b.fit_output(requested);
                 let ctx = b.context_tokens(out);
-                assert!(out + ctx + 900 <= w.max(out + 400 + 900), "window {w}, requested {requested}: {out}+{ctx} overflows");
+                assert!(
+                    out + ctx + 900 <= w.max(out + 400 + 900),
+                    "window {w}, requested {requested}: {out}+{ctx} overflows"
+                );
                 assert!(out <= w / 3 || out == 128);
             }
             assert!(b.max_output_tokens() <= w / 3);
@@ -2372,12 +2576,23 @@ mod tests {
 
     #[test]
     fn character_budget_follows_the_script_of_the_sources() {
-        let en = vec![src("https://a.test/1", "T", &"The quick brown fox jumps over the lazy dog. ".repeat(40))];
-        let hi = vec![src("https://b.test/1", "T", &"भारत और पाकिस्तान के बीच मुकाबला खेला जाएगा। ".repeat(40))];
+        let en = vec![src(
+            "https://a.test/1",
+            "T",
+            &"The quick brown fox jumps over the lazy dog. ".repeat(40),
+        )];
+        let hi = vec![src(
+            "https://b.test/1",
+            "T",
+            &"भारत और पाकिस्तान के बीच मुकाबला खेला जाएगा। ".repeat(40),
+        )];
         let en_chars = chars_for_tokens(1_000, &en);
         let hi_chars = chars_for_tokens(1_000, &hi);
         assert!(en_chars >= 3_000, "English ~4 chars/token, got {en_chars}");
-        assert!(hi_chars < en_chars / 2, "Devanagari must get far fewer chars per token: {hi_chars} vs {en_chars}");
+        assert!(
+            hi_chars < en_chars / 2,
+            "Devanagari must get far fewer chars per token: {hi_chars} vs {en_chars}"
+        );
         // No sources: falls back to English density instead of dividing by zero.
         assert_eq!(chars_for_tokens(100, &[]), 400);
     }
@@ -2395,7 +2610,10 @@ mod tests {
         // Structural institutional and documentation hosts outrank random blogs,
         // while Wikipedia stays secondary (1.0) by default and boosts only on Study/HistoryStatic.
         assert!(trust_score("https://www.nih.gov/x") > trust_score("https://random-blog.test/x"));
-        assert!(trust_score("https://docs.rust-lang.org/std/") > trust_score("https://random-blog.test/x"));
+        assert!(
+            trust_score("https://docs.rust-lang.org/std/")
+                > trust_score("https://random-blog.test/x")
+        );
         assert_eq!(trust_score("https://en.wikipedia.org/wiki/X"), 1.0);
         let study_wiki = dynamic_authority_score(
             "https://en.wikipedia.org/wiki/X",
@@ -2427,7 +2645,9 @@ mod tests {
         let trimmed = shrink_messages_for_retry(&msgs, ratio);
         assert!(trimmed[1].content.len() < body.len());
         assert!(
-            trimmed[1].content.ends_with("Question: What is the latest release?"),
+            trimmed[1]
+                .content
+                .ends_with("Question: What is the latest release?"),
             "Question footer must be preserved after auto-trim: {}",
             trimmed[1].content
         );
@@ -2435,7 +2655,11 @@ mod tests {
 
     #[test]
     fn dynamic_rate_limit_discovery_learns_from_provider_error_and_updates_budget() {
-        let test_cfg = cfg("groq", "test-dynamic-model-120b", Some("https://api.groq.com/openai/v1"));
+        let test_cfg = cfg(
+            "groq",
+            "test-dynamic-model-120b",
+            Some("https://api.groq.com/openai/v1"),
+        );
         let err = "http_413: Request too large for model test-dynamic-model-120b: Limit 8000, Requested 9200";
         learn_rate_limit_from_error(&test_cfg, err);
 
@@ -2452,7 +2676,8 @@ mod tests {
             !is_payload_too_large(rate_limit_429),
             "HTTP 429 rolling rate limit must never trigger context shrinking"
         );
-        let delay = parse_retry_after_delay(rate_limit_429).expect("should parse 3.57s retry delay");
+        let delay =
+            parse_retry_after_delay(rate_limit_429).expect("should parse 3.57s retry delay");
         assert!(delay >= Duration::from_millis(3570) && delay <= Duration::from_millis(4500));
 
         // Full-width citations 【5】 normalize cleanly to [5]
@@ -2464,12 +2689,19 @@ mod tests {
     fn sentence_pruning_deduplicates_repeated_sentences_across_chunks() {
         let mut seen = HashSet::new();
         let entities = vec!["clickup".to_string()];
-        let repeated = "ClickUp 4.0 introduces autonomous AI agents for workspace automation in 2026.";
+        let repeated =
+            "ClickUp 4.0 introduces autonomous AI agents for workspace automation in 2026.";
         let unique_a = "The release also adds sub-second search indexing across docs and tasks.";
         let unique_b = "Enterprise workspaces can configure custom webhook rate limits per token.";
 
-        let chunk1 = format!("{repeated} {unique_a} {}", "Extra context words here for length. ".repeat(10));
-        let chunk2 = format!("{repeated} {unique_b} {}", "Different supporting details for chunk two. ".repeat(10));
+        let chunk1 = format!(
+            "{repeated} {unique_a} {}",
+            "Extra context words here for length. ".repeat(10)
+        );
+        let chunk2 = format!(
+            "{repeated} {unique_b} {}",
+            "Different supporting details for chunk two. ".repeat(10)
+        );
 
         let out1 = prune_and_dedup_chunk_sentences(&chunk1, &entities, &mut seen, 2000);
         let out2 = prune_and_dedup_chunk_sentences(&chunk2, &entities, &mut seen, 2000);
@@ -2484,7 +2716,12 @@ mod tests {
 
     // ── v8.1: API key / config handling ──
 
-    fn user_cfg(provider: &str, key: &str, model: &str, base: Option<&str>) -> crate::models::LlmConfig {
+    fn user_cfg(
+        provider: &str,
+        key: &str,
+        model: &str,
+        base: Option<&str>,
+    ) -> crate::models::LlmConfig {
         crate::models::LlmConfig {
             provider: provider.into(),
             api_key: key.into(),
@@ -2498,32 +2735,53 @@ mod tests {
 
     #[test]
     fn pasted_keys_are_cleaned_not_silently_dropped() {
-        let c = prepare_config(user_cfg(" Groq ", "  gsk_abc123XYZ\n", " llama-3.3-70b ", Some(" https://api.groq.com/openai/v1 "))).unwrap();
+        let c = prepare_config(user_cfg(
+            " Groq ",
+            "  gsk_abc123XYZ\n",
+            " llama-3.3-70b ",
+            Some(" https://api.groq.com/openai/v1 "),
+        ))
+        .unwrap();
         assert_eq!(c.api_key, "gsk_abc123XYZ");
         assert_eq!(c.model, "llama-3.3-70b");
         assert_eq!(c.provider, "groq");
-        assert_eq!(c.base_url.as_deref(), Some("https://api.groq.com/openai/v1"));
+        assert_eq!(
+            c.base_url.as_deref(),
+            Some("https://api.groq.com/openai/v1")
+        );
         let headers = build_auth_headers(&c, &resolve_provider(&c).unwrap());
         assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer gsk_abc123XYZ");
 
-        let b = prepare_config(user_cfg("openai", "Bearer sk-live-123", "gpt-4o-mini", None)).unwrap();
-        assert_eq!(b.api_key, "sk-live-123", "a pasted 'Bearer ' prefix must not be doubled");
+        let b = prepare_config(user_cfg(
+            "openai",
+            "Bearer sk-live-123",
+            "gpt-4o-mini",
+            None,
+        ))
+        .unwrap();
+        assert_eq!(
+            b.api_key, "sk-live-123",
+            "a pasted 'Bearer ' prefix must not be doubled"
+        );
     }
 
     #[test]
     fn bad_configs_are_reported_with_a_reason() {
         let e = prepare_config(user_cfg("openai", "sk-abc def", "gpt-4o-mini", None)).unwrap_err();
         assert!(e.contains("API key"), "{e}");
-        let e = prepare_config(user_cfg("openai", "sk-ab\u{200b}c", "gpt-4o-mini", None)).unwrap_err();
+        let e =
+            prepare_config(user_cfg("openai", "sk-ab\u{200b}c", "gpt-4o-mini", None)).unwrap_err();
         assert!(e.contains("non-ASCII"), "zero-width space: {e}");
         let e = prepare_config(user_cfg("openai", "", "gpt-4o-mini", None)).unwrap_err();
         assert!(e.contains("empty"), "{e}");
         let e = prepare_config(user_cfg("openai", "sk-1", "  ", None)).unwrap_err();
         assert!(e.contains("model"), "{e}");
-        let c = prepare_config(user_cfg("openai", "sk-1", "m", None)).map(|mut c| {
-            c.timeout_ms = Some(u64::MAX);
-            c
-        }).unwrap();
+        let c = prepare_config(user_cfg("openai", "sk-1", "m", None))
+            .map(|mut c| {
+                c.timeout_ms = Some(u64::MAX);
+                c
+            })
+            .unwrap();
         assert_eq!(prepare_config(c).unwrap().timeout_ms, Some(600_000));
     }
 
@@ -2537,38 +2795,89 @@ mod tests {
     #[test]
     fn a_rejected_base_url_is_an_error_not_a_fallback() {
         // Previously: fell back to api.openai.com and sent the custom key there.
-        let c = user_cfg("openai_compatible", "sk-custom", "m", Some("http://169.254.169.254/v1"));
+        let c = user_cfg(
+            "openai_compatible",
+            "sk-custom",
+            "m",
+            Some("http://169.254.169.254/v1"),
+        );
         assert!(resolve_provider(&c).is_err());
         assert!(prepare_config(c).unwrap_err().contains("base_url rejected"));
     }
 
     #[test]
     fn pasted_endpoint_paths_are_trimmed_from_base_urls() {
-        assert_eq!(normalize_base_url("https://api.x.ai/v1/chat/completions", "xai"), "https://api.x.ai/v1");
-        assert_eq!(normalize_base_url("https://api.anthropic.com/v1/", "anthropic"), "https://api.anthropic.com");
-        assert_eq!(normalize_base_url("https://api.anthropic.com/v1/messages", "anthropic"), "https://api.anthropic.com");
-        assert_eq!(normalize_base_url("https://openrouter.ai/api/v1/", "openrouter"), "https://openrouter.ai/api/v1");
-        let c = user_cfg("anthropic", "k", "claude", Some("https://api.anthropic.com/v1"));
-        assert_eq!(build_chat_url(&resolve_provider(&c).unwrap(), "claude", false), "https://api.anthropic.com/v1/messages");
-        let o = user_cfg("openai_compatible", "k", "m", Some("https://llm.example.com/v1/chat/completions"));
-        assert_eq!(build_chat_url(&resolve_provider(&o).unwrap(), "m", false), "https://llm.example.com/v1/chat/completions");
+        assert_eq!(
+            normalize_base_url("https://api.x.ai/v1/chat/completions", "xai"),
+            "https://api.x.ai/v1"
+        );
+        assert_eq!(
+            normalize_base_url("https://api.anthropic.com/v1/", "anthropic"),
+            "https://api.anthropic.com"
+        );
+        assert_eq!(
+            normalize_base_url("https://api.anthropic.com/v1/messages", "anthropic"),
+            "https://api.anthropic.com"
+        );
+        assert_eq!(
+            normalize_base_url("https://openrouter.ai/api/v1/", "openrouter"),
+            "https://openrouter.ai/api/v1"
+        );
+        let c = user_cfg(
+            "anthropic",
+            "k",
+            "claude",
+            Some("https://api.anthropic.com/v1"),
+        );
+        assert_eq!(
+            build_chat_url(&resolve_provider(&c).unwrap(), "claude", false),
+            "https://api.anthropic.com/v1/messages"
+        );
+        let o = user_cfg(
+            "openai_compatible",
+            "k",
+            "m",
+            Some("https://llm.example.com/v1/chat/completions"),
+        );
+        assert_eq!(
+            build_chat_url(&resolve_provider(&o).unwrap(), "m", false),
+            "https://llm.example.com/v1/chat/completions"
+        );
     }
 
     #[test]
     fn unknown_provider_without_base_url_is_refused() {
         let e = prepare_config(user_cfg("openai_compatible", "sk-x", "m", None)).unwrap_err();
         assert!(e.contains("needs a base_url"), "{e}");
-        assert!(prepare_config(user_cfg("openai_compatible", "sk-x", "m", Some("https://llm.example.com/v1"))).is_ok());
+        assert!(prepare_config(user_cfg(
+            "openai_compatible",
+            "sk-x",
+            "m",
+            Some("https://llm.example.com/v1")
+        ))
+        .is_ok());
     }
 
     #[test]
     fn anthropic_joins_multiple_system_messages() {
         let msgs = vec![
-            ChatMessage { role: "system".into(), content: "A".into() },
-            ChatMessage { role: "system".into(), content: "B".into() },
-            ChatMessage { role: "user".into(), content: "q".into() },
+            ChatMessage {
+                role: "system".into(),
+                content: "A".into(),
+            },
+            ChatMessage {
+                role: "system".into(),
+                content: "B".into(),
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: "q".into(),
+            },
         ];
-        let info = ProviderInfo { format: ApiFormat::Anthropic, base_url: "https://api.anthropic.com/".into() };
+        let info = ProviderInfo {
+            format: ApiFormat::Anthropic,
+            base_url: "https://api.anthropic.com/".into(),
+        };
         let body = build_request_body(&msgs, "claude", &info, false, 512);
         assert_eq!(body["system"], "A\n\nB");
         assert_eq!(body["messages"].as_array().unwrap().len(), 1);
@@ -2577,13 +2886,19 @@ mod tests {
     #[test]
     fn default_anthropic_endpoint_is_well_formed() {
         let c = user_cfg("anthropic", "k", "claude-haiku", None);
-        assert_eq!(build_chat_url(&resolve_provider(&c).unwrap(), "claude-haiku", false), "https://api.anthropic.com/v1/messages");
+        assert_eq!(
+            build_chat_url(&resolve_provider(&c).unwrap(), "claude-haiku", false),
+            "https://api.anthropic.com/v1/messages"
+        );
     }
 
     #[test]
     fn keys_are_redacted_from_provider_errors() {
         let msg = "Incorrect API key provided: sk-proj-abcdef123456. Check your key.";
-        assert_eq!(redact_key(msg, "sk-proj-abcdef123456"), "Incorrect API key provided: <redacted>. Check your key.");
+        assert_eq!(
+            redact_key(msg, "sk-proj-abcdef123456"),
+            "Incorrect API key provided: <redacted>. Check your key."
+        );
         assert_eq!(redact_key("x", ""), "x");
     }
 }

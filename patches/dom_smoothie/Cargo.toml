@@ -1,0 +1,31 @@
+[package]
+name = "dom_smoothie"
+version = "0.19.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+repository = "https://github.com/niklak/dom_smoothie"
+authors = ["niklak <morgenpurple@gmail.com>"]
+description = "A Rust crate for extracting relevant content from web pages"
+documentation = "https://docs.rs/dom_smoothie/latest"
+keywords = ["html", "readability"]
+categories = ["web-programming", "text-processing"]
+readme = "README.md"
+
+[dependencies]
+dom_query = { version = "0.29.0", features = ["mini_selector", "markdown"] }
+tendril = { version = "0.5.0" }
+serde = { version = "1.0", features = ["derive"], optional = true }
+gjson = { version = "0.8.1" }
+html-escape = "0.2.13"
+flagset = "0.4.7"
+unicode-segmentation = "1.12.0"
+thiserror = "2.0"
+phf = { version = "0.14.0", features = ["macros"] }
+foldhash = "0.2.0"
+aho-corasick = { version = "1.1.4", optional = true }
+itoa = "1.0.18"
+
+[features]
+serde = ["dep:serde"]
+aho-corasick = ["dep:aho-corasick"]

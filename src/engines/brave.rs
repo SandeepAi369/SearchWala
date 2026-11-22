@@ -117,7 +117,9 @@ pub fn parse_brave_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
     let mut results = Vec::new();
 
     for element in document.select(&SEL_RESULT) {
-        let Some(link) = element.select(&SEL_TITLE_LINK).next() else { continue };
+        let Some(link) = element.select(&SEL_TITLE_LINK).next() else {
+            continue;
+        };
         let href = match link.value().attr("href") {
             Some(h) if h.starts_with("http") => h.to_string(),
             _ => continue,
@@ -138,7 +140,13 @@ pub fn parse_brave_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
         let snippet = element
             .select(&SEL_DESC)
             .next()
-            .map(|s| s.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
+            .map(|s| {
+                s.text()
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .unwrap_or_default();
 
         results.push(RawSearchResult {
@@ -170,7 +178,11 @@ mod tests {
     #[test]
     fn parses_live_brave_fixture() {
         let r = parse_brave_html(FIXTURE, 0);
-        assert!(r.len() >= 15, "expected >=15 results from the real SERP, got {}", r.len());
+        assert!(
+            r.len() >= 15,
+            "expected >=15 results from the real SERP, got {}",
+            r.len()
+        );
 
         // Titles must be real titles, not the site-name/breadcrumb anchor text.
         let first = &r[0];

@@ -1,0 +1,1048 @@
+use dom_query::Tree;
+use foldhash::{HashMap, HashSet};
+use std::vec;
+
+use dom_query::{Document, NodeId, NodeRef, Selection};
+use flagset::FlagSet;
+
+use crate::config::CandidateSelectMode;
+#[allow(clippy::wildcard_imports)]
+use crate::glob::*;
+use crate::grab_flags::GrabFlags;
+#[allow(clippy::wildcard_imports)]
+use crate::helpers::*;
+#[allow(clippy::wildcard_imports)]
+use crate::matching::*;
+use crate::prep_article::prep_article;
+#[allow(clippy::wildcard_imports)]
+use crate::score::*;
+use crate::Config;
+use crate::Metadata;
+use crate::Readability;
+
+impl Readability {
+    /// Runs up to four extraction attempts, relaxing one flag per failed attempt.
+    /// `self.doc` is left unmodified.
+    pub(crate) fn grab_article(&mut self, metadata: &Metadata) -> Option<Document> {
+        let mut flags: FlagSet<GrabFlags> = FlagSet::full();
+        let mut best_attempt: Option<(Document, usize)> = None;
+        loop {
+            // Run the attempt on `self.doc` to reuse its tree capacity,
+            // leaving an unmodified clone in `self.doc` for subsequent attempts.
+            let next_doc = self.doc.clone();
+            let doc = std::mem::replace(&mut self.doc, next_doc);
+            let article_node = self.attempt_grab_article(&doc, &flags, metadata);
+            // Now that we've gone through the full algorithm, check to see if
+            // we got any meaningful content. If we didn't, we may need to re-run
+            // `grab_article` with different flags set. This gives us a higher likelihood of
+            // finding the content, and the sieve approach gives us a higher likelihood of
+            // finding the -right- content.
+
+            if let Some(ref article_node) = article_node {
+                let text_length = article_node.normalized_char_count();
+                if text_length >= self.config.char_threshold {
+                    return Some(doc);
+                }
+
+                if let Some((_, best_text_length)) = best_attempt {
+                    if text_length > best_text_length {
+                        best_attempt = Some((doc, text_length));
+                    }
+                } else {
+                    best_attempt = Some((doc, text_length));
+                }
+            }
+            if flags.contains(GrabFlags::StripUnlikelys) {
+                flags -= GrabFlags::StripUnlikelys;
+            } else if flags.contains(GrabFlags::WeightClasses) {
+                flags -= GrabFlags::WeightClasses;
+            } else if flags.contains(GrabFlags::CleanConditionally) {
+                flags -= GrabFlags::CleanConditionally;
+            } else {
+                // No luck after removing flags,
+                // just return the longest text we found during the different loops
+                let (best_doc, _) = best_attempt?;
+                return Some(best_doc);
+            }
+        }
+    }
+
+    pub(crate) fn attempt_grab_article<'a>(
+        &self,
+        doc: &'a Document,
+        flags: &FlagSet<GrabFlags>,
+        metadata: &Metadata,
+    ) -> Option<NodeRef<'a>> {
+        let selection = doc.select_single("body");
+        let body_node = selection.nodes().first()?;
+        let strip_unlikely = flags.contains(GrabFlags::StripUnlikelys);
+        let elements_to_score = collect_elements_to_score(body_node, strip_unlikely, metadata);
+        let article_node = self.handle_candidates(&elements_to_score, body_node, flags);
+        article_node.map(|n| NodeRef::new(n.id, &doc.tree))
+    }
+
+    fn handle_candidates<'a>(
+        &self,
+        elements_to_score: &[NodeRef<'a>],
+        body_node: &'a NodeRef,
+        flags: &FlagSet<GrabFlags>,
+    ) -> Option<NodeRef<'a>> {
+        let tree = body_node.tree;
+        let weigh_class = flags.contains(GrabFlags::WeightClasses);
+        let top_candidates = score_elements(elements_to_score, tree, &self.config, flags);
+
+        let mut top_candidate = top_candidates.first().copied();
+
+        let mut top_candidate_is_created = false;
+
+        if top_candidate.is_none() || top_candidate.as_ref().is_some_and(|n| n.has_name("body")) {
+            top_candidate_is_created = true;
+            let tc = tree.new_element("div");
+
+            tree.reparent_children_of(&body_node.id, Some(tc.id));
+            body_node.append_child(&tc);
+            init_node_score(&tc, weigh_class);
+            top_candidate = Some(tc);
+        } else if let Some(mut tc) = top_candidate {
+            if matches!(
+                self.config.candidate_select_mode,
+                CandidateSelectMode::DomSmoothie
+            ) {
+                tc = find_common_candidate_alt(tc, &top_candidates, weigh_class);
+            } else {
+                // Find a better top candidate node if it contains (at least three) nodes which belong to `top_candidates` array
+                // and whose scores are quite closed with current `top_candidate` node.
+                tc = find_common_candidate(tc, &top_candidates, weigh_class);
+            }
+
+            // If the top candidate is the only child, use parent instead. This will help sibling
+            // joining logic when adjacent content is actually located in parent's sibling node.
+            let mut parent_of_top_candidate = tc.parent();
+
+            while let Some(ref tc_parent) = parent_of_top_candidate {
+                if tc_parent.has_name("body") {
+                    break;
+                }
+
+                if tc_parent.element_children().len() != 1 {
+                    break;
+                }
+                tc = *tc_parent;
+                parent_of_top_candidate = tc_parent.parent();
+            }
+            top_candidate = Some(tc);
+        }
+
+        let tc = top_candidate.as_ref()?;
+
+        if !has_node_score(tc) {
+            init_node_score(tc, weigh_class);
+        }
+        // Now that we have the top candidate, look through its siblings for content
+        // that might also be related. Things like preambles, content split by ads
+        // that we removed, etc.
+        let article_content = tree.new_element("div");
+        assign_article_node(tc, &article_content);
+
+        //prepare the article
+        prep_article(&article_content, flags, &self.config);
+
+        if top_candidate_is_created {
+            tc.set_attr("id", CONTENT_ID);
+            tc.set_attr("class", "page");
+        } else {
+            // this code does the same thing as mozilla's implementation, but it is more simpler.
+            article_content.set_attr("id", CONTENT_ID);
+            article_content.set_attr("class", "page");
+        }
+
+        Some(article_content)
+    }
+}
+
+fn is_unlikely_candidate(node: &NodeRef) -> bool {
+    // Assuming that `<body>` node can't can't reach this function
+    if node.has_name("a") || node.has_name("code") {
+        return false;
+    }
+
+    let match_string = get_node_matching_string(node);
+    if match_string.is_empty() {
+        return false;
+    }
+
+    // A lone `header` (as in `ltx_guessed_headers`) does not make a table boilerplate.
+    if node.has_name("table")
+        && match_string.contains("header")
+        && !match_unlikely(&match_string.replace("header", ""))
+    {
+        return false;
+    }
+
+    if !match_unlikely(&match_string) {
+        return false;
+    }
+
+    if has_ancestor(node, Some(0), |n| {
+        let Some(qual_name) = n.qual_name_ref() else {
+            return false;
+        };
+        matches!(qual_name.local.as_ref(), "table" | "code")
+    }) {
+        return false;
+    }
+
+    !is_section_header(node, &match_string)
+}
+
+/// Keeps `h2`/`h3` headings and single-heading `div` wrappers when `"header"` is their only
+/// unlikely match, provided they sit next to article paragraphs (not navigation or links).
+fn is_section_header(node: &NodeRef, match_string: &str) -> bool {
+    if !match_string.contains("header")
+        || match_string.contains("subheader")
+        || match_unlikely(&match_string.replace("header", ""))
+    {
+        return false;
+    }
+
+    if node.has_name("h2") || node.has_name("h3") {
+        return link_density(node, None) == 0.0
+            && node.parent().is_some_and(|p| {
+                p.element_children()
+                    .iter()
+                    .filter(|c| c.has_name("p"))
+                    .count()
+                    >= 2
+            });
+    }
+
+    if !node.has_name("div") || !node.has_attr("class") || node.has_attr("id") {
+        return false;
+    }
+
+    let mut heading_count = 0;
+    for desc in node.descendants_it().filter(NodeRef::is_element) {
+        if let Some(qn) = desc.qual_name_ref() {
+            if matches!(qn.local.as_ref(), "h2" | "h3" | "h4" | "h5" | "h6") {
+                heading_count += 1;
+            } else if matches!(
+                qn.local.as_ref(),
+                "h1" | "p" | "ul" | "ol" | "nav" | "form" | "a"
+            ) {
+                return false;
+            }
+        }
+    }
+
+    heading_count == 1
+        && node.parent().is_some_and(|parent| {
+            parent.element_children().iter().any(|sib| {
+                sib.id != node.id
+                    && Selection::from(*sib)
+                        .select_single_matcher(&MATCHER_P)
+                        .exists()
+            })
+        })
+}
+
+fn div_into_p(node: &NodeRef) {
+    // Turn all divs that don't have children block level elements into p's
+    // Put phrasing content into paragraphs.
+    let mut child_node = node.first_child();
+    while let Some(ref child) = child_node {
+        child_node = wrap_phrasing_content(child);
+    }
+}
+
+fn wrap_phrasing_content<'a>(node: &NodeRef<'a>) -> Option<NodeRef<'a>> {
+    if is_phrasing_content(node) && !is_whitespace(node) {
+        let mut next_sibling = node.next_sibling();
+        let p = node.tree.new_element("p");
+        node.insert_before(&p);
+        p.append_child(node);
+
+        while let Some(child) = next_sibling {
+            next_sibling = child.next_sibling();
+            if is_phrasing_content(&child) {
+                p.append_child(&child);
+            } else {
+                break;
+            }
+        }
+        // Because `p` starts with phrasing content that is not whitespace,
+        // we can skip checking the first child for whitespace.
+
+        while let Some(p_last_child) = p.last_child() {
+            if is_whitespace(&p_last_child) {
+                p_last_child.remove_from_parent();
+            } else {
+                break;
+            }
+        }
+
+        return next_sibling;
+    }
+
+    node.next_sibling()
+}
+
+fn has_child_block_element(node: &NodeRef) -> bool {
+    node.descendants_it().any(|n| {
+        n.element_ref()
+            .is_some_and(|el| BLOCK_ELEMS.contains(&el.name.local))
+    })
+}
+
+fn score_elements<'a>(
+    elements_to_score: &[NodeRef<'a>],
+    tree: &'a Tree,
+    cfg: &Config,
+    flags: &FlagSet<GrabFlags>,
+) -> Vec<NodeRef<'a>> {
+    let mut score_map: HashMap<NodeId, f32> = HashMap::default();
+    // Preserves the initial order of candidates to ensure deterministic tie-breaking.
+    let mut candidate_order: Vec<NodeId> = Vec::new();
+    let mut cc_cache = CharCounterCache::default();
+
+    for element in elements_to_score {
+        let content_len = cc_cache.char_count(element);
+        if content_len < 25 {
+            continue;
+        }
+        // these elements have at least one ancestor -- their parent.
+        let ancestors = element.ancestors(Some(5));
+
+        // Count commas in the element's text content without allocating a new StrTendril.
+        // Equivalent to `1 + element.text().split(COMMAS).count()`, but more efficient.
+        let mut content_score = 2 + score_text_content(element);
+        content_score += std::cmp::min(content_len / 100, 3);
+        for (level, ancestor) in ancestors.iter().enumerate() {
+            if !ancestor.is_element() || ancestor.parent().is_none() {
+                continue;
+            }
+
+            let score_divider: f32 = match level {
+                0 => 1.0,
+                1 => 2.0,
+                _ => (level * 3) as f32,
+            };
+            let extra_score = content_score as f32 / score_divider;
+
+            score_map
+                .entry(ancestor.id)
+                .and_modify(|e| *e += extra_score)
+                .or_insert_with(|| {
+                    candidate_order.push(ancestor.id);
+                    extra_score
+                        + determine_node_score(ancestor, flags.contains(GrabFlags::WeightClasses))
+                });
+
+            if ancestor.has_name("body") {
+                break;
+            }
+        }
+    }
+
+    // Scale the final candidates score based on link density. Good content
+    // should have a relatively small link density (5% or less) and be mostly
+    // unaffected by this operation.
+
+    let mut scored_candidates: Vec<_> = candidate_order
+        .into_iter()
+        .filter_map(|node_id| score_map.get(&node_id).map(|score| (node_id, *score)))
+        .filter(|(_, score)| *score > 0.0)
+        .map(|(node_id, base_score)| {
+            let candidate = NodeRef::new(node_id, tree);
+            // Skipping adjustment of low score
+            let score = if base_score > cfg.min_score_to_adjust {
+                base_score * (1.0 - link_density_fn(&candidate, None, |n| cc_cache.char_count(n)))
+            } else {
+                base_score
+            };
+            set_node_score(&candidate, score);
+            (candidate, score)
+        })
+        .collect();
+
+    scored_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    scored_candidates
+        .into_iter()
+        .take(cfg.n_top_candidates)
+        .map(move |c| c.0)
+        .collect()
+}
+
+fn assign_article_node(tc: &NodeRef, article_content: &NodeRef) {
+    let tc_node_score = get_node_score(tc);
+    let mut sibling_score_threshold = tc_node_score * 0.2;
+    if sibling_score_threshold < 10.0 {
+        sibling_score_threshold = 10.0;
+    }
+    // Keep potential top candidate's parent node to try to get text direction of it later.
+    let Some(tc_parent) = tc.parent() else {
+        unreachable!("Top candidate must have a parent")
+    };
+
+    let tc_class = tc.attr_or("class", "");
+    let siblings: Vec<NodeRef> = tc_parent.element_children();
+    for sibling in &siblings {
+        let mut append = false;
+        if sibling.id == tc.id {
+            append = true;
+        } else {
+            let mut content_bonus: f32 = 0.0;
+            let sibling_class = sibling.attr_or("class", "");
+            if !tc_class.is_empty() && sibling_class == tc_class {
+                content_bonus += tc_node_score * 0.2;
+            }
+            let sibling_score = get_node_score(sibling);
+            if sibling_score > 0.0 {
+                if sibling_score + content_bonus >= sibling_score_threshold {
+                    append = true;
+                }
+            } else if sibling.has_name("p") {
+                let sibling_text = sibling.text();
+                let node_content = normalize_spaces(&sibling_text);
+                let node_length = node_content.chars().count();
+                let link_density = link_density(sibling, Some(node_length));
+
+                if (node_length > 80 && link_density < 0.25)
+                    || node_length < 80
+                        && node_length > 0
+                        && link_density == 0.0
+                        && is_sentence(&node_content)
+                {
+                    append = true;
+                }
+            }
+        }
+
+        //appending sibling
+        if append {
+            if !node_name_in(sibling, &ALTER_TO_DIV_EXCEPTIONS) {
+                // We have a node that isn't a common block level element, like a form or td tag.
+                // Turn it into a div so it doesn't get filtered out later by accident.
+                sibling.rename("div");
+            }
+            article_content.append_child(&sibling.id);
+        }
+    }
+    tc_parent.append_child(article_content);
+}
+
+/// Find a better top candidate across other candidates in a way that `mozilla/readability` does.
+fn find_common_candidate<'a>(
+    mut top_candidate: NodeRef<'a>,
+    top_candidates: &[NodeRef<'a>],
+    weigh_class: bool,
+) -> NodeRef<'a> {
+    let tc = &mut top_candidate;
+    let tc_score = get_node_score(tc);
+
+    let mut alternative_candidate_ancestors = vec![];
+    for alt in top_candidates.iter().skip(1) {
+        if get_node_score(alt) / tc_score >= 0.75 {
+            alternative_candidate_ancestors.push(alt.ancestors(Some(0)));
+        }
+    }
+    // MIN_COMMON_ANCESTORS (in mozilla/readability.js -- MINIMUM_TOPCANDIDATES)
+    // represents the number of top candidates' ancestors that may be common.
+    // The idea is good, but this magic number doesn't always work very well.
+    // For example, imagine we have only two candidates, and both are significant.
+    // So, we end up with one top candidate and another candidate.
+    // However, the second candidate will be excluded in the end because we require
+    // at least three (!) lists of ancestors,
+    // which is impossible to derive from just one candidate.
+    // To adjust the top candidate to share a common ancestor with other candidates,
+    // we would need at least three other candidates.
+    // Currently, I consider this approach to be flawed...
+
+    if alternative_candidate_ancestors.len() >= MIN_COMMON_ANCESTORS {
+        let mut parent_of_top_candidate = tc.parent();
+        while let Some(ref tc_parent) = parent_of_top_candidate {
+            if tc_parent.has_name("body") {
+                break;
+            }
+
+            let mut lists_containing_this_ancestor = 0;
+
+            for alt_ancestor in &alternative_candidate_ancestors {
+                if alt_ancestor.iter().any(|n| n.id == tc_parent.id) {
+                    lists_containing_this_ancestor += 1;
+                }
+            }
+
+            if lists_containing_this_ancestor >= MIN_COMMON_ANCESTORS {
+                top_candidate = *tc_parent;
+                break;
+            }
+
+            parent_of_top_candidate = tc_parent.parent();
+        }
+    }
+
+    top_candidate = adjust_top_candidate_by_parent(top_candidate, weigh_class);
+
+    top_candidate
+}
+
+/// Find a better top candidate across other candidates (alternative approach).
+fn find_common_candidate_alt<'a>(
+    mut top_candidate: NodeRef<'a>,
+    top_candidates: &[NodeRef<'a>],
+    weigh_class: bool,
+) -> NodeRef<'a> {
+    if top_candidates.len() < 2 {
+        return top_candidate;
+    }
+    let tc = &mut top_candidate;
+
+    let tc_ancestors = get_node_ancestors_set(tc);
+    let tc_score = get_node_score(tc);
+
+    let mut ancestor_match_counter: HashMap<NodeId, usize> = HashMap::default();
+
+    for alt in top_candidates.iter().skip(1) {
+        if get_node_score(alt) / tc_score >= 0.75 {
+            let alt_ancestors = get_node_ancestors_set(alt);
+            if alt_ancestors.contains(&tc.id) {
+                continue;
+            }
+            let intersect = tc_ancestors.intersection(&alt_ancestors);
+            for item in intersect {
+                *ancestor_match_counter.entry(*item).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut require_adjustment = true;
+    let score_threshold = tc_score / 3.0;
+    // Choose the qualifying ancestor shared across the most top candidates,
+    // breaking ties by closeness to `top_candidate` (larger `NodeId`).
+    if let Some((best_candidate, _)) = ancestor_match_counter
+        .into_iter()
+        .filter_map(|(id, count)| {
+            let candidate = NodeRef::new(id, tc.tree);
+            (count >= MIN_COMMON_ANCESTORS || get_node_score(&candidate) > score_threshold)
+                .then_some((candidate, count))
+        })
+        .max_by(|x, y| x.1.cmp(&y.1).then(x.0.id.cmp(&y.0.id)))
+    {
+        top_candidate = best_candidate;
+        require_adjustment = false;
+    }
+
+    if require_adjustment {
+        top_candidate = adjust_top_candidate_by_parent(top_candidate, weigh_class);
+    }
+    top_candidate
+}
+
+fn get_node_ancestors_set(node: &NodeRef) -> HashSet<NodeId> {
+    // only elements, no html or body, and have a score
+    node.ancestors(Some(0))
+        .iter()
+        .filter(|n| {
+            n.is_element()
+                && !matches!(n.node_name().as_deref(), Some("html" | "body"))
+                && has_node_score(n)
+        })
+        .map(|n| n.id)
+        .collect::<HashSet<_>>()
+}
+
+fn adjust_top_candidate_by_parent(
+    mut top_candidate: NodeRef<'_>,
+    weigh_class: bool,
+) -> NodeRef<'_> {
+    let tc = &mut top_candidate;
+    if !has_node_score(tc) {
+        init_node_score(tc, weigh_class);
+    }
+    // Because of our bonus system, parents of candidates might have scores
+    // themselves. They get half of the node. There won't be nodes with higher
+    // scores than our `top_candidate`, but if we see the score going *up* in the first
+    // few steps up the tree, that's a decent sign that there might be more content
+    // lurking in other places that we want to unify in. The sibling stuff
+    // below does some of that - but only if we've looked high enough up the DOM
+    // tree.
+    let mut last_score = get_node_score(tc);
+    let score_threshold = last_score / 3.0;
+    let mut parent_of_top_candidate = tc.parent();
+    while let Some(ref tc_parent) = parent_of_top_candidate {
+        if tc_parent.has_name("body") {
+            break;
+        }
+
+        if !has_node_score(tc_parent) {
+            parent_of_top_candidate = tc_parent.parent();
+            continue;
+        }
+
+        let parent_score = get_node_score(tc_parent);
+        if parent_score < score_threshold {
+            break;
+        }
+        if parent_score > last_score || has_scored_same_class_sibling(tc_parent, last_score) {
+            top_candidate = *tc_parent;
+            break;
+        }
+        last_score = parent_score;
+        parent_of_top_candidate = tc_parent.parent();
+    }
+    top_candidate
+}
+
+/// Tells whether `node` (the parent of the current top candidate) looks like one item in a
+/// repeated list of items (forum posts, comments, ...), so that promoting to it lets
+/// `assign_article_node` merge the sibling items.
+///
+/// All of these must hold (the guardrails; tune here if needed):
+/// - `node` scores at least `0.75 * tc_score` (`PARENT_SCORE_RATIO` below).
+/// - `node` has a non-empty `class` attribute.
+/// - at least one sibling element of `node` has a `class` attribute that is *exactly equal*
+///   (`==` on the raw string) to the `class` of `node` and a score above `0.0`. Because the
+///   comparison is on the whole string, a sibling that differs by a single modifier class
+///   (or by class order) does not count; in that case the usual
+///   `parent_score > last_score` rule alone decides.
+fn has_scored_same_class_sibling(node: &NodeRef, tc_score: f32) -> bool {
+    /// Minimal parent score, relative to the top candidate, required for promotion.
+    const PARENT_SCORE_RATIO: f32 = 0.75;
+
+    let class = node.attr_or("class", "");
+    !class.is_empty()
+        && get_node_score(node) >= tc_score * PARENT_SCORE_RATIO
+        && node.parent().is_some_and(|parent| {
+            parent.element_children().iter().any(|sib| {
+                sib.id != node.id
+                    && sib.attr_or("class", "") == class
+                    && get_node_score(sib) > 0.0
+            })
+        })
+}
+
+/// Collecting nodes to score. Also, it removes unlikely candidates and elements without content.
+fn collect_elements_to_score<'a>(
+    root_node: &'a NodeRef,
+    strip_unlikely: bool,
+    metadata: &Metadata,
+) -> Vec<NodeRef<'a>> {
+    let tree = &root_node.tree;
+    let mut elements_id_to_score: Vec<NodeId> = vec![];
+    let mut should_remove_title_header = !metadata.title.is_empty();
+    let mut next_node = next_child_or_sibling(root_node, false);
+    while let Some(mut node) = next_node {
+        if !is_probably_visible(&node) {
+            next_node = next_child_or_sibling(&node, true);
+            node.remove_from_parent();
+            continue;
+        }
+
+        if node.has_name("svg") {
+            next_node = next_child_or_sibling(&node, true);
+            continue;
+        }
+
+        if MATCHER_DIALOGS.match_element(&node) {
+            next_node = next_child_or_sibling(&node, true);
+            node.remove_from_parent();
+            continue;
+        }
+
+        if should_remove_title_header
+            && MATCHER_HEADING.match_element(&node)
+            && text_similarity(&metadata.title, &node.text()) > 0.75
+        {
+            should_remove_title_header = false;
+            next_node = next_child_or_sibling(&node, true);
+            node.remove_from_parent();
+            continue;
+        }
+
+        if strip_unlikely {
+            let strip = is_unlikely_candidate(&node)
+                || node
+                    .attr("role")
+                    .is_some_and(|role| UNLIKELY_ROLES.contains(&role));
+            if strip {
+                next_node = next_child_or_sibling(&node, true);
+                node.remove_from_parent();
+                continue;
+            }
+        }
+        if node_name_in(&node, &TAGS_WITH_CONTENT) && is_element_without_content(&node) {
+            next_node = next_child_or_sibling(&node, true);
+            node.remove_from_parent();
+            continue;
+        }
+
+        if node_name_in(&node, &DEFAULT_TAGS_TO_SCORE) {
+            elements_id_to_score.push(node.id);
+        }
+
+        if node.has_name("div") {
+            div_into_p(&node);
+
+            // Sites like http://mobile.slate.com encloses each paragraph with a DIV
+            // element. DIVs with only a P element inside and no text content can be
+            // safely converted into plain P elements to avoid confusing the scoring
+            // algorithm with DIVs with are, in practice, paragraphs.
+
+            // Check `p` first (cheap), then link density (expensive).
+            let single_p: Option<NodeRef<'_>> =
+                single_child_element(&node, "p").filter(|_| link_density(&node, None) < 0.25);
+            if let Some(new_node) = single_p {
+                node.replace_with(&new_node);
+                elements_id_to_score.push(new_node.id);
+                node = new_node;
+            } else if !has_child_block_element(&node) {
+                node.rename("p");
+                elements_id_to_score.push(node.id);
+            }
+        }
+        next_node = next_child_or_sibling(&node, false);
+    }
+    elements_id_to_score
+        .iter()
+        .map(|n| NodeRef::new(*n, tree))
+        .collect()
+}
+
+#[cfg(not(feature = "aho-corasick"))]
+fn match_unlikely(haystack: &str) -> bool {
+    let check = BytePatternCheck::new(haystack);
+
+    if !check.contains_any(UNLIKELY_CANDIDATES) {
+        return false;
+    }
+    if check.contains_any(MAYBE_CANDIDATES) {
+        return false;
+    }
+    true
+}
+
+#[cfg(feature = "aho-corasick")]
+fn match_unlikely(haystack: &str) -> bool {
+    if !crate::ac_automat::AC_UNLIKELY.is_match(haystack) {
+        return false;
+    }
+    if crate::ac_automat::AC_MAYBE.is_match(haystack) {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use crate::readability::Readability;
+
+    /// Ensures candidates with equal scores preserve their order to keep ranking deterministic.
+    #[test]
+    fn test_equal_score_candidates_keep_their_first_scored_order() {
+        // Two paragraphs per div: a div holding a single <p> is folded into
+        // that <p> before scoring (`div_into_p`) and would not be a candidate.
+        let block = "<p>Seven words, with two commas, and enough characters to score.</p>\
+                     <p>Another line, with two commas, and enough characters to score.</p>";
+        let contents = format!(
+            "<!DOCTYPE html><html><head><title>Test</title></head><body>\
+             <div id=\"a\">{block}</div><div id=\"b\">{block}</div>\
+             <div id=\"c\">{block}</div><div id=\"d\">{block}</div>\
+             </body></html>"
+        );
+        let doc = Document::from(contents.as_str());
+        let body = doc.body().unwrap();
+        let elements = collect_elements_to_score(&body, true, &Metadata::default());
+        let cfg = Config::default();
+        let flags: FlagSet<GrabFlags> = FlagSet::full();
+        let top = score_elements(&elements, body.tree, &cfg, &flags);
+        let divs: Vec<String> = top
+            .iter()
+            .map(|n| n.attr_or("id", "").to_string())
+            .filter(|id| !id.is_empty())
+            .collect();
+        assert_eq!(divs, ["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn test_removing_probably_invisible_nodes() {
+        let contents = r#"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                 <p hidden>This paragraph should be hidden.</p>
+                 <p aria-hidden="true">This paragraph should be hidden.</p>
+                 <p style="display:none">This paragraph should be hidden.</p>
+                 <p style="display: none !important">This paragraph should be hidden.</p>
+                 <p style="display: none!important">This paragraph should be hidden.</p>
+                 <p style="display:">This paragraph should be visible.</p>
+                 <p style="display">This paragraph should be visible.</p>
+                 <p style=":">This paragraph should be visible.</p>
+                 <p style="visibility:hidden">This paragraph should be hidden.</p>
+                 <p aria-hidden="true" class="mwe-math-fallback-image-inline">123*123</p>
+                 <p>This paragraph is visible</p>
+                 <p style="DISPLAY: NONE">This paragraph should be hidden.</p>
+                 <p style="display: none; visibility: visible">This paragraph should be hidden.</p>
+                 <p style="font-family: 'Times New Roman'; display: none">This paragraph should be hidden.</p>
+            </body>
+        </html>"#;
+
+        let doc = Document::from(contents);
+        let body = doc.body().unwrap();
+        collect_elements_to_score(&body, true, &Metadata::default());
+        assert_eq!(5, doc.select("p").length());
+    }
+
+    #[test]
+    fn test_remove_dialog() {
+        let contents = r#"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                 <div id="dialog1" role="dialog" aria-modal="true">
+                    <h2>Test dialog<h2>
+                    <button id="close1">Close</button>
+                 </div>
+            </body>
+        </html>"#;
+
+        let doc = Document::from(contents);
+        assert!(doc.select("#dialog1").exists());
+        let body = doc.body().unwrap();
+        collect_elements_to_score(&body, true, &Metadata::default());
+
+        assert!(!doc.select("#dialog1").exists());
+        assert!(!doc.select("#close1").exists());
+    }
+
+    #[test]
+    fn test_unlikely_roles() {
+        let contents = r#"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                 <div id="dialog1" role="dialog">
+                    <h2>Test dialog<h2>
+                    <button id="close1">Close</button>
+                 </div>
+                 <nav id="nav1" role="navigation"></nav>
+            </body>
+        </html>"#;
+
+        let doc = Document::from(contents);
+        assert!(doc.select("*[role]").exists());
+        let body = doc.body().unwrap();
+
+        collect_elements_to_score(&body, true, &Metadata::default());
+        assert!(!doc.select("*[role]").exists());
+    }
+
+    #[test]
+    fn test_remove_empty() {
+        let contents = r"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                 <p>This paragraph is visible</p>
+                 <header></header>
+                 <section></section>
+                 <div></div>
+                 <h1></h1>
+                 <h2></h2>
+                 <h3></h3>
+                 <h4></h4>
+                 <h5></h5>
+                 <h6></h6>
+            </body>
+        </html>";
+
+        let mut ra = Readability::new(contents, None, None).unwrap();
+        let sel = ra.doc.select("body > *");
+        let count_before = sel.nodes().iter().filter(|n| n.is_element()).count();
+
+        assert_eq!(count_before, 10);
+
+        let clean_doc = ra.grab_article(&Metadata::default()).unwrap();
+        let sel = clean_doc.select("body > *");
+        let count_after = sel.nodes().iter().filter(|n| n.is_element()).count();
+        assert_eq!(count_after, 1);
+    }
+
+    const GRAB_WITH_SIDEBAR: &str = r#"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                <div class="sidebar">
+                    <p>Some words, a few commas, and enough text to count as content
+                    on this page, repeated so that the candidate is long enough to pass
+                    the character threshold only when it is not stripped as unlikely.
+                    Some words, a few commas, and enough text to count as content.</p>
+                </div>
+            </body>
+        </html>"#;
+
+    fn readability_with_threshold(html: &str, char_threshold: usize) -> Readability {
+        let cfg = Config {
+            char_threshold,
+            ..Default::default()
+        };
+        Readability::new(html, None, Some(cfg)).unwrap()
+    }
+
+    #[test]
+    fn test_grab_article_leaves_self_doc_unchanged() {
+        // The attempt edits its own document; `self.doc` must stay untouched.
+        let html = GRAB_WITH_SIDEBAR.replace("sidebar", "content");
+        let mut ra = readability_with_threshold(&html, 0);
+        let before = ra.doc.html().to_string();
+
+        let grabbed = ra.grab_article(&Metadata::default()).unwrap();
+
+        assert!(grabbed.select("#readability-page-1").exists());
+        assert!(!ra.doc.select("#readability-page-1").exists());
+        assert_eq!(ra.doc.html().to_string(), before);
+    }
+
+    #[test]
+    fn test_grab_article_retries_start_from_original_doc() {
+        // The first attempt strips `.sidebar` and falls short; the retry only
+        // sees the text if it starts from the original document.
+        let mut ra = readability_with_threshold(GRAB_WITH_SIDEBAR, 200);
+
+        let grabbed = ra.grab_article(&Metadata::default()).unwrap();
+
+        assert!(grabbed.select("#readability-page-1 p").exists());
+        assert!(ra.doc.select(".sidebar p").exists());
+        assert!(!ra.doc.select("#readability-page-1").exists());
+    }
+
+    #[test]
+    fn test_grab_article_exhausted_attempts_leave_self_doc_unchanged() {
+        // Unreachable threshold: all four attempts run.
+        let mut ra = readability_with_threshold(GRAB_WITH_SIDEBAR, usize::MAX);
+        let before = ra.doc.html().to_string();
+
+        let grabbed = ra.grab_article(&Metadata::default()).unwrap();
+
+        assert!(grabbed.select("#readability-page-1 p").exists());
+        assert_eq!(ra.doc.html().to_string(), before);
+    }
+
+    #[test]
+    fn test_remove_title_duplicates() {
+        let contents = r"<!DOCTYPE>
+        <html>
+            <head><title>Rust (programming language) - Wikipedia</title></head>
+            <body>
+                 <h1>Rust (programming language)</h1>
+            </body>
+        </html>";
+
+        let readability = Readability::from(contents);
+        let metadata = readability.get_article_metadata(None);
+        let body = readability.doc.body().unwrap();
+
+        assert!(readability.doc.select("h1").exists());
+        collect_elements_to_score(&body, true, &metadata);
+        assert!(!readability.doc.select("h1").exists());
+    }
+
+    #[test]
+    fn test_remove_unlikely_candidates() {
+        let contents = r#"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                 <h1>Test</h1>
+                 <div class="banner">Some annoying content</div>
+            </body>
+        </html>"#;
+
+        let doc = Document::from(contents);
+        assert!(doc.select("div.banner").exists());
+        let body = doc.body().unwrap();
+        collect_elements_to_score(&body, true, &Metadata::default());
+        assert!(!doc.select("div.banner").exists());
+    }
+    #[test]
+    fn test_skip_ok_maybe_candidates() {
+        let contents = r#"<!DOCTYPE>
+        <html>
+            <head><title>Test</title></head>
+            <body>
+                 <h1>Test</h1>
+                 <a class="banner">Some annoying content</a>
+            </body>
+        </html>"#;
+
+        let doc = Document::from(contents);
+        assert!(doc.select("a.banner").exists());
+        let body = doc.body().unwrap();
+        collect_elements_to_score(&body, true, &Metadata::default());
+        assert!(doc.select("a.banner").exists());
+    }
+
+    #[test]
+    fn test_find_common_candidate_alt() {
+        let block = "<p>Seven words, with two commas, and enough characters to score.</p>\
+                     <p>Another line, with two commas, and enough characters to score.</p>";
+        // `#inner-box` is shared by only 1 alternative candidate (`#c2`), while both
+        // `#outer-wrap` and `#shared-article` are shared by 3 (`#c2`, `#c3`, `#c4`).
+        // `find_common_candidate_alt` must prefer count=3 over count=1 (`#inner-box`),
+        // and break the count=3 tie in favor of the deeper ancestor (`#shared-article`).
+        let contents = format!(
+            r#"<!DOCTYPE html><html><head><title>Test</title></head><body>
+            <div id="outer-wrap">
+                <main id="shared-article">
+                    <div id="inner-box">
+                        <div id="c1">{block}</div>
+                        <div><div id="c2">{block}</div></div>
+                    </div>
+                    <div><div><div id="c3">{block}</div></div></div>
+                    <div><div><div id="c4">{block}</div></div></div>
+                </main>
+            </div>
+            </body></html>"#
+        );
+        let doc = Document::from(contents.as_str());
+        let body = doc.body().unwrap();
+        let elements = collect_elements_to_score(&body, true, &Metadata::default());
+        let cfg = Config::default();
+        let flags: FlagSet<GrabFlags> = FlagSet::full();
+        let top = score_elements(&elements, body.tree, &cfg, &flags);
+
+        let chosen = find_common_candidate_alt(top[0], &top, true);
+        assert_eq!(chosen.attr_or("id", "").as_ref(), "shared-article");
+    }
+
+    #[test]
+    fn test_find_common_candidate_three_ancestors() {
+        let block = "<p>Seven words, with two commas, and enough characters to score.</p>\
+                     <p>Another line, with two commas, and enough characters to score.</p>";
+        // Four equal-scoring candidates (`#c1`..`#c4`) yield `top_candidate` (`#c1`) plus
+        // exactly 3 (`MIN_COMMON_ANCESTORS`) alternative candidates sharing `#shared-main`.
+        // Each candidate is wrapped in two nested `<div>`s so `adjust_top_candidate_by_parent`
+        // alone cannot reach `#shared-main`.
+        let contents = format!(
+            r#"<!DOCTYPE html><html><head><title>Test</title></head><body>
+            <main id="shared-main">
+                <div><div><div id="c1">{block}</div></div></div>
+                <div><div><div id="c2">{block}</div></div></div>
+                <div><div><div id="c3">{block}</div></div></div>
+                <div><div><div id="c4">{block}</div></div></div>
+            </main>
+            </body></html>"#
+        );
+        let doc = Document::from(contents.as_str());
+        let body = doc.body().unwrap();
+        let elements = collect_elements_to_score(&body, true, &Metadata::default());
+        let cfg = Config::default();
+        let flags: FlagSet<GrabFlags> = FlagSet::full();
+        let top = score_elements(&elements, body.tree, &cfg, &flags);
+
+        let chosen = find_common_candidate(top[0], &top, true);
+        assert_eq!(chosen.attr_or("id", "").as_ref(), "shared-main");
+    }
+}

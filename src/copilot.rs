@@ -389,8 +389,11 @@ pub async fn rewrite_query(query: &str, llm_config: &LlmConfig) -> String {
         ChatMessage::user(query.to_string()),
     ];
 
-    match tokio::time::timeout(Duration::from_millis(timeout_ms), call_llm(llm_config, &messages))
-        .await
+    match tokio::time::timeout(
+        Duration::from_millis(timeout_ms),
+        call_llm(llm_config, &messages),
+    )
+    .await
     {
         Ok(Ok(answer)) => {
             let clean_answer = answer
@@ -428,7 +431,8 @@ mod tests {
         let stale_two = current_year - 2;
 
         let raw_q = "What is the latest update on Google Antigravity?";
-        let llm_q = format!("Google Antigravity latest update release notes {stale_two} {stale_one}");
+        let llm_q =
+            format!("Google Antigravity latest update release notes {stale_two} {stale_one}");
         let fixed = neutralize_stale_years(raw_q, &llm_q);
 
         assert!(
@@ -496,12 +500,11 @@ mod tests {
         assert!(!plan.primary_query.contains(&stale_year.to_string()));
         assert_eq!(plan.sub_queries.len(), 2);
         assert!(plan.sub_queries[0].contains(&current_year.to_string()));
-        assert!(
-            plan.corrective_query
-                .as_deref()
-                .unwrap_or("")
-                .contains(&current_year.to_string())
-        );
+        assert!(plan
+            .corrective_query
+            .as_deref()
+            .unwrap_or("")
+            .contains(&current_year.to_string()));
     }
 
     #[test]

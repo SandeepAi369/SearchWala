@@ -29,13 +29,13 @@ use crate::models::{RawSearchResult, SourceResult};
 
 // ── Tuning constants ──
 const MIN_CHUNK_CHARS: usize = 80;
-const MAX_CHUNK_CHARS: usize = 600;   // v6.1.0: increased from 400 — richer chunks with 120-200MB budget
+const MAX_CHUNK_CHARS: usize = 600; // v6.1.0: increased from 400 — richer chunks with 120-200MB budget
 const CHUNK_OVERLAP_RATIO: f64 = 0.15; // ~15% overlap between consecutive chunks
 const BM25_K1: f64 = 1.2;
 const BM25_B: f64 = 0.75;
-const BM25_DELTA: f64 = 1.0;          // v6.1.0: BM25+ lower bound (Lv & Zhai 2011)
-const RRF_K: f64 = 60.0;              // From the RRF paper (Cormack et al. 2009) — do NOT change
-const MMR_LAMBDA: f64 = 0.7;          // Carbonell & Goldstein 1998 default
+const BM25_DELTA: f64 = 1.0; // v6.1.0: BM25+ lower bound (Lv & Zhai 2011)
+const RRF_K: f64 = 60.0; // From the RRF paper (Cormack et al. 2009) — do NOT change
+const MMR_LAMBDA: f64 = 0.7; // Carbonell & Goldstein 1998 default
 const MAX_CHUNKS_PER_URL_IN_TOP_K: usize = 3; // Hard cap even with MMR
 /// Recency half-life per intent, in days (P2-2).
 const FRESHNESS_HALF_LIFE_NEWS: f64 = 7.0;
@@ -52,29 +52,167 @@ const MMR_WINDOW_FACTOR: usize = 5;
 
 // ── Stopwords — top 150 English stopwords (SMART list + extensions) ──
 const STOPWORDS: &[&str] = &[
-    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
-    "any", "are", "aren't", "as", "at", "be", "because", "been", "before", "being",
-    "below", "between", "both", "but", "by", "can", "can't", "cannot", "could",
-    "couldn't", "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down",
-    "during", "each", "few", "for", "from", "further", "get", "got", "had", "hadn't",
-    "has", "hasn't", "have", "haven't", "having", "he", "her", "here", "hers",
-    "herself", "him", "himself", "his", "how", "i", "if", "in", "into", "is", "isn't",
-    "it", "its", "itself", "just", "let", "like", "ll", "me", "might", "more", "most",
-    "must", "mustn't", "my", "myself", "no", "nor", "not", "of", "off", "on", "once",
-    "only", "or", "other", "our", "ours", "ourselves", "out", "over", "own", "re",
-    "s", "same", "shall", "shan't", "she", "should", "shouldn't", "so", "some",
-    "such", "t", "than", "that", "the", "their", "theirs", "them", "themselves",
-    "then", "there", "these", "they", "this", "those", "through", "to", "too",
-    "under", "until", "up", "ve", "very", "was", "wasn't", "we", "were", "weren't",
-    "what", "when", "where", "which", "while", "who", "whom", "why", "will", "with",
-    "won't", "would", "wouldn't", "you", "your", "yours", "yourself", "yourselves",
+    "a",
+    "about",
+    "above",
+    "after",
+    "again",
+    "against",
+    "all",
+    "am",
+    "an",
+    "and",
+    "any",
+    "are",
+    "aren't",
+    "as",
+    "at",
+    "be",
+    "because",
+    "been",
+    "before",
+    "being",
+    "below",
+    "between",
+    "both",
+    "but",
+    "by",
+    "can",
+    "can't",
+    "cannot",
+    "could",
+    "couldn't",
+    "did",
+    "didn't",
+    "do",
+    "does",
+    "doesn't",
+    "doing",
+    "don't",
+    "down",
+    "during",
+    "each",
+    "few",
+    "for",
+    "from",
+    "further",
+    "get",
+    "got",
+    "had",
+    "hadn't",
+    "has",
+    "hasn't",
+    "have",
+    "haven't",
+    "having",
+    "he",
+    "her",
+    "here",
+    "hers",
+    "herself",
+    "him",
+    "himself",
+    "his",
+    "how",
+    "i",
+    "if",
+    "in",
+    "into",
+    "is",
+    "isn't",
+    "it",
+    "its",
+    "itself",
+    "just",
+    "let",
+    "like",
+    "ll",
+    "me",
+    "might",
+    "more",
+    "most",
+    "must",
+    "mustn't",
+    "my",
+    "myself",
+    "no",
+    "nor",
+    "not",
+    "of",
+    "off",
+    "on",
+    "once",
+    "only",
+    "or",
+    "other",
+    "our",
+    "ours",
+    "ourselves",
+    "out",
+    "over",
+    "own",
+    "re",
+    "s",
+    "same",
+    "shall",
+    "shan't",
+    "she",
+    "should",
+    "shouldn't",
+    "so",
+    "some",
+    "such",
+    "t",
+    "than",
+    "that",
+    "the",
+    "their",
+    "theirs",
+    "them",
+    "themselves",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "through",
+    "to",
+    "too",
+    "under",
+    "until",
+    "up",
+    "ve",
+    "very",
+    "was",
+    "wasn't",
+    "we",
+    "were",
+    "weren't",
+    "what",
+    "when",
+    "where",
+    "which",
+    "while",
+    "who",
+    "whom",
+    "why",
+    "will",
+    "with",
+    "won't",
+    "would",
+    "wouldn't",
+    "you",
+    "your",
+    "yours",
+    "yourself",
+    "yourselves",
 ];
 
 // We use a LazyLock HashSet for O(1) stopword lookups
 use std::sync::LazyLock;
-static STOPWORD_SET: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    STOPWORDS.iter().copied().collect()
-});
+static STOPWORD_SET: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| STOPWORDS.iter().copied().collect());
 
 #[derive(Clone)]
 struct ChunkCandidate {
@@ -267,7 +405,14 @@ pub fn rank_top_chunks_with_signals(
     rrf_scores: Option<&HashMap<String, f64>>,
     intel: Option<&crate::query_intel::QueryIntelligence>,
 ) -> Vec<SourceResult> {
-    rank_with_options(query, sources, top_k, rrf_scores, intel, &RankOptions::default())
+    rank_with_options(
+        query,
+        sources,
+        top_k,
+        rrf_scores,
+        intel,
+        &RankOptions::default(),
+    )
 }
 
 /// Ranking with explicit per-mode options.
@@ -293,7 +438,10 @@ pub fn rank_with_options(
     let mut candidates = Vec::new();
     for source in sources {
         let url_rrf = rrf_scores
-            .and_then(|s| s.get(&crate::url_utils::canonical_key(&source.url)).copied())
+            .and_then(|s| {
+                s.get(&crate::url_utils::canonical_key(&source.url))
+                    .copied()
+            })
             .unwrap_or(0.0);
 
         for chunk in paragraph_chunks(&source.extracted_text) {
@@ -326,7 +474,11 @@ pub fn rank_with_options(
                 text: annotated_text,
                 rrf_score: url_rrf,
                 // Real value now, not the v7.0 hardcoded 0.7.
-                extraction_confidence: if source.confidence > 0.0 { source.confidence } else { 0.7 },
+                extraction_confidence: if source.confidence > 0.0 {
+                    source.confidence
+                } else {
+                    0.7
+                },
                 published: effective_published,
                 language: source.language.clone(),
                 byline: source.byline.clone(),
@@ -388,7 +540,9 @@ pub fn rank_with_options(
     // ── Check if the pool contains at least one entity-matched official domain ──
     let has_official_in_pool = match intel {
         Some(it) if !it.key_entities.is_empty() => candidates.iter().any(|c| {
-            crate::llm::url_matches_query_entities(&c.url, c.site_name.as_deref(), &it.key_entities).0 > 0
+            crate::llm::url_matches_query_entities(&c.url, c.site_name.as_deref(), &it.key_entities)
+                .0
+                > 0
         }),
         _ => false,
     };
@@ -401,7 +555,10 @@ pub fn rank_with_options(
             it.key_entities
                 .iter()
                 .flat_map(|e| e.split_whitespace())
-                .map(|t| t.trim_matches(|c: char| !crate::util::is_word_char(c)).to_lowercase())
+                .map(|t| {
+                    t.trim_matches(|c: char| !crate::util::is_word_char(c))
+                        .to_lowercase()
+                })
                 .filter(|t| t.chars().count() >= 3)
                 .collect()
         })
@@ -448,7 +605,8 @@ pub fn rank_with_options(
 
         // ── Title match bonus ──
         let title_lower = candidates[idx].title.to_lowercase();
-        let title_match_count = query_terms.iter()
+        let title_match_count = query_terms
+            .iter()
             .filter(|qt| title_lower.contains(qt.as_str()))
             .count();
         if title_match_count > 0 {
@@ -548,7 +706,13 @@ pub fn rank_with_options(
     // This both caps per-source monoculture AND removes near-duplicate chunks
     // across different URLs (which the per-URL cap misses).
     // ==========================================================================
-    let selected = mmr_rerank(&candidates, &scored, top_k, &tokenized_docs, opts.max_chunks_per_url.max(1));
+    let selected = mmr_rerank(
+        &candidates,
+        &scored,
+        top_k,
+        &tokenized_docs,
+        opts.max_chunks_per_url.max(1),
+    );
 
     selected
         .into_iter()
@@ -650,7 +814,11 @@ fn mmr_rerank(
         return Vec::new();
     }
 
-    let max_score = scored.iter().map(|(_, s)| *s).fold(0.0_f64, f64::max).max(1e-9);
+    let max_score = scored
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(0.0_f64, f64::max)
+        .max(1e-9);
 
     // ── Candidate window ──
     // `min`, not `clamp(top_k, len)`: the v8.0 clamp PANICKED ("min > max")
@@ -736,7 +904,6 @@ fn mmr_rerank(
     selected
 }
 
-
 // =============================================================================
 // Chunking — Sentence-boundary-aware with overlap
 // =============================================================================
@@ -812,8 +979,7 @@ fn paragraph_chunks(text: &str) -> Vec<String> {
 /// became a single chunk, which BM25 then scored as one undifferentiated blob.
 /// The same held for Arabic, CJK, Thai and every other uncased script.
 const SENTENCE_TERMINATORS: &[char] = &[
-    '.', '!', '?',
-    '\u{0964}', // DEVANAGARI DANDA — Hindi/Marathi/Nepali full stop
+    '.', '!', '?', '\u{0964}', // DEVANAGARI DANDA — Hindi/Marathi/Nepali full stop
     '\u{0965}', // DEVANAGARI DOUBLE DANDA
     '\u{06D4}', // ARABIC FULL STOP
     '\u{3002}', // IDEOGRAPHIC FULL STOP (CJK)
@@ -839,12 +1005,17 @@ fn is_sentence_boundary(chars: &[char], i: usize) -> bool {
         return false;
     }
     // A terminator at the very end closes the sentence.
-    let Some(&next) = chars.get(i + 1) else { return true };
+    let Some(&next) = chars.get(i + 1) else {
+        return true;
+    };
 
     // CJK/Devanagari terminators often have no following space.
     if !next.is_whitespace() {
         // Accept anyway for terminators that are unambiguous sentence enders.
-        return matches!(chars[i], '\u{0964}' | '\u{0965}' | '\u{3002}' | '\u{FF01}' | '\u{FF1F}');
+        return matches!(
+            chars[i],
+            '\u{0964}' | '\u{0965}' | '\u{3002}' | '\u{FF01}' | '\u{FF1F}'
+        );
     }
 
     match chars.get(i + 2) {
@@ -921,7 +1092,14 @@ fn apply_chunk_overlap(chunks: &mut Vec<String>) {
         let prev = &chunks[i - 1];
         let overlap_chars = (prev.chars().count() as f64 * CHUNK_OVERLAP_RATIO) as usize;
         if overlap_chars > 10 {
-            let prev_suffix: String = prev.chars().rev().take(overlap_chars).collect::<Vec<_>>().into_iter().rev().collect();
+            let prev_suffix: String = prev
+                .chars()
+                .rev()
+                .take(overlap_chars)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
             // Find word boundary in the overlap suffix
             let word_start = prev_suffix.find(' ').unwrap_or(0);
             let clean_overlap = prev_suffix[word_start..].trim();
@@ -977,15 +1155,12 @@ fn unique_tokens_filtered(text: &str) -> Vec<String> {
     out
 }
 
-
-
 // =============================================================================
 // v7.0: Cross-Query Result Fusion
 // Merges results from multiple sub-queries using weighted RRF.
 // URLs that appear across MULTIPLE sub-queries get boosted scores,
 // producing more robust, cross-validated results.
 // =============================================================================
-
 
 /// Fuse results from several sub-queries, weighting the original query higher.
 /// Returns the fused score per `canonical_key`, the multi-query counterpart of
@@ -1028,7 +1203,10 @@ pub fn cross_query_scores(
         // with itself across its own aliases.
         for (key, score) in compute_rrf_scores(results) {
             *scores.entry(key.clone()).or_insert(0.0) += weight * score;
-            sub_query_count.entry(key).or_default().insert(sub_query.as_str());
+            sub_query_count
+                .entry(key)
+                .or_default()
+                .insert(sub_query.as_str());
         }
     }
 
@@ -1067,12 +1245,13 @@ mod tests {
         // THE v7.0 BUG: 15 Bing aliases returning the same URL at rank 1 were
         // summed as 15 independent agreements.
         let aliases = [
-            "bing", "bing_us", "bing_uk", "bing_in", "bing_de", "bing_fr",
-            "bing_es", "bing_it", "bing_jp", "bing_ca", "bing_au", "bing_nl",
-            "bing_se", "bing_no", "bing_fi",
+            "bing", "bing_us", "bing_uk", "bing_in", "bing_de", "bing_fr", "bing_es", "bing_it",
+            "bing_jp", "bing_ca", "bing_au", "bing_nl", "bing_se", "bing_no", "bing_fi",
         ];
-        let many: Vec<RawSearchResult> =
-            aliases.iter().map(|e| hit("https://a.test/x", e, 1)).collect();
+        let many: Vec<RawSearchResult> = aliases
+            .iter()
+            .map(|e| hit("https://a.test/x", e, 1))
+            .collect();
         let one = vec![hit("https://a.test/x", "bing", 1)];
 
         let s_many = compute_rrf_scores(&many);
@@ -1096,9 +1275,7 @@ mod tests {
         ];
         let single = vec![hit("https://a.test/x", "bing", 1)];
         let k = crate::url_utils::canonical_key("https://a.test/x");
-        assert!(
-            (compute_rrf_scores(&derived)[&k] - compute_rrf_scores(&single)[&k]).abs() < 1e-12
-        );
+        assert!((compute_rrf_scores(&derived)[&k] - compute_rrf_scores(&single)[&k]).abs() < 1e-12);
 
         let google_family = vec![
             hit("https://a.test/x", "google", 1),
@@ -1125,7 +1302,10 @@ mod tests {
         let k = crate::url_utils::canonical_key("https://a.test/x");
         let multi = compute_rrf_scores(&independent)[&k];
         let one = compute_rrf_scores(&single)[&k];
-        assert!(multi > one * 3.0, "5 independent families scored {multi} vs {one}");
+        assert!(
+            multi > one * 3.0,
+            "5 independent families scored {multi} vs {one}"
+        );
     }
 
     #[test]
@@ -1152,7 +1332,11 @@ mod tests {
             hit("https://m.example.com/story?utm_source=x", "bing", 1),
         ];
         let scores = compute_rrf_scores(&spellings);
-        assert_eq!(scores.len(), 1, "expected one canonical key, got {scores:?}");
+        assert_eq!(
+            scores.len(),
+            1,
+            "expected one canonical key, got {scores:?}"
+        );
     }
 
     #[test]
@@ -1168,14 +1352,18 @@ mod tests {
         let results = vec![
             hit("https://a.test/x", "bing", 1),
             hit("https://a.test/x", "bing_uk", 3),
-            hit("https://a.test/x", "yahoo", 2),     // bing family
-            hit("https://a.test/x", "brave", 1),     // independent
+            hit("https://a.test/x", "yahoo", 2), // bing family
+            hit("https://a.test/x", "brave", 1), // independent
             hit("https://a.test/x", "marginalia_api", 5),
         ];
         let agree = family_agreement(&results);
         let k = crate::url_utils::canonical_key("https://a.test/x");
         let fams = &agree[&k];
-        assert_eq!(fams.len(), 3, "expected bing+brave+marginalia, got {fams:?}");
+        assert_eq!(
+            fams.len(),
+            3,
+            "expected bing+brave+marginalia, got {fams:?}"
+        );
         assert!(fams.contains(&"bing") && fams.contains(&"brave") && fams.contains(&"marginalia"));
     }
 
@@ -1187,7 +1375,9 @@ mod tests {
         // article never found a boundary, so the whole thing became ONE chunk
         // and BM25 scored it as an undifferentiated blob.
         let sentence = "भारत और पाकिस्तान के बीच मुकाबला दस अक्टूबर को खेला जाएगा।";
-        let article = std::iter::repeat_n(sentence, 12).collect::<Vec<_>>().join(" ");
+        let article = std::iter::repeat_n(sentence, 12)
+            .collect::<Vec<_>>()
+            .join(" ");
         let chunks = paragraph_chunks(&article);
         assert!(
             chunks.len() >= 3,
@@ -1195,8 +1385,10 @@ mod tests {
             chunks.len()
         );
         // And every chunk must actually contain Devanagari.
-        assert!(chunks.iter().all(|c| c.contains('\u{0915}') || c.contains('\u{092E}')
-                                   || c.contains('\u{092C}') || c.contains('\u{0926}')));
+        assert!(chunks.iter().all(|c| c.contains('\u{0915}')
+            || c.contains('\u{092E}')
+            || c.contains('\u{092C}')
+            || c.contains('\u{0926}')));
     }
 
     #[test]
@@ -1205,10 +1397,15 @@ mod tests {
         // CORRECT behaviour and the test proves nothing.
         let s = "这是一个句子。这是另一个句子。还有第三个句子。";
         let article = std::iter::repeat_n(s, 40).collect::<Vec<_>>().join("");
-        assert!(article.chars().count() > MAX_CHUNK_CHARS, "test input too short");
+        assert!(
+            article.chars().count() > MAX_CHUNK_CHARS,
+            "test input too short"
+        );
         let chunks = paragraph_chunks(&article);
         assert!(chunks.len() >= 2, "CJK produced {} chunk(s)", chunks.len());
-        assert!(chunks.iter().all(|c| c.chars().count() <= MAX_CHUNK_CHARS * 2));
+        assert!(chunks
+            .iter()
+            .all(|c| c.chars().count() <= MAX_CHUNK_CHARS * 2));
     }
 
     #[test]
@@ -1225,7 +1422,11 @@ mod tests {
                  And a third sentence follows after it. Then a fourth appears here as well.";
         let article = std::iter::repeat_n(s, 6).collect::<Vec<_>>().join(" ");
         let chunks = paragraph_chunks(&article);
-        assert!(chunks.len() >= 2, "English produced {} chunk(s)", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "English produced {} chunk(s)",
+            chunks.len()
+        );
     }
 
     #[test]
@@ -1241,7 +1442,11 @@ mod tests {
         // A blob with no recognised terminator must not become one huge chunk.
         let blob = "x".repeat(MAX_CHUNK_CHARS * 6);
         let chunks = paragraph_chunks(&blob);
-        assert!(chunks.len() >= 3, "terminator-free blob produced {} chunk(s)", chunks.len());
+        assert!(
+            chunks.len() >= 3,
+            "terminator-free blob produced {} chunk(s)",
+            chunks.len()
+        );
     }
 
     #[test]
@@ -1271,7 +1476,10 @@ mod tests {
         let old = Some(chrono::Utc::now() - chrono::Duration::days(3000));
         // "how does TLS work" must not be recency-biased.
         assert_eq!(freshness_multiplier(old, false, &QueryIntent::HowTo), 1.0);
-        assert_eq!(freshness_multiplier(None, false, &QueryIntent::Factual), 1.0);
+        assert_eq!(
+            freshness_multiplier(None, false, &QueryIntent::Factual),
+            1.0
+        );
     }
 
     #[test]
@@ -1283,7 +1491,10 @@ mod tests {
         let f_today = freshness_multiplier(today, true, &QueryIntent::Temporal);
         let f_month = freshness_multiplier(month_old, true, &QueryIntent::Temporal);
         let f_year = freshness_multiplier(year_old, true, &QueryIntent::Temporal);
-        assert!(f_today > f_month && f_month > f_year, "{f_today} {f_month} {f_year}");
+        assert!(
+            f_today > f_month && f_month > f_year,
+            "{f_today} {f_month} {f_year}"
+        );
         assert!(f_today > 0.99, "today should be ~1.0, got {f_today}");
     }
 
@@ -1302,7 +1513,10 @@ mod tests {
         let d = Some(chrono::Utc::now() - chrono::Duration::days(60));
         let news = freshness_multiplier(d, true, &QueryIntent::Temporal);
         let person = freshness_multiplier(d, true, &QueryIntent::Person);
-        assert!(person > news, "person {person} should decay slower than news {news}");
+        assert!(
+            person > news,
+            "person {person} should decay slower than news {news}"
+        );
     }
 
     #[test]
@@ -1332,12 +1546,21 @@ mod tests {
     fn original_query_outweighs_sub_queries() {
         let orig = "cricket world cup 2027";
         let groups = vec![
-            (orig.to_string(), vec![hit("https://a.test/from-original", "bing", 1)]),
-            ("cricket".to_string(), vec![hit("https://b.test/from-sub", "bing", 1)]),
+            (
+                orig.to_string(),
+                vec![hit("https://a.test/from-original", "bing", 1)],
+            ),
+            (
+                "cricket".to_string(),
+                vec![hit("https://b.test/from-sub", "bing", 1)],
+            ),
         ];
         let order = fused_order(&groups, orig);
         assert_eq!(order.len(), 2);
-        assert!(order[0].contains("from-original"), "the original query's hit must rank first, got {order:?}");
+        assert!(
+            order[0].contains("from-original"),
+            "the original query's hit must rank first, got {order:?}"
+        );
     }
 
     #[test]
@@ -1346,7 +1569,10 @@ mod tests {
         let shared = "https://both.test/compare";
         let only_one = "https://one.test/page";
         let groups = vec![
-            (orig.to_string(), vec![hit(shared, "bing", 5), hit(only_one, "bing", 1)]),
+            (
+                orig.to_string(),
+                vec![hit(shared, "bing", 5), hit(only_one, "bing", 1)],
+            ),
             ("postgres".to_string(), vec![hit(shared, "brave", 5)]),
             ("mysql".to_string(), vec![hit(shared, "yandex", 5)]),
         ];
@@ -1370,22 +1596,37 @@ mod tests {
         let groups = vec![
             (
                 orig.to_string(),
-                vec![hit(single, "bing", 1), hit(agreed, "wikipedia", 2), hit(agreed, "duckduckgo", 2)],
+                vec![
+                    hit(single, "bing", 1),
+                    hit(agreed, "wikipedia", 2),
+                    hit(agreed, "duckduckgo", 2),
+                ],
             ),
             ("capital of France history".to_string(), vec![]),
         ];
         let order = fused_order(&groups, orig);
-        assert_eq!(order[0], crate::url_utils::canonical_key(agreed), "{order:?}");
+        assert_eq!(
+            order[0],
+            crate::url_utils::canonical_key(agreed),
+            "{order:?}"
+        );
     }
 
     #[test]
     fn fusion_matches_plain_rrf_for_a_single_query() {
         let orig = "q";
-        let results = vec![hit("https://a.test/1", "bing", 1), hit("https://a.test/1", "brave", 3), hit("https://b.test/2", "bing", 2)];
+        let results = vec![
+            hit("https://a.test/1", "bing", 1),
+            hit("https://a.test/1", "brave", 3),
+            hit("https://b.test/2", "bing", 2),
+        ];
         let fused = cross_query_scores(&[(orig.to_string(), results.clone())], orig);
         let plain = compute_rrf_scores(&results);
         for (k, v) in &plain {
-            assert!((fused[k] - 2.0 * v).abs() < 1e-12, "only the original-query weight should differ");
+            assert!(
+                (fused[k] - 2.0 * v).abs() < 1e-12,
+                "only the original-query weight should differ"
+            );
         }
     }
 
@@ -1419,7 +1660,9 @@ mod tests {
             .map(|i| SourceResult {
                 url: format!("https://t{i}.test/a"),
                 title: format!("Title {i}"),
-                extracted_text: format!("Short source {i} about rust ownership and borrowing rules."),
+                extracted_text: format!(
+                    "Short source {i} about rust ownership and borrowing rules."
+                ),
                 char_count: 60,
                 engine: "test".into(),
                 confidence: 1.0,
@@ -1440,10 +1683,11 @@ mod tests {
     }
 }
 
-
 /// Parses month names (3-letter abbreviation or full English name) to 1..=12.
 fn parse_month_token(tok: &str) -> Option<u32> {
-    let clean = tok.trim_matches(|c: char| !c.is_ascii_alphabetic()).to_ascii_lowercase();
+    let clean = tok
+        .trim_matches(|c: char| !c.is_ascii_alphabetic())
+        .to_ascii_lowercase();
     match clean.as_str() {
         "jan" | "january" => Some(1),
         "feb" | "february" => Some(2),
@@ -1474,7 +1718,10 @@ fn parse_day_token(tok: &str) -> Option<u32> {
     if digits.is_empty() || digits.len() > 2 || !digits.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    digits.parse::<u32>().ok().filter(|&d| (1..=31).contains(&d))
+    digits
+        .parse::<u32>()
+        .ok()
+        .filter(|&d| (1..=31).contains(&d))
 }
 
 fn parse_year_token(tok: &str, max_year: i32) -> Option<i32> {
@@ -1505,7 +1752,8 @@ pub fn extract_chunk_inline_date(text: &str) -> Option<chrono::DateTime<chrono::
 
     // 1. Check for ISO dates (YYYY-MM-DD or YYYY/MM/DD) inside tokens (100% UTF-8 safe)
     for raw_tok in &tokens {
-        let clean = raw_tok.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '/');
+        let clean =
+            raw_tok.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '/');
         if let Some(head) = clean.get(..10) {
             if head.is_ascii() {
                 let bytes = head.as_bytes();
@@ -1595,7 +1843,10 @@ mod stage2_tests {
     #[test]
     fn extract_chunk_inline_date_parses_iso_and_month_formats() {
         // Regression test for multi-byte UTF-8 char at byte index 9..12 (e.g. "Anthropic’s")
-        assert!(extract_chunk_inline_date("Anthropic’s latest model release and केप्लर टेलिस्कोप").is_none());
+        assert!(
+            extract_chunk_inline_date("Anthropic’s latest model release and केप्लर टेलिस्कोप")
+                .is_none()
+        );
         let current_year = Utc::now().year();
         let past_year = current_year - 1;
 
@@ -1721,7 +1972,8 @@ mod stage2_tests {
         assert!(official_score > wiki_score * 1.6);
 
         // Now verify another unseen entity (Stripe / ISRO) with zero hardcoded lists
-        let mut stripe_intel = crate::query_intel::analyze_query("Stripe webhook signature verification");
+        let mut stripe_intel =
+            crate::query_intel::analyze_query("Stripe webhook signature verification");
         stripe_intel.key_entities = vec!["Stripe".to_string()];
         let stripe_official = crate::llm::dynamic_authority_score(
             "https://docs.stripe.com/webhooks/signatures",
@@ -1731,7 +1983,10 @@ mod stage2_tests {
             crate::modes::Mode::Auto,
             true,
         );
-        assert!(stripe_official >= 1.65, "docs.stripe.com should match entity 'Stripe': {stripe_official}");
+        assert!(
+            stripe_official >= 1.65,
+            "docs.stripe.com should match entity 'Stripe': {stripe_official}"
+        );
         let _ = now;
     }
 }

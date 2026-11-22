@@ -184,10 +184,10 @@ pub fn primary_engines() -> Vec<String> {
         "marginalia_api", // public JSON API, no key
         "wiby",           // indie JSON API
         // ── HTML, stealth-fetched, verified working 2026-10-01 ──
-        "bing",           // 86 results/query
-        "brave",          // via brave_news on the same family
-        "duckduckgo",     // 80 results/query
-        "yahoo",          // 63 results/query
+        "bing",       // 86 results/query
+        "brave",      // via brave_news on the same family
+        "duckduckgo", // 80 results/query
+        "yahoo",      // 63 results/query
         // ── IP-sensitive: 403/303 here, may work elsewhere. The health
         //    registry quarantines them automatically if they stay dead. ──
         "mojeek",
@@ -202,11 +202,16 @@ pub fn primary_engines() -> Vec<String> {
 pub fn backup_engines() -> Vec<String> {
     vec![
         // Verticals with genuinely distinct endpoints and verified parsers.
-        "bing_news", "brave_news",
+        "bing_news",
+        "brave_news",
         // Regional Bing variants — real market params, one page each.
-        "bing_uk", "bing_in", "bing_de",
+        "bing_uk",
+        "bing_in",
+        "bing_de",
         // Independents worth trying; quarantine handles them if dead.
-        "mwmbl", "ecosia", "yacy",
+        "mwmbl",
+        "ecosia",
+        "yacy",
     ]
     .into_iter()
     .map(|s| s.to_string())
@@ -299,28 +304,77 @@ pub fn filter_healthy(names: Vec<String>) -> Vec<String> {
 pub fn specialized_engines(domain: &str) -> Vec<String> {
     let base: Vec<&str> = match domain {
         "tech" => vec![
-            "duckduckgo", "brave", "google", "bing", "startpage", "qwant",
-            "google_news", "bing_news", "marginalia", "stract", "wiby",
+            "duckduckgo",
+            "brave",
+            "google",
+            "bing",
+            "startpage",
+            "qwant",
+            "google_news",
+            "bing_news",
+            "marginalia",
+            "stract",
+            "wiby",
         ],
         "science" => vec![
-            "wikipedia", "google", "google_scholar", "brave", "duckduckgo",
-            "startpage", "mojeek", "bing", "ecosia", "qwant",
+            "wikipedia",
+            "google",
+            "google_scholar",
+            "brave",
+            "duckduckgo",
+            "startpage",
+            "mojeek",
+            "bing",
+            "ecosia",
+            "qwant",
         ],
         "finance" => vec![
-            "google", "google_news", "bing", "bing_news", "yahoo", "yahoo_news",
-            "brave", "brave_news", "duckduckgo", "startpage",
+            "google",
+            "google_news",
+            "bing",
+            "bing_news",
+            "yahoo",
+            "yahoo_news",
+            "brave",
+            "brave_news",
+            "duckduckgo",
+            "startpage",
         ],
         "health" => vec![
-            "google", "wikipedia", "bing", "duckduckgo", "brave",
-            "google_scholar", "mojeek", "startpage", "ecosia", "qwant",
+            "google",
+            "wikipedia",
+            "bing",
+            "duckduckgo",
+            "brave",
+            "google_scholar",
+            "mojeek",
+            "startpage",
+            "ecosia",
+            "qwant",
         ],
         "news" => vec![
-            "google_news", "bing_news", "brave_news", "yahoo_news",
-            "duckduckgo_news", "google", "bing", "brave", "yahoo", "duckduckgo",
+            "google_news",
+            "bing_news",
+            "brave_news",
+            "yahoo_news",
+            "duckduckgo_news",
+            "google",
+            "bing",
+            "brave",
+            "yahoo",
+            "duckduckgo",
         ],
         _ => vec![
-            "wikipedia", "duckduckgo", "brave", "google", "bing",
-            "yahoo", "qwant", "startpage", "mojeek", "ecosia",
+            "wikipedia",
+            "duckduckgo",
+            "brave",
+            "google",
+            "bing",
+            "yahoo",
+            "qwant",
+            "startpage",
+            "mojeek",
+            "ecosia",
         ],
     };
     base.into_iter().map(|s| s.to_string()).collect()
@@ -430,7 +484,6 @@ pub fn engine_weight(name: &str) -> f32 {
     family_weight(engine_family(name))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,7 +507,7 @@ mod tests {
             "duckduckgo".into(),
             "duckduckgo_html".into(), // same endpoint
             "wikipedia".into(),
-            "wikipedia".into(),       // literal duplicate
+            "wikipedia".into(), // literal duplicate
         ]);
         let names: Vec<&str> = built.iter().map(|e| e.name()).collect();
         assert_eq!(built.len(), 2, "aliases did not collapse: {names:?}");
@@ -464,8 +517,15 @@ mod tests {
     fn structurally_broken_engines_are_not_in_the_default_roster() {
         let roster = all_engines();
         for dead in [
-            "google", "google_news", "google_uk", "google_in", "google_de",
-            "startpage", "qwant", "4get", "yahoo_news",
+            "google",
+            "google_news",
+            "google_uk",
+            "google_in",
+            "google_de",
+            "startpage",
+            "qwant",
+            "4get",
+            "yahoo_news",
         ] {
             assert!(
                 !roster.contains(&dead.to_string()),
@@ -479,7 +539,11 @@ mod tests {
         // Specs are retained so ENGINES=google works for anyone with a path.
         for forced in ["google", "startpage", "qwant"] {
             let built = get_engines(&[forced.to_string()]);
-            assert_eq!(built.len(), 1, "{forced} should still be constructible on request");
+            assert_eq!(
+                built.len(),
+                1,
+                "{forced} should still be constructible on request"
+            );
         }
     }
 
@@ -487,7 +551,10 @@ mod tests {
     fn waf_engines_declare_needs_stealth() {
         for name in ["bing", "brave", "duckduckgo", "yahoo"] {
             let built = get_engines(&[name.to_string()]);
-            assert!(built[0].needs_stealth(), "{name} must use TLS impersonation");
+            assert!(
+                built[0].needs_stealth(),
+                "{name} must use TLS impersonation"
+            );
         }
         // JSON APIs do not need it.
         for name in ["wikipedia", "marginalia_api", "wiby"] {
@@ -499,7 +566,14 @@ mod tests {
     #[test]
     fn engine_family_groups_derived_indices_correctly() {
         // Bing-derived.
-        for e in ["bing", "bing_uk", "bing_news", "duckduckgo", "yahoo", "yahoo_news"] {
+        for e in [
+            "bing",
+            "bing_uk",
+            "bing_news",
+            "duckduckgo",
+            "yahoo",
+            "yahoo_news",
+        ] {
             assert_eq!(engine_family(e), "bing", "{e}");
         }
         // Google-derived (incl. proxies).

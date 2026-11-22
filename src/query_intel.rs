@@ -207,29 +207,98 @@ fn is_structural_site_leader(word: &str) -> bool {
     }
     !matches!(
         clean,
-        "what" | "how" | "why" | "who" | "when" | "where" | "which"
-            | "is" | "are" | "was" | "were" | "can" | "could" | "should"
-            | "does" | "do" | "did" | "will" | "would" | "explain" | "compare"
-            | "define" | "tell" | "show" | "list" | "give" | "the" | "a" | "an"
-            | "best" | "top" | "latest" | "current" | "recent" | "upcoming" | "history"
-            | "biography" | "overview" | "impact" | "future"
+        "what"
+            | "how"
+            | "why"
+            | "who"
+            | "when"
+            | "where"
+            | "which"
+            | "is"
+            | "are"
+            | "was"
+            | "were"
+            | "can"
+            | "could"
+            | "should"
+            | "does"
+            | "do"
+            | "did"
+            | "will"
+            | "would"
+            | "explain"
+            | "compare"
+            | "define"
+            | "tell"
+            | "show"
+            | "list"
+            | "give"
+            | "the"
+            | "a"
+            | "an"
+            | "best"
+            | "top"
+            | "latest"
+            | "current"
+            | "recent"
+            | "upcoming"
+            | "history"
+            | "biography"
+            | "overview"
+            | "impact"
+            | "future"
     )
 }
 
 /// Words that mark a query as wanting a specific page on a site.
 const NAV_INTENTS: &[&str] = &[
-    "login", "log", "signin", "sign", "website", "site", "homepage", "home",
-    "dashboard", "account", "settings", "tracking", "orders", "order",
-    "trending", "search", "docs", "documentation", "repository", "repo",
-    "questions", "profile", "inbox", "download", "pricing", "checkout",
+    "login",
+    "log",
+    "signin",
+    "sign",
+    "website",
+    "site",
+    "homepage",
+    "home",
+    "dashboard",
+    "account",
+    "settings",
+    "tracking",
+    "orders",
+    "order",
+    "trending",
+    "search",
+    "docs",
+    "documentation",
+    "repository",
+    "repo",
+    "questions",
+    "profile",
+    "inbox",
+    "download",
+    "pricing",
+    "checkout",
 ];
 
 /// Biographical framing that makes a query about a PERSON even without an
 /// explicit "who is" / "biography of" prefix.
 const BIOGRAPHICAL: &[&str] = &[
-    "achievements", "contributions", "biography", "career", "net worth",
-    "early life", "born", "childhood", "awards", "legacy", "inventions",
-    "discoveries", "known for", "life of", "education", "family",
+    "achievements",
+    "contributions",
+    "biography",
+    "career",
+    "net worth",
+    "early life",
+    "born",
+    "childhood",
+    "awards",
+    "legacy",
+    "inventions",
+    "discoveries",
+    "known for",
+    "life of",
+    "education",
+    "family",
 ];
 
 fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
@@ -294,9 +363,21 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
         || q_lower.contains("and what are");
 
     const RESEARCH_MARKERS: &[&str] = &[
-        "explain", "analyze", "analyse", "research", "comprehensive",
-        "in depth", "in-depth", "deep dive", "overview of", "implications of",
-        "impact of", "future of", "trade-offs", "tradeoffs", "architecture of",
+        "explain",
+        "analyze",
+        "analyse",
+        "research",
+        "comprehensive",
+        "in depth",
+        "in-depth",
+        "deep dive",
+        "overview of",
+        "implications of",
+        "impact of",
+        "future of",
+        "trade-offs",
+        "tradeoffs",
+        "architecture of",
     ];
     if RESEARCH_MARKERS.iter().any(|m| q_lower.contains(m))
         || (explanatory && (wants_depth || q_lower.contains("work")))
@@ -306,8 +387,14 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
 
     // ── Person ──────────────────────────────────────────────────────────────
     const PERSON_PREFIXES: &[&str] = &[
-        "who is", "who was", "who are", "tell me about",
-        "biography of", "bio of", "life of", "about the person",
+        "who is",
+        "who was",
+        "who are",
+        "tell me about",
+        "biography of",
+        "bio of",
+        "life of",
+        "about the person",
     ];
     if PERSON_PREFIXES.iter().any(|p| q_lower.contains(p)) {
         return QueryIntent::Person;
@@ -320,10 +407,24 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
 
     // ── HowTo (procedural) ──────────────────────────────────────────────────
     const HOWTO_MARKERS: &[&str] = &[
-        "how to", "how can i", "steps to", "guide to", "tutorial",
-        "instructions for", "ways to", "tips for", "best way to",
-        "learn to", "teach me", "set up", "setup", "install", "configure",
-        "deploy", "create a", "build a",
+        "how to",
+        "how can i",
+        "steps to",
+        "guide to",
+        "tutorial",
+        "instructions for",
+        "ways to",
+        "tips for",
+        "best way to",
+        "learn to",
+        "teach me",
+        "set up",
+        "setup",
+        "install",
+        "configure",
+        "deploy",
+        "create a",
+        "build a",
     ];
     if HOWTO_MARKERS.iter().any(|m| q_lower.contains(m)) {
         return QueryIntent::HowTo;
@@ -332,13 +433,33 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
     // ── Temporal ────────────────────────────────────────────────────────────
     // Single words matched on WORD BOUNDARIES (P0-12); phrases by substring.
     const TEMPORAL_WORDS: &[&str] = &[
-        "latest", "current", "newest", "recent", "today", "breaking", "live",
-        "upcoming", "now", "tonight", "yesterday", "tomorrow",
+        "latest",
+        "current",
+        "newest",
+        "recent",
+        "today",
+        "breaking",
+        "live",
+        "upcoming",
+        "now",
+        "tonight",
+        "yesterday",
+        "tomorrow",
     ];
     const TEMPORAL_PHRASES: &[&str] = &[
-        "right now", "as of", "just announced", "this year", "this week",
-        "this month", "what is the price", "stock price", "market cap",
-        "score of", "results of", "who won", "schedule",
+        "right now",
+        "as of",
+        "just announced",
+        "this year",
+        "this week",
+        "this month",
+        "what is the price",
+        "stock price",
+        "market cap",
+        "score of",
+        "results of",
+        "who won",
+        "schedule",
     ];
     if TEMPORAL_WORDS.iter().any(|w| words.iter().any(|t| t == w))
         || TEMPORAL_PHRASES.iter().any(|p| q_lower.contains(p))
@@ -362,9 +483,16 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
 
     // Role/status facts that change over time.
     const ROLE_PATTERNS: &[&str] = &[
-        "ceo of", "president of", "prime minister of", "leader of",
-        "founder of", "chairman of", "director of", "head of",
-        "net worth", "salary of",
+        "ceo of",
+        "president of",
+        "prime minister of",
+        "leader of",
+        "founder of",
+        "chairman of",
+        "director of",
+        "head of",
+        "net worth",
+        "salary of",
         // "population of" deliberately omitted: it is a slowly-changing
         // reference fact, and treating it as temporal appends a spurious year.
     ];
@@ -386,7 +514,9 @@ fn detect_intent(q_lower: &str, words: &[&str]) -> QueryIntent {
 
 /// Tokenize on non-alphanumerics, for word-boundary matching.
 fn word_tokens(q: &str) -> Vec<&str> {
-    q.split(|c: char| !crate::util::is_word_char(c)).filter(|t| !t.is_empty()).collect()
+    q.split(|c: char| !crate::util::is_word_char(c))
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 fn detect_temporal(q_lower: &str, intent: &QueryIntent) -> (bool, Option<String>) {
@@ -407,16 +537,39 @@ fn detect_temporal(q_lower: &str, intent: &QueryIntent) -> (bool, Option<String>
     // bogus BM25 term.
     // ═══════════════════════════════════════════════════════════════════════
     const RECENCY_WORDS: &[&str] = &[
-        "latest", "current", "currently", "newest", "recent", "recently",
-        "today", "now", "updated", "breaking", "upcoming", "live", "ongoing",
-        "tonight", "yesterday", "tomorrow",
+        "latest",
+        "current",
+        "currently",
+        "newest",
+        "recent",
+        "recently",
+        "today",
+        "now",
+        "updated",
+        "breaking",
+        "upcoming",
+        "live",
+        "ongoing",
+        "tonight",
+        "yesterday",
+        "tomorrow",
     ];
     // "new" and "just" are DELIBERATELY absent — too ambiguous to be useful
     // even with word boundaries ("new car", "just one question").
     const RECENCY_PHRASES: &[&str] = &[
-        "this year", "this week", "this month", "this quarter", "right now",
-        "as of", "last week", "last month", "last year", "so far",
-        "up to date", "at the moment", "these days",
+        "this year",
+        "this week",
+        "this month",
+        "this quarter",
+        "right now",
+        "as of",
+        "last week",
+        "last month",
+        "last year",
+        "so far",
+        "up to date",
+        "at the moment",
+        "these days",
     ];
 
     let toks = word_tokens(q_lower);
@@ -432,11 +585,27 @@ fn detect_temporal(q_lower: &str, intent: &QueryIntent) -> (bool, Option<String>
     // even without an explicit recency word. These are multi-word and
     // unambiguous, so phrase matching is safe.
     const DYNAMIC_FACTS: &[&str] = &[
-        "ceo of", "president of", "prime minister of", "leader of",
-        "founder of", "chairman of", "director of", "head of", "owner of",
-        "net worth", "worth of", "stock price", "share price", "market cap",
-        "population of", "exchange rate", "weather in", "score of",
-        "who is the", "how much is", "what is the price",
+        "ceo of",
+        "president of",
+        "prime minister of",
+        "leader of",
+        "founder of",
+        "chairman of",
+        "director of",
+        "head of",
+        "owner of",
+        "net worth",
+        "worth of",
+        "stock price",
+        "share price",
+        "market cap",
+        "population of",
+        "exchange rate",
+        "weather in",
+        "score of",
+        "who is the",
+        "how much is",
+        "what is the price",
     ];
     if let Some(p) = DYNAMIC_FACTS.iter().find(|p| q_lower.contains(*p)) {
         return (true, Some((*p).to_string()));
@@ -463,8 +632,12 @@ fn detect_temporal(q_lower: &str, intent: &QueryIntent) -> (bool, Option<String>
 // =============================================================================
 
 fn is_contraction_token(raw_word: &str) -> bool {
-    let trimmed = raw_word.trim_matches(|c: char| !crate::util::is_word_char(c) && c != '\'' && c != '’');
-    if let Some( rest) = trimmed.strip_suffix("'s").or_else(|| trimmed.strip_suffix("’s")) {
+    let trimmed =
+        raw_word.trim_matches(|c: char| !crate::util::is_word_char(c) && c != '\'' && c != '’');
+    if let Some(rest) = trimmed
+        .strip_suffix("'s")
+        .or_else(|| trimmed.strip_suffix("’s"))
+    {
         return rest.contains('\'') || rest.contains('’');
     }
     trimmed.contains('\'') || trimmed.contains('’')
@@ -477,21 +650,24 @@ fn strip_possessive(word: &str) -> &str {
 }
 
 fn has_internal_caps_or_digits(word: &str) -> bool {
-    word.chars().skip(1).any(|c| c.is_uppercase() || c.is_ascii_digit())
+    word.chars()
+        .skip(1)
+        .any(|c| c.is_uppercase() || c.is_ascii_digit())
 }
 
 fn extract_entities(query: &str) -> Vec<String> {
     let stop_words: HashSet<&str> = [
-        "what", "is", "the", "a", "an", "of", "in", "to", "for", "and", "or",
-        "how", "does", "do", "can", "about", "with", "from", "that", "this",
-        "are", "was", "were", "be", "been", "being", "have", "has", "had",
-        "will", "would", "it", "its", "on", "at", "by", "but", "not", "so",
-        "if", "than", "then", "my", "me", "we", "you", "your", "who", "which",
-        "when", "where", "why", "all", "each", "tell", "give", "show", "find",
-        "between", "vs", "versus", "compared", "latest", "current", "recent",
-        "new", "best", "top", "most", "many", "much", "very", "just", "also",
-        "now", "today", "explain", "describe", "analyze",
-    ].iter().cloned().collect();
+        "what", "is", "the", "a", "an", "of", "in", "to", "for", "and", "or", "how", "does", "do",
+        "can", "about", "with", "from", "that", "this", "are", "was", "were", "be", "been",
+        "being", "have", "has", "had", "will", "would", "it", "its", "on", "at", "by", "but",
+        "not", "so", "if", "than", "then", "my", "me", "we", "you", "your", "who", "which", "when",
+        "where", "why", "all", "each", "tell", "give", "show", "find", "between", "vs", "versus",
+        "compared", "latest", "current", "recent", "new", "best", "top", "most", "many", "much",
+        "very", "just", "also", "now", "today", "explain", "describe", "analyze",
+    ]
+    .iter()
+    .cloned()
+    .collect();
 
     let total_words = query.split_whitespace().count();
     let mut entities = Vec::new();
@@ -501,7 +677,21 @@ fn extract_entities(query: &str) -> Vec<String> {
     let clauses = query.split(|c: char| {
         matches!(
             c,
-            '.' | '?' | '!' | ',' | ';' | ':' | '\n' | '—' | '–' | '(' | ')' | '[' | ']' | '"' | '“' | '”'
+            '.' | '?'
+                | '!'
+                | ','
+                | ';'
+                | ':'
+                | '\n'
+                | '—'
+                | '–'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '"'
+                | '“'
+                | '”'
         )
     });
 
@@ -599,8 +789,7 @@ fn extract_entities(query: &str) -> Vec<String> {
                 .split_whitespace()
                 .map(|w| w.trim_matches(|c: char| !crate::util::is_word_char(c)))
                 .filter(|w| {
-                    w.chars().any(|c| !c.is_ascii() && c.is_alphabetic())
-                        && w.chars().count() >= 3
+                    w.chars().any(|c| !c.is_ascii() && c.is_alphabetic()) && w.chars().count() >= 3
                 })
                 .take(4)
                 .map(|w| w.to_string())
@@ -670,7 +859,6 @@ impl std::fmt::Display for QueryComplexity {
     }
 }
 
-
 // =============================================================================
 // v7.0: Multi-Query Decomposition
 // Instead of searching one query, decompose into multiple targeted sub-queries
@@ -681,7 +869,8 @@ impl std::fmt::Display for QueryComplexity {
 pub fn multi_query_enabled() -> bool {
     std::env::var("MULTI_QUERY")
         .unwrap_or_else(|_| "true".to_string())
-        .to_lowercase() == "true"
+        .to_lowercase()
+        == "true"
 }
 
 pub fn max_sub_queries() -> usize {
@@ -728,7 +917,7 @@ pub fn decompose_query(query: &str, intel: &QueryIntelligence) -> Vec<String> {
     // Comparison split is genuinely useful: "X vs Y" benefits from searching
     // each side, because pages about X alone often beat comparison pages.
     if intel.intent == QueryIntent::Comparison {
-        for sep in [" vs ", " vs. ", " versus ", " compared to ", " or " ] {
+        for sep in [" vs ", " vs. ", " versus ", " compared to ", " or "] {
             if let Some((a, b)) = q.split_once(sep) {
                 let (a, b) = (a.trim(), b.trim());
                 // Both sides must be substantial — "A or B?" fragments are not.
@@ -752,7 +941,11 @@ pub fn decompose_query(query: &str, intel: &QueryIntelligence) -> Vec<String> {
 
     // Multi-word named entities, paired with the query's head term so the
     // sub-query still has topical context. Bare entities are NOT emitted.
-    for e in intel.key_entities.iter().filter(|e| e.split_whitespace().count() >= 2) {
+    for e in intel
+        .key_entities
+        .iter()
+        .filter(|e| e.split_whitespace().count() >= 2)
+    {
         if out.len() >= max_sub_queries() {
             break;
         }
@@ -777,8 +970,11 @@ mod tests {
     fn new_york_is_not_time_sensitive() {
         // v7.0: "New York population" matched the substring "new".
         let i = analyze_query("New York population");
-        assert!(!i.is_time_sensitive || i.temporal_hint.as_deref() != Some("new"),
-                "matched on 'new' inside 'New York': {:?}", i.temporal_hint);
+        assert!(
+            !i.is_time_sensitive || i.temporal_hint.as_deref() != Some("new"),
+            "matched on 'new' inside 'New York': {:?}",
+            i.temporal_hint
+        );
     }
 
     #[test]
@@ -810,7 +1006,10 @@ mod tests {
             "who is the prime minister of india",
             "bitcoin stock price",
         ] {
-            assert!(analyze_query(q).is_time_sensitive, "{q:?} should be time-sensitive");
+            assert!(
+                analyze_query(q).is_time_sensitive,
+                "{q:?} should be time-sensitive"
+            );
         }
     }
 
@@ -966,7 +1165,11 @@ mod tests {
     fn stable_reference_facts_stay_factual() {
         // "population of Japan" is a slowly-changing reference fact. Marking
         // it temporal would append a spurious year to the search query.
-        for q in ["population of Japan", "capital of France", "boiling point of water"] {
+        for q in [
+            "population of Japan",
+            "capital of France",
+            "boiling point of water",
+        ] {
             assert_eq!(analyze_query(q).intent, QueryIntent::Factual, "{q:?}");
         }
     }
@@ -988,7 +1191,10 @@ mod tests {
             intel.key_entities
         );
         assert!(
-            !intel.key_entities.iter().any(|e| e.contains("Specifically") || e.contains("Wait")),
+            !intel
+                .key_entities
+                .iter()
+                .any(|e| e.contains("Specifically") || e.contains("Wait")),
             "conversational clause starters leaked into entities: {:?}",
             intel.key_entities
         );
@@ -998,8 +1204,7 @@ mod tests {
     fn lowercase_and_non_latin_queries_extract_subject_entities() {
         let lower_intel = analyze_query("what is the dhruv rathi latest video");
         assert!(
-            !lower_intel.key_entities.is_empty()
-                && lower_intel.key_entities[0].contains("dhruv"),
+            !lower_intel.key_entities.is_empty() && lower_intel.key_entities[0].contains("dhruv"),
             "lowercase query should still extract subject entity: {:?}",
             lower_intel.key_entities
         );

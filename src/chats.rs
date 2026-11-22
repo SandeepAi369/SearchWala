@@ -110,7 +110,9 @@ impl ChatStore {
                 return PathBuf::from(d);
             }
         }
-        let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_else(|_| ".".into());
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".into());
         PathBuf::from(home).join(".searchwala")
     }
 
@@ -127,7 +129,8 @@ impl ChatStore {
 
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create {}: {e}", parent.display()))?;
         }
         let conn = Connection::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
         Self::init(conn)
@@ -168,7 +171,9 @@ impl ChatStore {
              UPDATE turns SET status = 'interrupted' WHERE status = 'running';",
         )
         .map_err(|e| format!("init: {e}"))?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     /// Runs `f` on the connection off the async runtime.
@@ -191,7 +196,10 @@ impl ChatStore {
     /// Saving is on unless the user paused it.
     pub async fn saving_enabled(&self) -> bool {
         self.with(|c| {
-            c.query_row("SELECT value FROM settings WHERE key = 'saving'", [], |r| r.get::<_, String>(0)).optional()
+            c.query_row("SELECT value FROM settings WHERE key = 'saving'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()
         })
         .await
         .ok()
@@ -216,7 +224,12 @@ impl ChatStore {
 
     /// Records a new question. Continues `conversation_id` when it exists,
     /// otherwise starts a conversation titled after the question.
-    pub async fn begin_turn(&self, conversation_id: Option<String>, query: &str, mode: &str) -> Result<(String, i64), String> {
+    pub async fn begin_turn(
+        &self,
+        conversation_id: Option<String>,
+        query: &str,
+        mode: &str,
+    ) -> Result<(String, i64), String> {
         let (query, mode) = (query.to_string(), mode.to_string());
         self.with(move |c| {
             let tx = c.transaction()?;
@@ -292,7 +305,12 @@ impl ChatStore {
 
     /// The last `limit` answered turns of a conversation, oldest first,
     /// excluding `before_turn` and anything after it.
-    pub async fn prior_turns(&self, conversation_id: &str, before_turn: i64, limit: usize) -> Result<Vec<PriorTurn>, String> {
+    pub async fn prior_turns(
+        &self,
+        conversation_id: &str,
+        before_turn: i64,
+        limit: usize,
+    ) -> Result<Vec<PriorTurn>, String> {
         let id = conversation_id.to_string();
         let limit = limit.min(10_000) as i64;
         self.with(move |c| {
@@ -313,7 +331,11 @@ impl ChatStore {
     // ── Conversations ───────────────────────────────────────────────────────
 
     /// Most recently active first. `filter` matches titles and questions.
-    pub async fn list(&self, filter: Option<String>, limit: usize) -> Result<Vec<ConversationSummary>, String> {
+    pub async fn list(
+        &self,
+        filter: Option<String>,
+        limit: usize,
+    ) -> Result<Vec<ConversationSummary>, String> {
         let limit = limit.clamp(1, 10_000) as i64;
         self.with(move |c| {
             let like = filter.filter(|f| !f.trim().is_empty()).map(|f| format!("%{}%", f.trim().replace('%', "\\%").replace('_', "\\_")));
@@ -371,13 +393,23 @@ impl ChatStore {
         if title.is_empty() {
             return Ok(false);
         }
-        self.with(move |c| c.execute("UPDATE conversations SET title = ?2 WHERE id = ?1", params![id, title]).map(|n| n > 0))
-            .await
+        self.with(move |c| {
+            c.execute(
+                "UPDATE conversations SET title = ?2 WHERE id = ?1",
+                params![id, title],
+            )
+            .map(|n| n > 0)
+        })
+        .await
     }
 
     pub async fn delete(&self, id: &str) -> Result<bool, String> {
         let id = id.to_string();
-        self.with(move |c| c.execute("DELETE FROM conversations WHERE id = ?1", [id]).map(|n| n > 0)).await
+        self.with(move |c| {
+            c.execute("DELETE FROM conversations WHERE id = ?1", [id])
+                .map(|n| n > 0)
+        })
+        .await
     }
 
     /// Deletes every conversation and compacts the file, so nothing remains
@@ -400,12 +432,17 @@ impl ChatStore {
         let files = [dir.join("history.json"), dir.join("history.jsonl")];
         let mut entries: Vec<serde_json::Value> = Vec::new();
         for f in files.iter().filter(|f| f.exists()) {
-            let text = std::fs::read_to_string(f).map_err(|e| format!("read {}: {e}", f.display()))?;
+            let text =
+                std::fs::read_to_string(f).map_err(|e| format!("read {}: {e}", f.display()))?;
             if text.trim_start().starts_with('[') {
-                let v: Vec<serde_json::Value> = serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", f.display()))?;
+                let v: Vec<serde_json::Value> = serde_json::from_str(&text)
+                    .map_err(|e| format!("parse {}: {e}", f.display()))?;
                 entries.extend(v);
             } else {
-                entries.extend(text.lines().filter_map(|l| serde_json::from_str(l.trim()).ok()));
+                entries.extend(
+                    text.lines()
+                        .filter_map(|l| serde_json::from_str(l.trim()).ok()),
+                );
             }
         }
         if entries.is_empty() {
@@ -416,19 +453,40 @@ impl ChatStore {
         }
         // The two files overlap when history.json was migrated to .jsonl.
         let mut seen = std::collections::HashSet::new();
-        entries.retain(|e| seen.insert(e.get("id").map(|v| v.to_string()).unwrap_or_else(|| e.to_string())));
+        entries.retain(|e| {
+            seen.insert(
+                e.get("id")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| e.to_string()),
+            )
+        });
 
         let mut c = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         let tx = c.transaction().map_err(|e| e.to_string())?;
         let mut imported = 0;
         for e in &entries {
-            let Some(query) = e.get("query").and_then(|q| q.as_str()).filter(|q| !q.trim().is_empty()) else { continue };
+            let Some(query) = e
+                .get("query")
+                .and_then(|q| q.as_str())
+                .filter(|q| !q.trim().is_empty())
+            else {
+                continue;
+            };
             let answer = e.get("answer").and_then(|a| a.as_str()).map(str::to_string);
-            let mode = e.get("focus_mode").and_then(|m| m.as_str()).unwrap_or("auto").split(':').next().unwrap_or("auto").to_string();
+            let mode = e
+                .get("focus_mode")
+                .and_then(|m| m.as_str())
+                .unwrap_or("auto")
+                .split(':')
+                .next()
+                .unwrap_or("auto")
+                .to_string();
             let ts = e
                 .get("timestamp")
                 .and_then(|t| t.as_str())
-                .and_then(|t| chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S UTC").ok())
+                .and_then(|t| {
+                    chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S UTC").ok()
+                })
                 .map(|t| t.and_utc().timestamp_millis())
                 .unwrap_or_else(now_ms);
             let response = serde_json::json!({
@@ -475,13 +533,23 @@ const ANSWER_CHARS: usize = 900;
 /// and how many turns it holds. Citation markers are dropped: they point at
 /// sources this turn doesn't have.
 pub fn memory_block(turns: &[PriorTurn], max_chars: usize) -> (String, usize) {
-    static CITE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\s?\[\d+(?:\s*,\s*\d+)*\]").unwrap());
+    static CITE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\s?\[\d+(?:\s*,\s*\d+)*\]").unwrap());
     let mut parts: Vec<String> = Vec::new();
     let mut used = 0;
     for t in turns.iter().rev() {
         let answer = CITE.replace_all(&t.answer, "");
         let answer = crate::util::truncate_chars(answer.trim(), ANSWER_CHARS);
-        let part = format!("User: {}\nAssistant: {}{}", t.query.trim(), answer, if answer.len() < t.answer.trim().len() { " …" } else { "" });
+        let part = format!(
+            "User: {}\nAssistant: {}{}",
+            t.query.trim(),
+            answer,
+            if answer.len() < t.answer.trim().len() {
+                " …"
+            } else {
+                ""
+            }
+        );
         let n = part.chars().count() + 2;
         if used + n > max_chars {
             break;
@@ -499,7 +567,10 @@ mod tests {
     use super::*;
 
     fn rt() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
     }
 
     #[test]
@@ -526,7 +597,10 @@ mod tests {
     fn unknown_conversation_ids_start_a_new_one() {
         rt().block_on(async {
             let s = ChatStore::open_in_memory().unwrap();
-            let (c, _) = s.begin_turn(Some("deleted".into()), "q", "fast").await.unwrap();
+            let (c, _) = s
+                .begin_turn(Some("deleted".into()), "q", "fast")
+                .await
+                .unwrap();
             assert_ne!(c, "deleted");
             assert_eq!(s.list(None, 50).await.unwrap().len(), 1);
         });
@@ -539,17 +613,27 @@ mod tests {
             let (c, _) = s.begin_turn(None, "q0", "auto").await.unwrap();
             let mut last = 0;
             for i in 0..5 {
-                let (_, t) = s.begin_turn(Some(c.clone()), &format!("q{}", i + 1), "auto").await.unwrap();
+                let (_, t) = s
+                    .begin_turn(Some(c.clone()), &format!("q{}", i + 1), "auto")
+                    .await
+                    .unwrap();
                 // q3 failed: it has no answer to remember.
                 let status = if i == 2 { "failed" } else { "done" };
-                s.finish_turn(t, status, None, Some(format!("a{}", i + 1)), None).await.unwrap();
+                s.finish_turn(t, status, None, Some(format!("a{}", i + 1)), None)
+                    .await
+                    .unwrap();
                 last = t;
             }
             let (_, now) = s.begin_turn(Some(c.clone()), "next", "auto").await.unwrap();
             let p = s.prior_turns(&c, now, 3).await.unwrap();
             let qs: Vec<_> = p.iter().map(|t| t.query.as_str()).collect();
             assert_eq!(qs, ["q2", "q4", "q5"]);
-            assert!(s.prior_turns(&c, last, 10).await.unwrap().iter().all(|t| t.query != "q5"));
+            assert!(s
+                .prior_turns(&c, last, 10)
+                .await
+                .unwrap()
+                .iter()
+                .all(|t| t.query != "q5"));
         });
     }
 
@@ -559,7 +643,9 @@ mod tests {
             let s = ChatStore::open_in_memory().unwrap();
             let (c, t) = s.begin_turn(None, "q", "auto").await.unwrap();
             assert!(s.stop_turn(t).await.unwrap());
-            s.finish_turn(t, "done", None, Some("late".into()), None).await.unwrap();
+            s.finish_turn(t, "done", None, Some("late".into()), None)
+                .await
+                .unwrap();
             let conv = s.get(&c).await.unwrap().unwrap();
             assert_eq!(conv.turns[0].status, "stopped");
             assert_eq!(conv.turns[0].answer, None);
@@ -607,17 +693,30 @@ mod tests {
             let conv = s.get(&old.id).await.unwrap().unwrap();
             assert_eq!(conv.turns[0].answer.as_deref(), Some("A1"));
             assert_eq!(conv.turns[0].mode, "lite");
-            assert_eq!(conv.created_at, chrono::DateTime::parse_from_rfc3339("2026-04-18T20:22:42Z").unwrap().timestamp_millis());
+            assert_eq!(
+                conv.created_at,
+                chrono::DateTime::parse_from_rfc3339("2026-04-18T20:22:42Z")
+                    .unwrap()
+                    .timestamp_millis()
+            );
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn memory_keeps_the_newest_turns_that_fit() {
-        let turns: Vec<PriorTurn> = (1..=4).map(|i| PriorTurn { query: format!("q{i}"), answer: format!("answer {i} [1][2, 3]") }).collect();
+        let turns: Vec<PriorTurn> = (1..=4)
+            .map(|i| PriorTurn {
+                query: format!("q{i}"),
+                answer: format!("answer {i} [1][2, 3]"),
+            })
+            .collect();
         let (all, n) = memory_block(&turns, 10_000);
         assert_eq!(n, 4);
-        assert!(all.starts_with("User: q1") && all.contains("User: q4"), "{all}");
+        assert!(
+            all.starts_with("User: q1") && all.contains("User: q4"),
+            "{all}"
+        );
         assert!(!all.contains('['), "citations stripped: {all}");
         let (tight, n) = memory_block(&turns, 60);
         assert_eq!(n, 1);

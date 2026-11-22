@@ -176,8 +176,14 @@ mod tests {
 
     #[test]
     fn strips_trailing_slash() {
-        assert_eq!(sanitize_base_url("http://localhost:8080/").as_deref(), Some("http://localhost:8080"));
-        assert_eq!(sanitize_base_url("https://searx.example/ ").as_deref(), Some("https://searx.example"));
+        assert_eq!(
+            sanitize_base_url("http://localhost:8080/").as_deref(),
+            Some("http://localhost:8080")
+        );
+        assert_eq!(
+            sanitize_base_url("https://searx.example/ ").as_deref(),
+            Some("https://searx.example")
+        );
     }
 
     #[test]
@@ -190,6 +196,9 @@ mod tests {
         assert_eq!(crate::engines::engine_family("searxng:mojeek"), "mojeek");
         // Unknown upstream gets its own family rather than being lumped in.
         assert_eq!(crate::engines::engine_family("searxng"), "searxng");
-        assert_eq!(crate::engines::engine_family("searxng:somethingnew"), "searxng");
+        assert_eq!(
+            crate::engines::engine_family("searxng:somethingnew"),
+            "searxng"
+        );
     }
 }

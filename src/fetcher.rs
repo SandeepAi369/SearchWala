@@ -50,10 +50,7 @@ fn request_timeout() -> Duration {
 }
 
 /// Insert `extra` into a HeaderMap with REPLACE semantics.
-fn set_headers(
-    map: &mut reqwest::header::HeaderMap,
-    extra: &[(&str, &str)],
-) -> Result<(), String> {
+fn set_headers(map: &mut reqwest::header::HeaderMap, extra: &[(&str, &str)]) -> Result<(), String> {
     for (k, v) in extra {
         let name = reqwest::header::HeaderName::from_bytes(k.as_bytes())
             .map_err(|e| format!("bad header name {k}: {e}"))?;
@@ -115,11 +112,17 @@ impl Fetcher {
                 // some JSON APIs content-negotiate badly on it.
                 let mut req = rb.build().map_err(|e| e.to_string())?;
                 set_headers(req.headers_mut(), extra)?;
-                let resp = with_timeout(c.execute(req)).await?.map_err(|e| e.to_string())?;
+                let resp = with_timeout(c.execute(req))
+                    .await?
+                    .map_err(|e| e.to_string())?;
                 let status = resp.status().as_u16();
                 let final_url = resp.url().to_string();
                 let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-                Ok(Fetched { status, body: decode_body(&bytes), final_url })
+                Ok(Fetched {
+                    status,
+                    body: decode_body(&bytes),
+                    final_url,
+                })
             }
             Fetcher::Stealth(c) => {
                 // IMPORTANT: wreq-util's Emulation already installs a
@@ -139,7 +142,11 @@ impl Fetcher {
                 // wreq exposes `uri()`, not `url()`.
                 let final_url = resp.uri().to_string();
                 let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-                Ok(Fetched { status, body: decode_body(&bytes), final_url })
+                Ok(Fetched {
+                    status,
+                    body: decode_body(&bytes),
+                    final_url,
+                })
             }
         }
     }
@@ -156,22 +163,34 @@ impl Fetcher {
                 let rb = crate::config::apply_browser_headers(c.post(url), url);
                 let mut req = rb.form(form).build().map_err(|e| e.to_string())?;
                 set_headers(req.headers_mut(), extra)?;
-                let resp = with_timeout(c.execute(req)).await?.map_err(|e| e.to_string())?;
+                let resp = with_timeout(c.execute(req))
+                    .await?
+                    .map_err(|e| e.to_string())?;
                 let status = resp.status().as_u16();
                 let final_url = resp.url().to_string();
                 let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-                Ok(Fetched { status, body: decode_body(&bytes), final_url })
+                Ok(Fetched {
+                    status,
+                    body: decode_body(&bytes),
+                    final_url,
+                })
             }
             Fetcher::Stealth(c) => {
                 let mut rb = c.post(url).header("Accept-Language", "en-US,en;q=0.9");
                 for (k, v) in extra {
                     rb = rb.header(*k, *v);
                 }
-                let resp = with_timeout(rb.form(form).send()).await?.map_err(|e| e.to_string())?;
+                let resp = with_timeout(rb.form(form).send())
+                    .await?
+                    .map_err(|e| e.to_string())?;
                 let status = resp.status().as_u16();
                 let final_url = resp.uri().to_string();
                 let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-                Ok(Fetched { status, body: decode_body(&bytes), final_url })
+                Ok(Fetched {
+                    status,
+                    body: decode_body(&bytes),
+                    final_url,
+                })
             }
         }
     }
@@ -179,7 +198,9 @@ impl Fetcher {
     /// Fetch and parse JSON. Used by the API-backed engines (Wikipedia, Wiby,
     /// Marginalia) where a status check still matters.
     pub async fn get_json(&self, url: &str) -> Result<(u16, serde_json::Value), String> {
-        let page = self.get(url, &[("Accept", "application/json,text/plain,*/*")]).await?;
+        let page = self
+            .get(url, &[("Accept", "application/json,text/plain,*/*")])
+            .await?;
         if page.status != 200 {
             return Ok((page.status, serde_json::Value::Null));
         }
@@ -311,15 +332,17 @@ mod tests {
         let bytes = b"<html><head></head><body>caf\xE9</body></html>";
         let out = decode_body(bytes);
         assert!(out.contains("café"), "got {out:?}");
-        assert!(!out.contains('\u{FFFD}'), "must not contain replacement chars");
+        assert!(
+            !out.contains('\u{FFFD}'),
+            "must not contain replacement chars"
+        );
     }
 
     #[test]
     fn honours_declared_meta_charset() {
         // ISO-8859-1 declared explicitly; 0xF6 is 'ö'.
-        let mut bytes = Vec::from(
-            &b"<html><head><meta charset=\"iso-8859-1\"></head><body>sch\xF6n"[..],
-        );
+        let mut bytes =
+            Vec::from(&b"<html><head><meta charset=\"iso-8859-1\"></head><body>sch\xF6n"[..]);
         bytes.extend_from_slice(b"</body></html>");
         let out = decode_body(&bytes);
         assert!(out.contains("schön"), "got {out:?}");

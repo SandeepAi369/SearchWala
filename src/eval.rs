@@ -85,7 +85,11 @@ fn dcg_at_k(relevance_scores: &[f64], k: usize) -> f64 {
 /// nDCG@k = DCG@k / IDCG@k where IDCG is DCG of the ideal ranking.
 ///
 /// Returns 0.0 if there are no relevant documents (IDCG = 0).
-pub fn ndcg_at_k(ranked_urls: &[String], judgments: &HashMap<String, RelevanceGrade>, k: usize) -> f64 {
+pub fn ndcg_at_k(
+    ranked_urls: &[String],
+    judgments: &HashMap<String, RelevanceGrade>,
+    k: usize,
+) -> f64 {
     if ranked_urls.is_empty() || judgments.is_empty() {
         return 0.0;
     }
@@ -95,8 +99,7 @@ pub fn ndcg_at_k(ranked_urls: &[String], judgments: &HashMap<String, RelevanceGr
         .iter()
         .map(|url| {
             // Normalize URL for matching
-            let normalized = crate::url_utils::normalize_url(url)
-                .unwrap_or_else(|| url.clone());
+            let normalized = crate::url_utils::normalize_url(url).unwrap_or_else(|| url.clone());
             judgments
                 .get(&normalized)
                 .or_else(|| judgments.get(url))
@@ -127,8 +130,7 @@ pub fn ndcg_at_k(ranked_urls: &[String], judgments: &HashMap<String, RelevanceGr
 /// RR = 1 / rank_of_first_relevant_result (0 if none found).
 pub fn reciprocal_rank(ranked_urls: &[String], judgments: &HashMap<String, RelevanceGrade>) -> f64 {
     for (i, url) in ranked_urls.iter().enumerate() {
-        let normalized = crate::url_utils::normalize_url(url)
-            .unwrap_or_else(|| url.clone());
+        let normalized = crate::url_utils::normalize_url(url).unwrap_or_else(|| url.clone());
         let is_relevant = judgments
             .get(&normalized)
             .or_else(|| judgments.get(url))
@@ -159,7 +161,11 @@ pub fn mean_reciprocal_rank(results: &[(Vec<String>, HashMap<String, RelevanceGr
 // =============================================================================
 
 /// Compute Recall@k: fraction of relevant documents found in top-k results.
-pub fn recall_at_k(ranked_urls: &[String], judgments: &HashMap<String, RelevanceGrade>, k: usize) -> f64 {
+pub fn recall_at_k(
+    ranked_urls: &[String],
+    judgments: &HashMap<String, RelevanceGrade>,
+    k: usize,
+) -> f64 {
     let total_relevant = judgments
         .values()
         .filter(|g| **g != RelevanceGrade::NotRelevant)
@@ -173,8 +179,7 @@ pub fn recall_at_k(ranked_urls: &[String], judgments: &HashMap<String, Relevance
         .iter()
         .take(k)
         .filter(|url| {
-            let normalized = crate::url_utils::normalize_url(url)
-                .unwrap_or_else(|| (*url).clone());
+            let normalized = crate::url_utils::normalize_url(url).unwrap_or_else(|| (*url).clone());
             judgments
                 .get(&normalized)
                 .or_else(|| judgments.get(*url))
@@ -198,7 +203,9 @@ pub struct LatencyTracker {
 
 impl LatencyTracker {
     pub fn new() -> Self {
-        Self { samples: Vec::new() }
+        Self {
+            samples: Vec::new(),
+        }
     }
 
     pub fn record(&mut self, duration: Duration) {
@@ -307,17 +314,29 @@ pub struct CacheMetrics {
 impl CacheMetrics {
     pub fn engine_hit_ratio(&self) -> f64 {
         let total = self.engine_cache_hits + self.engine_cache_misses;
-        if total == 0 { 0.0 } else { self.engine_cache_hits as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            self.engine_cache_hits as f64 / total as f64
+        }
     }
 
     pub fn scrape_hit_ratio(&self) -> f64 {
         let total = self.scrape_cache_hits + self.scrape_cache_misses;
-        if total == 0 { 0.0 } else { self.scrape_cache_hits as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            self.scrape_cache_hits as f64 / total as f64
+        }
     }
 
     pub fn answer_hit_ratio(&self) -> f64 {
         let total = self.answer_cache_hits + self.answer_cache_misses;
-        if total == 0 { 0.0 } else { self.answer_cache_hits as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            self.answer_cache_hits as f64 / total as f64
+        }
     }
 }
 
@@ -370,8 +389,7 @@ pub struct EvalReport {
 pub fn load_golden_queries(path: &str) -> Result<GoldenQuerySet, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read golden queries from {}: {}", path, e))?;
-    serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse golden queries: {}", e))
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse golden queries: {}", e))
 }
 
 // =============================================================================
@@ -432,9 +450,9 @@ pub fn build_eval_report(
     let mrr_pairs: Vec<(Vec<String>, HashMap<String, RelevanceGrade>)> = ranking_results
         .iter()
         .filter_map(|(query, urls)| {
-            golden_map.get(&query.to_lowercase()).map(|gq| {
-                (urls.clone(), gq.relevance_judgments.clone())
-            })
+            golden_map
+                .get(&query.to_lowercase())
+                .map(|gq| (urls.clone(), gq.relevance_judgments.clone()))
         })
         .collect();
 
@@ -453,8 +471,16 @@ pub fn build_eval_report(
         }
     }
 
-    let mean_recall_10 = if recall_count > 0 { recall_10_sum / recall_count as f64 } else { 0.0 };
-    let mean_recall_20 = if recall_count > 0 { recall_20_sum / recall_count as f64 } else { 0.0 };
+    let mean_recall_10 = if recall_count > 0 {
+        recall_10_sum / recall_count as f64
+    } else {
+        0.0
+    };
+    let mean_recall_20 = if recall_count > 0 {
+        recall_20_sum / recall_count as f64
+    } else {
+        0.0
+    };
 
     EvalReport {
         timestamp: chrono::Utc::now().to_rfc3339(),

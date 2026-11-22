@@ -19,8 +19,8 @@ const MAX_RESULTS: usize = 15;
 
 /// Words that carry no search value in an arXiv `all:` query.
 const STOP: &[&str] = &[
-    "the", "and", "for", "with", "what", "how", "does", "are", "is", "of", "in",
-    "on", "to", "a", "an", "about", "explain", "review", "latest", "work", "works",
+    "the", "and", "for", "with", "what", "how", "does", "are", "is", "of", "in", "on", "to", "a",
+    "an", "about", "explain", "review", "latest", "work", "works",
 ];
 
 /// Build an arXiv `search_query` from free text: significant words joined
@@ -36,7 +36,13 @@ pub fn build_query(q: &str) -> Option<String> {
     if words.is_empty() {
         return None;
     }
-    Some(words.iter().map(|w| format!("all:{w}")).collect::<Vec<_>>().join(" AND "))
+    Some(
+        words
+            .iter()
+            .map(|w| format!("all:{w}"))
+            .collect::<Vec<_>>()
+            .join(" AND "),
+    )
 }
 
 fn decode_entities(s: &str) -> String {
@@ -59,7 +65,10 @@ fn tag_text<'a>(block: &'a str, tag: &str) -> Option<&'a str> {
 }
 
 fn collapse(s: &str) -> String {
-    decode_entities(s).split_whitespace().collect::<Vec<_>>().join(" ")
+    decode_entities(s)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Parse an arXiv Atom feed.
@@ -67,7 +76,9 @@ pub fn parse_feed(xml: &str) -> Vec<RawSearchResult> {
     let mut out = Vec::new();
     for (i, entry) in xml.split("<entry>").skip(1).enumerate() {
         let entry = entry.split("</entry>").next().unwrap_or(entry);
-        let Some(id) = tag_text(entry, "id").map(|s| s.trim().to_string()) else { continue };
+        let Some(id) = tag_text(entry, "id").map(|s| s.trim().to_string()) else {
+            continue;
+        };
         if !id.starts_with("http") {
             continue;
         }
@@ -85,12 +96,17 @@ pub fn parse_feed(xml: &str) -> Vec<RawSearchResult> {
             .filter_map(|a| tag_text(a, "name").map(collapse))
             .take(4)
             .collect();
-        let year = published.map(|d| d.format("%Y").to_string()).unwrap_or_default();
+        let year = published
+            .map(|d| d.format("%Y").to_string())
+            .unwrap_or_default();
 
         // https://arxiv.org/abs/2101.00001v2 -> canonical without the version.
         let url = id.replace("http://", "https://");
         let url = match url.rfind('v') {
-            Some(p) if url[p + 1..].chars().all(|c| c.is_ascii_digit()) && p > url.len().saturating_sub(4) => {
+            Some(p)
+                if url[p + 1..].chars().all(|c| c.is_ascii_digit())
+                    && p > url.len().saturating_sub(4) =>
+            {
                 url[..p].to_string()
             }
             _ => url,
@@ -113,7 +129,11 @@ pub fn parse_feed(xml: &str) -> Vec<RawSearchResult> {
 
         out.push(RawSearchResult {
             url,
-            title: if year.is_empty() { format!("{title} (arXiv)") } else { format!("{title} (arXiv {year})") },
+            title: if year.is_empty() {
+                format!("{title} (arXiv)")
+            } else {
+                format!("{title} (arXiv {year})")
+            },
             snippet: crate::util::truncate_chars(&summary, 280).to_string(),
             engine: "arxiv".to_string(),
             rank_position: i + 1,
@@ -131,7 +151,9 @@ impl super::SearchEngine for Arxiv {
     }
 
     async fn search(&self, f: &Fetcher, query: &str) -> Vec<RawSearchResult> {
-        let Some(sq) = build_query(query) else { return Vec::new() };
+        let Some(sq) = build_query(query) else {
+            return Vec::new();
+        };
         super::health::record_attempt("arxiv");
         let url = format!(
             "https://export.arxiv.org/api/query?search_query={}&start=0&max_results={}&sortBy=relevance",
@@ -184,9 +206,19 @@ mod tests {
         let r = parse_feed(FEED);
         assert_eq!(r.len(), 1);
         let e = &r[0];
-        assert_eq!(e.url, "https://arxiv.org/abs/2101.00001", "version suffix stripped, https");
-        assert_eq!(e.title, "Opportunities and challenges of mRNA technologies (arXiv 2021)");
-        assert!(e.snippet.contains("platforms & delivery"), "entities decoded: {}", e.snippet);
+        assert_eq!(
+            e.url, "https://arxiv.org/abs/2101.00001",
+            "version suffix stripped, https"
+        );
+        assert_eq!(
+            e.title,
+            "Opportunities and challenges of mRNA technologies (arXiv 2021)"
+        );
+        assert!(
+            e.snippet.contains("platforms & delivery"),
+            "entities decoded: {}",
+            e.snippet
+        );
         let ft = e.full_text.as_ref().unwrap();
         assert!(ft.starts_with("Preprint (arXiv, not peer-reviewed)"));
         assert!(ft.contains("A. Author, B. Author"));

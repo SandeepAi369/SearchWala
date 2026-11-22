@@ -41,10 +41,24 @@ impl super::SearchEngine for Wiby {
             .unwrap_or_default();
 
         for item in items {
-            let url_s = item.get("URL").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let title = item.get("Title").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let snippet =
-                item.get("Snippet").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let url_s = item
+                .get("URL")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let title = item
+                .get("Title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let snippet = item
+                .get("Snippet")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if url_s.is_empty() || title.is_empty() {
                 continue;
             }

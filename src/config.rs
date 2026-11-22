@@ -9,7 +9,6 @@ use rand::RngExt;
 /// Canonical version string sourced from Cargo.toml at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-
 /// Concurrent scrape limit.
 pub fn concurrency() -> usize {
     std::env::var("CONCURRENCY")
@@ -26,18 +25,12 @@ pub fn engine_concurrency() -> usize {
         .unwrap_or(20)
 }
 
-
-
-
 /// An explicitly-set numeric env var, or None. Used where a mode profile
 /// supplies the default and the environment should only override it when the
 /// operator actually set something.
 pub fn env_usize(name: &str) -> Option<usize> {
     std::env::var(name).ok().and_then(|v| v.trim().parse().ok())
 }
-
-
-
 
 /// Server port.
 pub fn port() -> u16 {
@@ -54,7 +47,6 @@ pub fn max_html_bytes() -> usize {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1_500_000)
 }
-
 
 pub fn jitter_min_ms() -> u64 {
     std::env::var("JITTER_MIN_MS")
@@ -329,7 +321,6 @@ pub fn random_user_agent() -> &'static str {
     random_browser_headers().user_agent
 }
 
-
 /// Context for Sec-Fetch headers — WAFs validate consistency between these
 #[derive(Clone, Copy, Debug)]
 pub enum RequestContext {
@@ -465,7 +456,11 @@ pub fn engines_override() -> Option<Vec<String>> {
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
-    if v.is_empty() { None } else { Some(v) }
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
 }
 
 // =============================================================================
@@ -491,7 +486,8 @@ pub const SKIP_DOMAINS: &[&str] = &[
 ];
 
 pub const SKIP_EXTENSIONS: &[&str] = &[
-    ".zip", ".rar", ".7z", ".tar", ".gz", ".mp3", ".mp4", ".avi", ".mkv", ".mov", ".exe", ".msi", ".dmg", ".apk",
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".mp3", ".mp4", ".avi", ".mkv", ".mov", ".exe", ".msi",
+    ".dmg", ".apk",
 ];
 
 // =============================================================================
@@ -504,23 +500,61 @@ pub const SKIP_EXTENSIONS: &[&str] = &[
 // stripping them turned working URLs into 404s. Only unambiguous ad/analytics
 // parameters remain.
 pub const TRACKING_PARAMS: &[&str] = &[
-    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-    "utm_id", "utm_cid", "utm_reader", "utm_name", "utm_social",
-    "fbclid", "gclid", "gclsrc", "dclid", "msclkid", "twclid", "igshid",
-    "ttclid", "li_fat_id", "wbraid", "gbraid",
-    "_ga", "_gl", "_gid", "mc_cid", "mc_eid", "mkt_tok",
-    "amp_js_v", "usqp", "spm", "share_from", "scm",
-    "yclid", "_openstat", "vero_id", "pk_campaign", "pk_kwd", "piwik_campaign",
-    "hsa_acc", "hsa_cam", "hsa_grp", "hsa_ad", "hsa_src", "hsa_tgt", "hsa_kw",
-    "hsa_mt", "hsa_net", "hsa_ver", "_hsenc", "_hsmi",
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_term",
+    "utm_content",
+    "utm_id",
+    "utm_cid",
+    "utm_reader",
+    "utm_name",
+    "utm_social",
+    "fbclid",
+    "gclid",
+    "gclsrc",
+    "dclid",
+    "msclkid",
+    "twclid",
+    "igshid",
+    "ttclid",
+    "li_fat_id",
+    "wbraid",
+    "gbraid",
+    "_ga",
+    "_gl",
+    "_gid",
+    "mc_cid",
+    "mc_eid",
+    "mkt_tok",
+    "amp_js_v",
+    "usqp",
+    "spm",
+    "share_from",
+    "scm",
+    "yclid",
+    "_openstat",
+    "vero_id",
+    "pk_campaign",
+    "pk_kwd",
+    "piwik_campaign",
+    "hsa_acc",
+    "hsa_cam",
+    "hsa_grp",
+    "hsa_ad",
+    "hsa_src",
+    "hsa_tgt",
+    "hsa_kw",
+    "hsa_mt",
+    "hsa_net",
+    "hsa_ver",
+    "_hsenc",
+    "_hsmi",
 ];
-
-
 
 // =============================================================================
 // Multi-Query Intelligence Configuration
 // =============================================================================
-
 
 // =============================================================================
 // Stealth HTTP Client — wreq with BoringSSL TLS impersonation
@@ -545,7 +579,9 @@ pub fn stealth_engines() -> Vec<String> {
 
 /// Whether stealth mode is enabled (default: auto)
 pub fn stealth_mode() -> String {
-    std::env::var("STEALTH_MODE").unwrap_or_else(|_| "auto".to_string()).to_lowercase()
+    std::env::var("STEALTH_MODE")
+        .unwrap_or_else(|_| "auto".to_string())
+        .to_lowercase()
 }
 
 /// Build a wreq stealth client with browser TLS + HTTP/2 impersonation.
@@ -587,7 +623,9 @@ pub fn build_stealth_client(proxy: Option<&str>) -> wreq::Client {
         }
     }
 
-    builder.build().expect("Failed to build wreq stealth client")
+    builder
+        .build()
+        .expect("Failed to build wreq stealth client")
 }
 
 // NOTE: `apply_stealth_headers` was REMOVED in v8.0.

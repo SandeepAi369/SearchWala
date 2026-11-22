@@ -56,9 +56,8 @@ static SEL_SNIPPET: LazyLock<Selector> =
 // (2026-10-01). The v7.0/early-v8.0 guesses all matched ZERO:
 //   .news-card -> 0, .newsitem -> 0, .na_cnt -> 0
 // What actually exists: div[data-url] -> 5 containers, a.title -> 5 links.
-static SEL_NEWS_CARD: LazyLock<Selector> = LazyLock::new(|| {
-    Selector::parse("div[data-url], .news-card, .newsitem, .na_cnt").unwrap()
-});
+static SEL_NEWS_CARD: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("div[data-url], .news-card, .newsitem, .na_cnt").unwrap());
 static SEL_NEWS_LINK: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("a.title, a[href^=\"http\"]").unwrap());
 static SEL_NEWS_SNIPPET: LazyLock<Selector> =
@@ -77,7 +76,12 @@ impl Bing {
         } else {
             3
         };
-        Self { market, news, pages, name: n }
+        Self {
+            market,
+            news,
+            pages,
+            name: n,
+        }
     }
 }
 
@@ -173,7 +177,12 @@ impl super::SearchEngine for Bing {
             }
         }
 
-        tracing::info!("{} [{}]: {} results", self.name, f.kind(), all_results.len());
+        tracing::info!(
+            "{} [{}]: {} results",
+            self.name,
+            f.kind(),
+            all_results.len()
+        );
         all_results
     }
 }
@@ -227,7 +236,10 @@ pub fn unwrap_bing_redirect(href: &str) -> Option<String> {
     }
     let normalized = href.replace("&amp;", "&");
     let parsed = url::Url::parse(&normalized).ok()?;
-    let u = parsed.query_pairs().find(|(k, _)| k == "u").map(|(_, v)| v.to_string())?;
+    let u = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "u")
+        .map(|(_, v)| v.to_string())?;
     // Bing prefixes the payload with a format marker, currently "a1".
     let payload = u.strip_prefix("a1").unwrap_or(&u);
     let bytes = b64url_decode(payload)?;
@@ -282,7 +294,13 @@ pub fn parse_bing_html(html: &str, engine: &str, rank_base: usize) -> Vec<RawSea
         let snippet = el
             .select(&SEL_SNIPPET)
             .next()
-            .map(|p| p.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
+            .map(|p| {
+                p.text()
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .unwrap_or_default();
 
         out.push(RawSearchResult {
@@ -305,9 +323,15 @@ pub fn parse_bing_news(html: &str, engine: &str, rank_base: usize) -> Vec<RawSea
     let mut seen = HashSet::new();
 
     for el in doc.select(&SEL_NEWS_CARD) {
-        let Some(link) = el.select(&SEL_NEWS_LINK).next() else { continue };
-        let Some(raw_href) = link.value().attr("href") else { continue };
-        let Some(href) = resolve_result_href(raw_href) else { continue };
+        let Some(link) = el.select(&SEL_NEWS_LINK).next() else {
+            continue;
+        };
+        let Some(raw_href) = link.value().attr("href") else {
+            continue;
+        };
+        let Some(href) = resolve_result_href(raw_href) else {
+            continue;
+        };
         let href = href.as_str();
         let title = link
             .value()
@@ -321,7 +345,13 @@ pub fn parse_bing_news(html: &str, engine: &str, rank_base: usize) -> Vec<RawSea
         let snippet = el
             .select(&SEL_NEWS_SNIPPET)
             .next()
-            .map(|s| s.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
+            .map(|s| {
+                s.text()
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .unwrap_or_default();
         out.push(RawSearchResult {
             url: href.to_string(),
@@ -370,7 +400,11 @@ mod tests {
         let doc = Html::parse_document(FIXTURE);
         let with_anchor = Selector::parse("li.b_algo h2 a").unwrap();
         let bare_h2 = Selector::parse("li.b_algo h2").unwrap();
-        assert_eq!(doc.select(&with_anchor).count(), 0, "v7.0 selected this and got nothing");
+        assert_eq!(
+            doc.select(&with_anchor).count(),
+            0,
+            "v7.0 selected this and got nothing"
+        );
         assert!(doc.select(&bare_h2).count() >= 4);
     }
 
@@ -419,7 +453,8 @@ mod tests {
 
     #[test]
     fn decodes_bing_ck_a_redirect() {
-        let href = "https://www.bing.com/ck/a?!&&p=abc&u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9hcnRpY2xl&ntb=1";
+        let href =
+            "https://www.bing.com/ck/a?!&&p=abc&u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9hcnRpY2xl&ntb=1";
         assert_eq!(
             unwrap_bing_redirect(href).as_deref(),
             Some("https://example.com/article")
@@ -468,14 +503,21 @@ mod tests {
         for x in &r {
             assert!(x.url.starts_with("http"), "bad url {:?}", x.url);
             assert!(!x.url.contains("bing.com"), "self-link {:?}", x.url);
-            assert!(crate::util::char_len(&x.title) >= 5, "short title {:?}", x.title);
+            assert!(
+                crate::util::char_len(&x.title) >= 5,
+                "short title {:?}",
+                x.title
+            );
         }
         assert_eq!(r[0].rank_position, 1);
     }
 
     #[test]
     fn b64url_decoder_handles_missing_padding() {
-        assert_eq!(b64url_decode("aHR0cHM6Ly9hLnRlc3Q").unwrap(), b"https://a.test");
+        assert_eq!(
+            b64url_decode("aHR0cHM6Ly9hLnRlc3Q").unwrap(),
+            b"https://a.test"
+        );
         assert_eq!(b64url_decode("YQ").unwrap(), b"a");
         assert!(b64url_decode("not base64!!").is_none());
     }

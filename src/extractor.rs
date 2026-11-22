@@ -93,12 +93,20 @@ fn parse_datetime_utc(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(s) {
         return Some(dt.with_timezone(&chrono::Utc));
     }
-    for fmt in ["%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M%z", "%Y-%m-%d %H:%M:%S%z"] {
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M%z",
+        "%Y-%m-%d %H:%M:%S%z",
+    ] {
         if let Ok(dt) = chrono::DateTime::parse_from_str(s, fmt) {
             return Some(dt.with_timezone(&chrono::Utc));
         }
     }
-    for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+    ] {
         if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
             return Some(ndt.and_utc());
         }
@@ -151,7 +159,12 @@ fn readability_extract(html: &str, url: &str) -> Option<Extracted> {
         .published_time
         .as_deref()
         .and_then(parse_datetime_utc)
-        .or_else(|| article.modified_time.as_deref().and_then(parse_datetime_utc));
+        .or_else(|| {
+            article
+                .modified_time
+                .as_deref()
+                .and_then(parse_datetime_utc)
+        });
     let language = article.lang.as_deref().and_then(normalize_lang);
     let byline = clean_opt_str(article.byline);
     let site_name = clean_opt_str(article.site_name);
@@ -254,15 +267,16 @@ pub fn extract(html: &str, url: &str) -> Extracted {
 
     let dom_chars = crate::util::char_len(&best.text);
     let min = min_text_chars();
-    let adopt = |best: &mut Extracted, text: String, source: &'static str, confidence: f64, factor: f64| {
-        let n = crate::util::char_len(&text);
-        let current = crate::util::char_len(&best.text);
-        if n >= min && n as f64 >= current as f64 * factor {
-            best.text = text;
-            best.source = source;
-            best.confidence = best.confidence.max(confidence);
-        }
-    };
+    let adopt =
+        |best: &mut Extracted, text: String, source: &'static str, confidence: f64, factor: f64| {
+            let n = crate::util::char_len(&text);
+            let current = crate::util::char_len(&best.text);
+            if n >= min && n as f64 >= current as f64 * factor {
+                best.text = text;
+                best.source = source;
+                best.confidence = best.confidence.max(confidence);
+            }
+        };
 
     // Ground truth when present. 1.3x: a full body beats a teaser, but a
     // slightly longer JSON copy is not worth losing the DOM's structure.
@@ -403,7 +417,9 @@ pub fn json_ld_article_body(html: &str) -> Option<String> {
 
     let mut best: Option<String> = None;
     for n in &nodes {
-        let Some(body) = n.get("articleBody").and_then(|v| v.as_str()) else { continue };
+        let Some(body) = n.get("articleBody").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let body = strip_tags(body.trim());
         if crate::util::char_len(&body) < 100 {
             continue;
@@ -450,9 +466,10 @@ fn flatten_ld(v: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
 pub fn ld_types(n: &serde_json::Value) -> Vec<String> {
     match n.get("@type") {
         Some(serde_json::Value::String(s)) => vec![s.clone()],
-        Some(serde_json::Value::Array(a)) => {
-            a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
-        }
+        Some(serde_json::Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -528,11 +545,22 @@ mod tests {
 
     #[test]
     fn amarujala_yields_publication_date_and_language() {
-        let got = extract(AMARUJALA, "https://www.amarujala.com/cricket/cricket-news/x");
+        let got = extract(
+            AMARUJALA,
+            "https://www.amarujala.com/cricket/cricket-news/x",
+        );
         // v7.0 extracted neither, despite calling itself "time-aware".
         assert!(got.published.is_some(), "datePublished must be extracted");
-        assert_eq!(got.language.as_deref(), Some("hi"), "language should be Hindi");
-        assert!(got.confidence > 0.5, "confidence {} too low", got.confidence);
+        assert_eq!(
+            got.language.as_deref(),
+            Some("hi"),
+            "language should be Hindi"
+        );
+        assert!(
+            got.confidence > 0.5,
+            "confidence {} too low",
+            got.confidence
+        );
     }
 
     #[test]
@@ -606,10 +634,18 @@ mod tests {
         // Same text from a small page is fine.
         assert!(!wants_second_opinion(&thin, 10_000));
         // Low confidence always triggers.
-        let unsure = Extracted { text: "x".repeat(5000), confidence: 0.4, ..Default::default() };
+        let unsure = Extracted {
+            text: "x".repeat(5000),
+            confidence: 0.4,
+            ..Default::default()
+        };
         assert!(wants_second_opinion(&unsure, 10_000));
         // Very short always triggers.
-        let tiny = Extracted { text: "x".repeat(100), confidence: 1.0, ..Default::default() };
+        let tiny = Extracted {
+            text: "x".repeat(100),
+            confidence: 1.0,
+            ..Default::default()
+        };
         assert!(wants_second_opinion(&tiny, 1_000));
     }
 
@@ -634,7 +670,10 @@ mod tests {
         let hindi = "क".repeat(50);
         assert_eq!(crate::util::char_len(&hindi), 50);
         assert_eq!(hindi.len(), 150);
-        let e = Extracted { text: hindi, ..Default::default() };
+        let e = Extracted {
+            text: hindi,
+            ..Default::default()
+        };
         assert!(!is_usable(&e), "50 chars must not pass a 120-char gate");
     }
 
@@ -655,7 +694,11 @@ mod tests {
             prose("ROOT", 3)
         );
         let e = extract(&html, "https://example.org/s");
-        assert!(e.text.contains("SHADOW paragraph 2") && e.text.contains("ROOT paragraph 0"), "{}", e.text);
+        assert!(
+            e.text.contains("SHADOW paragraph 2") && e.text.contains("ROOT paragraph 0"),
+            "{}",
+            e.text
+        );
     }
 
     #[test]
@@ -668,8 +711,14 @@ mod tests {
         assert_eq!(e.source, "hydration");
         assert!(e.text.contains("NEXT paragraph 4"));
 
-        let flight = serde_json::to_string(&format!(r#"5:["$","p",null,{{"children":"{}"}}]"#, prose("RSC", 4))).unwrap();
-        let app = format!(r#"<html><head><title>R</title></head><body><div></div><script>self.__next_f.push([1,{flight}])</script></body></html>"#);
+        let flight = serde_json::to_string(&format!(
+            r#"5:["$","p",null,{{"children":"{}"}}]"#,
+            prose("RSC", 4)
+        ))
+        .unwrap();
+        let app = format!(
+            r#"<html><head><title>R</title></head><body><div></div><script>self.__next_f.push([1,{flight}])</script></body></html>"#
+        );
         let e = extract(&app, "https://example.org/r");
         assert!(e.text.contains("RSC paragraph 3"), "{}", e.text);
     }
@@ -683,7 +732,12 @@ mod tests {
             prose("TEASER", 1)
         );
         let e = extract(&html, "https://example.org/p");
-        assert!(e.text.contains("FULL paragraph 7"), "via {}: {}", e.source, e.text);
+        assert!(
+            e.text.contains("FULL paragraph 7"),
+            "via {}: {}",
+            e.source,
+            e.text
+        );
     }
 
     #[test]
@@ -724,13 +778,19 @@ mod tests {
             prose("ARCH", 4),
             prose("DESIGN", 4)
         );
-        let got = extract(&html, "https://martinfowler.com/articles/microservices.html");
+        let got = extract(
+            &html,
+            "https://martinfowler.com/articles/microservices.html",
+        );
         assert_eq!(got.source, "readability");
         assert_eq!(got.title, "Microservices Architecture Guide");
         assert_eq!(got.language.as_deref(), Some("en"));
         assert_eq!(got.byline.as_deref(), Some("Martin Fowler"));
         assert_eq!(got.site_name.as_deref(), Some("martinfowler.com"));
-        assert!(got.published.is_some(), "modified_time fallback must populate published");
+        assert!(
+            got.published.is_some(),
+            "modified_time fallback must populate published"
+        );
     }
 
     #[test]
@@ -748,7 +808,11 @@ mod tests {
             prose("THREAD", 4)
         );
         let got = extract(&html, "https://discuss.python.org/t/pep-703/123");
-        assert!(got.text.contains("GIL paragraph 3"), "noscript content missing: {}", got.text);
+        assert!(
+            got.text.contains("GIL paragraph 3"),
+            "noscript content missing: {}",
+            got.text
+        );
         assert_eq!(got.site_name.as_deref(), Some("Discussions on Python.org"));
         assert!(got.published.is_some());
     }

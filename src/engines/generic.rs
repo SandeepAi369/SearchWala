@@ -50,15 +50,30 @@ pub struct GenericEngineSpec {
 
 impl GenericEngineSpec {
     fn stat(template: &'static str, pages: usize, page_param: PageParam) -> Self {
-        Self { endpoint_template: Cow::Borrowed(template), pages, page_param, stealth: false }
+        Self {
+            endpoint_template: Cow::Borrowed(template),
+            pages,
+            page_param,
+            stealth: false,
+        }
     }
 
     fn stat_stealth(template: &'static str, pages: usize, page_param: PageParam) -> Self {
-        Self { endpoint_template: Cow::Borrowed(template), pages, page_param, stealth: true }
+        Self {
+            endpoint_template: Cow::Borrowed(template),
+            pages,
+            page_param,
+            stealth: true,
+        }
     }
 
     fn owned_stealth(template: String, pages: usize, page_param: PageParam) -> Self {
-        Self { endpoint_template: Cow::Owned(template), pages, page_param, stealth: true }
+        Self {
+            endpoint_template: Cow::Owned(template),
+            pages,
+            page_param,
+            stealth: true,
+        }
     }
 
     /// A template with no placeholder cannot paginate — forcing 1 here is what
@@ -94,7 +109,10 @@ pub struct GenericEngine {
 
 impl GenericEngine {
     pub fn new(name: &str, spec: GenericEngineSpec) -> Self {
-        Self { name: name.to_string(), spec }
+        Self {
+            name: name.to_string(),
+            spec,
+        }
     }
 }
 
@@ -140,7 +158,8 @@ impl super::SearchEngine for GenericEngine {
                 break;
             }
 
-            let page_results = parse_generic_html(&page.body, &self.name, &page.final_url, rank_base);
+            let page_results =
+                parse_generic_html(&page.body, &self.name, &page.final_url, rank_base);
             super::health::record_parsed(&self.name, page_results.len());
             if page_results.is_empty() && page_idx == 0 {
                 super::health::dump_zero_result_body(&self.name, &url, &page.body);
@@ -174,11 +193,11 @@ static SELECTORS: std::sync::LazyLock<Vec<Selector>> = std::sync::LazyLock::new(
     [
         // Engine-specific result containers first — far higher precision than
         // the generic fallbacks, which pick up nav/footer/related links.
-        "li.b_algo h2 a",           // Bing
-        ".result__a",               // DuckDuckGo html
-        ".result__title a",         // DuckDuckGo html (alt)
-        "a.result-link",            // DuckDuckGo lite / Startpage
-        "#results .snippet a[href]",// Brave
+        "li.b_algo h2 a",                 // Bing
+        ".result__a",                     // DuckDuckGo html
+        ".result__title a",               // DuckDuckGo html (alt)
+        "a.result-link",                  // DuckDuckGo lite / Startpage
+        "#results .snippet a[href]",      // Brave
         ".serp-item a.OrganicTitle-Link", // Yandex
         "ul.results-standard li a.title", // Mojeek
         "h3 a[href]",
@@ -215,8 +234,12 @@ pub fn parse_generic_html(
     for sel in SELECTORS.iter() {
         let mut batch: Vec<RawSearchResult> = Vec::new();
         for link in doc.select(sel) {
-            let Some(href) = link.value().attr("href") else { continue };
-            let Some(resolved) = resolve_target_url(href, engine_url) else { continue };
+            let Some(href) = link.value().attr("href") else {
+                continue;
+            };
+            let Some(resolved) = resolve_target_url(href, engine_url) else {
+                continue;
+            };
 
             if !resolved.starts_with("http://") && !resolved.starts_with("https://") {
                 continue;
@@ -321,7 +344,9 @@ fn resolve_target_url(href: &str, base: &str) -> Option<String> {
             for (k, v) in parsed.query_pairs() {
                 if k == "uddg" {
                     return Some(
-                        urlencoding::decode(&v).map(|d| d.to_string()).unwrap_or_else(|_| v.to_string()),
+                        urlencoding::decode(&v)
+                            .map(|d| d.to_string())
+                            .unwrap_or_else(|_| v.to_string()),
                     );
                 }
             }
@@ -331,7 +356,10 @@ fn resolve_target_url(href: &str, base: &str) -> Option<String> {
     // Yahoo redirect: .../RU=<encoded>/RK=...
     if let Some(pos) = href.find("RU=") {
         let start = pos + 3;
-        let end = href[start..].find('/').map(|e| start + e).unwrap_or(href.len());
+        let end = href[start..]
+            .find('/')
+            .map(|e| start + e)
+            .unwrap_or(href.len());
         if let Ok(decoded) = urlencoding::decode(&href[start..end]) {
             if decoded.starts_with("http") {
                 return Some(decoded.to_string());
@@ -441,7 +469,11 @@ pub fn spec_for(name: &str) -> Option<GenericEngineSpec> {
         } else {
             "https://search.brave.com/search?q={query}&source=web&offset={offset}"
         };
-        return Some(GenericEngineSpec::stat_stealth(endpoint, 3, PageParam::PageZero));
+        return Some(GenericEngineSpec::stat_stealth(
+            endpoint,
+            3,
+            PageParam::PageZero,
+        ));
     }
 
     if n.starts_with("yahoo") {
@@ -450,7 +482,11 @@ pub fn spec_for(name: &str) -> Option<GenericEngineSpec> {
         } else {
             "https://search.yahoo.com/search?p={query}&b={offset}"
         };
-        return Some(GenericEngineSpec::stat_stealth(endpoint, 3, PageParam::Offset1Based));
+        return Some(GenericEngineSpec::stat_stealth(
+            endpoint,
+            3,
+            PageParam::Offset1Based,
+        ));
     }
 
     // Yandex `p` is 0-based — v7.0 started at p=1 and never fetched page one.
@@ -480,7 +516,11 @@ pub fn spec_for(name: &str) -> Option<GenericEngineSpec> {
     }
 
     if n.starts_with("4get") {
-        return Some(GenericEngineSpec::stat("https://4get.ca/web?s={query}", 1, PageParam::None));
+        return Some(GenericEngineSpec::stat(
+            "https://4get.ca/web?s={query}",
+            1,
+            PageParam::None,
+        ));
     }
 
     if n.starts_with("yacy") {
@@ -516,11 +556,19 @@ pub fn spec_for(name: &str) -> Option<GenericEngineSpec> {
     }
 
     if n.starts_with("seznam") {
-        return Some(GenericEngineSpec::stat("https://search.seznam.cz/?q={query}", 1, PageParam::None));
+        return Some(GenericEngineSpec::stat(
+            "https://search.seznam.cz/?q={query}",
+            1,
+            PageParam::None,
+        ));
     }
 
     if n.starts_with("swisscows") {
-        return Some(GenericEngineSpec::stat("https://swisscows.com/web?query={query}", 1, PageParam::None));
+        return Some(GenericEngineSpec::stat(
+            "https://swisscows.com/web?query={query}",
+            1,
+            PageParam::None,
+        ));
     }
 
     if n.starts_with("metager") {
@@ -625,7 +673,11 @@ mod tests {
     #[test]
     fn page_zero_engines_start_at_zero() {
         // v7.0 used page_idx+1, so yandex/ecosia never fetched page one.
-        let spec = GenericEngineSpec::stat("https://y.test/?text={query}&p={page}", 2, PageParam::PageZero);
+        let spec = GenericEngineSpec::stat(
+            "https://y.test/?text={query}&p={page}",
+            2,
+            PageParam::PageZero,
+        );
         assert_eq!(spec.url_for_page("x", 0), "https://y.test/?text=x&p=0");
         assert_eq!(spec.url_for_page("x", 1), "https://y.test/?text=x&p=1");
     }
@@ -687,10 +739,26 @@ mod tests {
     #[test]
     fn dead_engines_have_no_spec() {
         for dead in [
-            "alexandria", "excite", "lycos", "mullvad_leta", "pipilika",
-            "searchencrypt", "whoogle", "librex", "right_dao", "ask",
-            "stract", "dogpile", "webcrawler", "info", "gibiru", "kiddle",
-            "presearch", "yep", "aol", "searchalot",
+            "alexandria",
+            "excite",
+            "lycos",
+            "mullvad_leta",
+            "pipilika",
+            "searchencrypt",
+            "whoogle",
+            "librex",
+            "right_dao",
+            "ask",
+            "stract",
+            "dogpile",
+            "webcrawler",
+            "info",
+            "gibiru",
+            "kiddle",
+            "presearch",
+            "yep",
+            "aol",
+            "searchalot",
         ] {
             assert!(spec_for(dead).is_none(), "{dead} should have been removed");
         }
@@ -698,8 +766,19 @@ mod tests {
 
     #[test]
     fn waf_engines_are_marked_stealth() {
-        for e in ["google", "bing", "duckduckgo", "brave", "yahoo", "yandex", "ecosia"] {
-            assert!(spec_for(e).unwrap().stealth, "{e} must use TLS impersonation");
+        for e in [
+            "google",
+            "bing",
+            "duckduckgo",
+            "brave",
+            "yahoo",
+            "yandex",
+            "ecosia",
+        ] {
+            assert!(
+                spec_for(e).unwrap().stealth,
+                "{e} must use TLS impersonation"
+            );
         }
         // Indie engines do not need it.
         assert!(!spec_for("mwmbl").unwrap().stealth);
@@ -737,18 +816,30 @@ mod tests {
         </div></body></html>"#;
         let r = parse_generic_html(html, "bing", "https://www.bing.com/search?q=x", 0);
         let urls: Vec<&str> = r.iter().map(|x| x.url.as_str()).collect();
-        assert!(urls.iter().any(|u| u.contains("news.site.com")), "legit article dropped: {urls:?}");
-        assert!(!urls.iter().any(|u| u.contains("bing.com/settings")), "self-link kept: {urls:?}");
+        assert!(
+            urls.iter().any(|u| u.contains("news.site.com")),
+            "legit article dropped: {urls:?}"
+        );
+        assert!(
+            !urls.iter().any(|u| u.contains("bing.com/settings")),
+            "self-link kept: {urls:?}"
+        );
     }
 
     #[test]
     fn resolves_ddg_and_google_redirects() {
         assert_eq!(
-            resolve_target_url("/l/?uddg=https%3A%2F%2Fexample.com%2Fa", "https://html.duckduckgo.com/html/"),
+            resolve_target_url(
+                "/l/?uddg=https%3A%2F%2Fexample.com%2Fa",
+                "https://html.duckduckgo.com/html/"
+            ),
             Some("https://example.com/a".to_string())
         );
         assert_eq!(
-            resolve_target_url("/url?q=https://example.com/b&sa=U", "https://www.google.com/search"),
+            resolve_target_url(
+                "/url?q=https://example.com/b&sa=U",
+                "https://www.google.com/search"
+            ),
             Some("https://example.com/b".to_string())
         );
         assert_eq!(

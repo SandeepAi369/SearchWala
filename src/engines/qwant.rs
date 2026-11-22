@@ -20,10 +20,8 @@ pub struct Qwant;
 
 static SEL_RESULT: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("article, .result, .web-result").unwrap());
-static SEL_LINK: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse("a[href^='http']").unwrap());
-static SEL_DESC: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse("p, .description").unwrap());
+static SEL_LINK: LazyLock<Selector> = LazyLock::new(|| Selector::parse("a[href^='http']").unwrap());
+static SEL_DESC: LazyLock<Selector> = LazyLock::new(|| Selector::parse("p, .description").unwrap());
 
 #[async_trait::async_trait]
 impl super::SearchEngine for Qwant {
@@ -36,7 +34,10 @@ impl super::SearchEngine for Qwant {
     }
 
     async fn search(&self, f: &Fetcher, query: &str) -> Vec<RawSearchResult> {
-        let url = format!("https://lite.qwant.com/?q={}&t=web", urlencoding::encode(query));
+        let url = format!(
+            "https://lite.qwant.com/?q={}&t=web",
+            urlencoding::encode(query)
+        );
 
         super::health::record_attempt("qwant");
         let resp = match f.get(&url, &[]).await {
@@ -73,7 +74,9 @@ pub fn parse_qwant_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
     let mut seen = HashSet::new();
 
     for el in document.select(&SEL_RESULT) {
-        let Some(link) = el.select(&SEL_LINK).next() else { continue };
+        let Some(link) = el.select(&SEL_LINK).next() else {
+            continue;
+        };
         let href = match link.value().attr("href") {
             Some(h) if h.starts_with("http") && !h.contains("qwant.com") => h.to_string(),
             _ => continue,

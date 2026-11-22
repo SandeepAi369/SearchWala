@@ -48,8 +48,8 @@ pub fn host_key(url: &str) -> String {
     // Handle two-level public suffixes (.co.uk, .com.br, .co.in, ...).
     let last_two = parts[parts.len() - 2..].join(".");
     const TWO_LEVEL: &[&str] = &[
-        "co.uk", "co.in", "co.jp", "com.br", "com.au", "co.nz", "co.za", "com.mx",
-        "co.kr", "com.tr", "com.cn", "co.il",
+        "co.uk", "co.in", "co.jp", "com.br", "com.au", "co.nz", "co.za", "com.mx", "co.kr",
+        "com.tr", "com.cn", "co.il",
     ];
     if TWO_LEVEL.contains(&last_two.as_str()) && parts.len() >= 3 {
         return parts[parts.len() - 3..].join(".");
@@ -117,16 +117,31 @@ mod tests {
         assert_eq!(host_key("https://www.bing.com/search?q=x"), "bing.com");
         assert_eq!(host_key("https://www.bing.com/news/search?q=x"), "bing.com");
         assert_eq!(host_key("https://search.yahoo.com/search?p=x"), "yahoo.com");
-        assert_eq!(host_key("https://news.search.yahoo.com/search?p=x"), "yahoo.com");
+        assert_eq!(
+            host_key("https://news.search.yahoo.com/search?p=x"),
+            "yahoo.com"
+        );
     }
 
     #[test]
     fn host_key_handles_two_level_suffixes() {
-        assert_eq!(host_key("https://www.google.co.uk/search?q=x"), "google.co.uk");
-        assert_eq!(host_key("https://www.google.co.in/search?q=x"), "google.co.in");
-        assert_eq!(host_key("https://www.google.com.br/search?q=x"), "google.com.br");
+        assert_eq!(
+            host_key("https://www.google.co.uk/search?q=x"),
+            "google.co.uk"
+        );
+        assert_eq!(
+            host_key("https://www.google.co.in/search?q=x"),
+            "google.co.in"
+        );
+        assert_eq!(
+            host_key("https://www.google.com.br/search?q=x"),
+            "google.com.br"
+        );
         // Distinct regional Googles must NOT share one budget with google.com.
-        assert_ne!(host_key("https://www.google.co.uk/"), host_key("https://www.google.com/"));
+        assert_ne!(
+            host_key("https://www.google.co.uk/"),
+            host_key("https://www.google.com/")
+        );
     }
 
     #[test]
@@ -175,16 +190,26 @@ mod tests {
         }
         // Generous bound for the same reason as above; the property is that a
         // zero interval introduces no sleeps at all.
-        assert!(t0.elapsed() < Duration::from_millis(500), "took {:?}", t0.elapsed());
+        assert!(
+            t0.elapsed() < Duration::from_millis(500),
+            "took {:?}",
+            t0.elapsed()
+        );
     }
 
     #[test]
     fn prune_drops_expired_entries() {
         {
             let mut map = NEXT_ALLOWED.lock().unwrap();
-            map.insert("stale-prune.test".into(), Instant::now() - Duration::from_secs(60));
+            map.insert(
+                "stale-prune.test".into(),
+                Instant::now() - Duration::from_secs(60),
+            );
         }
         prune();
-        assert!(!NEXT_ALLOWED.lock().unwrap().contains_key("stale-prune.test"));
+        assert!(!NEXT_ALLOWED
+            .lock()
+            .unwrap()
+            .contains_key("stale-prune.test"));
     }
 }

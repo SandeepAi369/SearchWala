@@ -1,6 +1,6 @@
 [package]
 name = "searchwala"
-version = "8.1.0"
+version = "8.2.0"
 edition = "2021"
 description = "Meta-search engine in Rust: cross-engine consensus ranking, trafilatura + Readability extraction, scholarly sources, mode-specific synthesis (fast/auto/deep/study/academic) with optional BYOK LLM"
 authors = ["SandeepCH"]
@@ -68,7 +68,7 @@ encoding_rs = "0.8"
 # On the Amar Ujala article the v7.0 extractor returned 180 chars (a WebPage
 # meta description) where trafilatura returns 5,812 — a 32x difference.
 rs-trafilatura = "0.2"
-dom_smoothie = { path = "../dom_smoothie", features = ["aho-corasick"] }
+dom_smoothie = { version = "0.19.0", features = ["aho-corasick"] }
 
 # URL handling
 url = "2"
@@ -117,3 +117,4 @@ panic = "unwind"
 # Drop this once a non-RC wreq-util ships with zstd >= 0.14.3.
 [patch.crates-io]
 wreq-util = { path = "patches/wreq-util" }
+dom_smoothie = { path = "patches/dom_smoothie" }

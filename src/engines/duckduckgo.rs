@@ -115,7 +115,9 @@ fn unwrap_ddg_href(href: &str) -> Option<String> {
     let parsed = url::Url::parse(&abs).ok()?;
     for (k, v) in parsed.query_pairs() {
         if k == "uddg" {
-            let decoded = urlencoding::decode(&v).map(|d| d.to_string()).unwrap_or_else(|_| v.to_string());
+            let decoded = urlencoding::decode(&v)
+                .map(|d| d.to_string())
+                .unwrap_or_else(|_| v.to_string());
             if decoded.starts_with("http") {
                 return Some(decoded);
             }
@@ -129,9 +131,15 @@ pub fn parse_ddg_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
     let mut results = Vec::new();
 
     for el in document.select(&SEL_RESULT) {
-        let Some(link) = el.select(&SEL_LINK).next() else { continue };
-        let Some(href) = link.value().attr("href") else { continue };
-        let Some(target) = unwrap_ddg_href(href) else { continue };
+        let Some(link) = el.select(&SEL_LINK).next() else {
+            continue;
+        };
+        let Some(href) = link.value().attr("href") else {
+            continue;
+        };
+        let Some(target) = unwrap_ddg_href(href) else {
+            continue;
+        };
 
         let title = link.text().collect::<String>().trim().to_string();
         if title.is_empty() {

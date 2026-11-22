@@ -1,0 +1,745 @@
+use std::cmp::Ordering;
+
+use dom_query::{Matcher, NodeRef, Selection};
+use flagset::FlagSet;
+
+use crate::Config;
+#[allow(clippy::wildcard_imports)]
+use crate::glob::*;
+use crate::grab_flags::GrabFlags;
+#[allow(clippy::wildcard_imports)]
+use crate::helpers::*;
+#[allow(clippy::wildcard_imports)]
+use crate::matching::*;
+use crate::score::get_class_weight;
+
+fn clean_math(root_sel: &Selection) {
+    for ann in root_sel.select_matcher(&MATCHER_MATH_TEX).nodes() {
+        let tex = ann.text();
+        let tex = tex.trim();
+        if tex.is_empty() {
+            ann.remove_from_parent();
+            continue;
+        }
+        let math_node = ann
+            .ancestors_it(Some(2))
+            .find(|n| n.has_name("math"))
+            .unwrap_or(*ann);
+        let is_block = math_node
+            .attr("display")
+            .is_some_and(|d| d.eq_ignore_ascii_case("block"));
+        let formatted = if is_block {
+            format!("$${tex}$$")
+        } else {
+            format!("${tex}$")
+        };
+        for child in math_node.children() {
+            child.remove_from_parent();
+        }
+        math_node.append_child(&math_node.tree.new_text(formatted));
+    }
+}
+
+fn clean(root_sel: &Selection) {
+    for node in root_sel.select_matcher(&MATCHER_CLEAN).nodes() {
+        // Allow youtube and vimeo videos through as people usually want to see those.
+
+        if !node_name_in(node, &EMBED_ELEMENTS) {
+            node.remove_from_parent();
+            continue;
+        }
+        let mut should_remove = !node.attrs().iter().any(|attr| is_video_url(&attr.value));
+
+        // For embed with <object> tag, check inner HTML as well.
+        if should_remove && node.has_name("object") && is_video_url(&node.inner_html()) {
+            should_remove = false;
+        }
+
+        if should_remove {
+            node.remove_from_parent();
+        }
+    }
+}
+
+fn clean_styles(n: &NodeRef) {
+    if n.has_name("svg") {
+        return;
+    }
+
+    n.remove_attrs(PRESENTATIONAL_ATTRIBUTES);
+
+    if node_name_in(n, &DEPRECATED_SIZE_ATTRIBUTE_ELEMS) {
+        n.remove_attrs(&["width", "height"]);
+    }
+
+    for child_node in &n.element_children() {
+        clean_styles(child_node);
+    }
+}
+
+/// Compares the text density of `matcher` matches against `threshold`, stopping early when possible.
+/// Once the running density exceeds `threshold` the comparison is settled, so the scan ends there.
+fn text_density_cmp(
+    node: &NodeRef,
+    matcher: &Matcher,
+    char_count: usize,
+    threshold: f32,
+    ordering: Ordering,
+) -> bool {
+    if char_count == 0 {
+        return 0.0_f32.partial_cmp(&threshold) == Some(ordering);
+    }
+
+    let text_length = char_count as f32;
+    let mut children_length = 0usize;
+    for descendant in Selection::from(*node).select_matcher_iter(matcher) {
+        children_length += descendant.normalized_char_count();
+        if children_length as f32 / text_length > threshold {
+            return ordering == Ordering::Greater;
+        }
+    }
+    (children_length as f32 / text_length).partial_cmp(&threshold) == Some(ordering)
+}
+
+fn should_clean_conditionally(node: &NodeRef, flags: &FlagSet<GrabFlags>) -> bool {
+    let sel = Selection::from(*node);
+    // keep element if it has a data tables
+    if sel.select_single_matcher(&MATCHER_DATA_TABLE).exists() {
+        return false;
+    }
+
+    let is_data_table = |n: &NodeRef| n.has_name("table") && n.has_attr("data-readability-table");
+
+    if is_data_table(node) {
+        return false;
+    }
+    // Next check if we're inside a data table, in which case don't remove it as well.
+    if has_ancestor(node, None, is_data_table) {
+        return false;
+    }
+
+    let weight = get_class_weight(node, flags.contains(GrabFlags::WeightClasses));
+
+    if weight < 0.0 {
+        // Utility classes (`scroll-mt-2`, `md:hidden`) must not drop code wrappers.
+        return !node.descendants_it().any(|n| n.has_name("pre"));
+    }
+
+    let node_text = node.text();
+
+    if node_text.matches(',').count() < 10 {
+        // If there are not very many commas, and the number of
+        // non-paragraph elements is more than paragraphs or other
+        // ominous signs, remove the element.
+
+        let mut embed_count = 0;
+
+        let embeds_sel = sel.select_matcher(&MATCHER_EMBEDS);
+
+        for embed in embeds_sel.nodes() {
+            for attr in &embed.attrs() {
+                if is_video_url(&attr.value) {
+                    return false;
+                }
+            }
+            if embed.has_name("object") && is_video_url(&embed.inner_html()) {
+                return false;
+            }
+            embed_count += 1;
+        }
+        let text_low = node_text.trim().to_lowercase();
+        if AD_WORDS.contains(&text_low) || is_loading_word(&text_low) {
+            return true;
+        }
+
+        let char_count = node.normalized_char_count();
+        let Some(qual_name) = node.qual_name_ref() else {
+            return false;
+        };
+        let tag = qual_name.local.as_ref();
+        let mut is_list = matches!(tag, "ul" | "ol");
+        if !is_list {
+            is_list = text_density_cmp(node, &MATCHER_UL_OL, char_count, 0.9, Ordering::Greater);
+        }
+
+        let img = node.find_descendants("img").len();
+        let img_f32 = img as f32;
+        let should_remove = || {
+            let is_figure_child = has_ancestor(node, None, |n| n.has_name("figure"));
+            let p = node.find_descendants("p").len() as f32;
+
+            if !is_figure_child && img_f32 > 1.0 && p / img_f32 < 0.5 {
+                return true;
+            }
+
+            // TODO: this check can probably be removed.
+            // If this is a large menu block, article_content will likely not include it,
+            // because it contains too little meaningful content.
+            // Otherwise, the magic number '100' seems way too high; the flow usually works fine with 10–20.
+            let li = node.find_descendants("li").len() as f32 - 100.0;
+            if !is_list && li > p {
+                return true;
+            }
+
+            let input = node.find_descendants("input").len() as f32;
+            if input > (p / 3.0).floor() {
+                return true;
+            }
+
+            let link_density = link_density(node, Some(char_count));
+
+            if !is_list
+                && !is_figure_child
+                && char_count < 25
+                && (img == 0 || img > 2)
+                && link_density > 0.0
+                && text_density_cmp(node, &MATCHER_H1_H6, char_count, 0.9, Ordering::Less)
+            {
+                return true;
+            }
+            if !is_list && weight < 25.0 && link_density > 0.2 {
+                return true;
+            }
+
+            if weight >= 25.0 && link_density > 0.5 {
+                return true;
+            }
+
+            if (embed_count == 1 && char_count < 75) || embed_count > 1 {
+                return true;
+            }
+
+            if img == 0 && !text_density_cmp(node, &MATCHER_TEXTISH, 1, 0.0, Ordering::Greater) {
+                return true;
+            }
+            false
+        };
+        let have_to_remove = should_remove();
+
+        if is_list && have_to_remove {
+            for child in node.children_it(false) {
+                if child.element_children().len() > 1 {
+                    return have_to_remove;
+                }
+            }
+            let li_count = node.find_descendants("li").len();
+            return img != li_count;
+        }
+
+        return have_to_remove;
+    }
+    false
+}
+
+// shortcut: cleaning is O(depth x depth) on deeply nested wrappers; cap depth or precompute subtree stats when parsing untrusted input.
+fn clean_conditionally(sel: &Selection, matcher: &Matcher, flags: &FlagSet<GrabFlags>) {
+    if !flags.contains(GrabFlags::CleanConditionally) {
+        return;
+    }
+
+    let tag_sel = sel.select_matcher(matcher);
+    // traversing tag nodes in reverse order,
+    // so that how children nodes will appear before parent nodes
+    for tag_node in tag_sel.nodes().iter().rev() {
+        if should_clean_conditionally(tag_node, flags) {
+            tag_node.remove_from_parent();
+        }
+    }
+}
+
+fn set_data_readability_table(n: &NodeRef, is_data_table: bool) {
+    if is_data_table {
+        n.set_attr("data-readability-table", "true");
+    } else {
+        n.remove_attr("data-readability-table");
+    }
+}
+
+fn get_row_and_col_count(table: &Selection) -> (usize, usize) {
+    let mut rows = 0usize;
+    let mut cols = 0usize;
+    for tr in &table.select_matcher(&MATCHER_TR) {
+        // No need to adjust row count by the `row span` at all
+        rows += 1;
+
+        //Now look for column-related info
+        let mut columns_in_this_row = 0usize;
+
+        for cell in &tr.select_matcher(&MATCHER_TD) {
+            // HTML clamps colspan to 1000; invalid and zero values count as 1.
+            let raw = cell.attr_or("colspan", "1");
+            let colspan = match raw.parse::<usize>() {
+                Ok(value) => value.clamp(1, 1000),
+                // A valid decimal beyond usize::MAX is still capped by HTML, not reset to 1.
+                Err(_) if !raw.is_empty() && raw.bytes().all(|b| b.is_ascii_digit()) => 1000,
+                Err(_) => 1,
+            };
+            columns_in_this_row = columns_in_this_row.saturating_add(colspan);
+        }
+        cols = std::cmp::max(cols, columns_in_this_row);
+    }
+
+    (rows, cols)
+}
+
+fn mark_data_tables(base_sel: &Selection) {
+    for table_node in base_sel.select_matcher(&MATCHER_TABLE).nodes() {
+        if MINI_PRESENTATION.match_node(table_node) {
+            set_data_readability_table(table_node, false);
+            continue;
+        }
+
+        // TODO: Pretty rare case (not covered by tests). Probably should be removed.
+        if MINI_AINT_DATA_TABLE.match_node(table_node) {
+            set_data_readability_table(table_node, false);
+            continue;
+        }
+
+        if table_node.has_attr("summary") {
+            set_data_readability_table(table_node, true);
+            continue;
+        }
+
+        let sel = Selection::from(*table_node);
+
+        if sel.select_single_matcher(&MATCHER_TABLE_MEMBERS).exists() {
+            set_data_readability_table(table_node, true);
+            continue;
+        }
+
+        // nested tables indicate a layout table
+        if sel.select_single_matcher(&MATCHER_TABLE).exists() {
+            set_data_readability_table(table_node, false);
+            continue;
+        }
+
+        let (rows, cols) = get_row_and_col_count(&sel);
+        if rows == 1 || cols == 1 {
+            set_data_readability_table(table_node, false);
+            continue;
+        }
+
+        if rows >= 10 || cols > 4 {
+            set_data_readability_table(table_node, true);
+            continue;
+        }
+        set_data_readability_table(table_node, rows.saturating_mul(cols) > 10);
+    }
+}
+
+/// Checks if the image address may be a placeholder that other attributes are
+/// allowed to replace. A `lazy` class always means so, as in `Readability.js`;
+/// `loading="lazy"` is only a rendering hint, so it counts while the node has
+/// no usable address of its own -- otherwise an attribute that merely looks
+/// like an image path (Wikipedia's `resource`) overwrites a working `src`.
+fn is_lazy_image(node: &NodeRef) -> bool {
+    node.is_match(&MATCHER_LAZY_CLASS)
+        || (node.is_match(&MATCHER_LAZY_LOADING) && !has_image_address(node))
+}
+
+fn fix_lazy_images(sel: &Selection) {
+    for node in sel.select("img,picture,figure").nodes() {
+        // In some sites (e.g. Kotaku), they put 1px square image as base64 data uri in the src attribute.
+        // So, here we check if the data uri is too short, just might as well remove it.
+        if let Some(src) = node.attr("src") {
+            if let Some((image_type, base64_data)) = split_base64_url(&src) {
+                if image_type == "image/svg+xml" {
+                    continue;
+                }
+
+                // Make sure this element has other attributes which contains image.
+                // If it doesn't, then this src is important and shouldn't be removed.
+                let mut src_could_be_removed = false;
+
+                for attr in &node.attrs() {
+                    if &attr.name.local == "src" {
+                        continue;
+                    }
+
+                    if IMG_EXT.iter().any(|p| attr.value.contains(p)) {
+                        src_could_be_removed = true;
+                        break;
+                    }
+                }
+                // Here we assume if image is less than 100 bytes (or 133 after encoded to base64)
+                // it will be too small, therefore it might be placeholder image.
+                if src_could_be_removed && base64_data.len() < 133 {
+                    node.remove_attr("src");
+                }
+            }
+        }
+
+        if (node.has_attr("src") || node.has_attr("srcset")) && !is_lazy_image(node) {
+            continue;
+        }
+
+        for attr in &node.attrs() {
+            if matches!(attr.name.local.as_ref(), "src" | "srcset" | "alt") {
+                continue;
+            }
+
+            let mut copy_to: Option<&str> = None;
+            let val = attr.value.to_ascii_lowercase();
+            if is_img_attr_to_srcset(&val) {
+                copy_to = Some("srcset");
+            } else if is_img_attr_to_src(&val) {
+                copy_to = Some("src");
+            }
+
+            if let Some(copy_to) = copy_to {
+                //if this is an img or picture, set the attribute directly
+                let Some(tag_name) = node.node_name() else {
+                    continue;
+                };
+                if matches!(tag_name.as_ref(), "img" | "picture") {
+                    node.set_attr(copy_to, &attr.value);
+                } else if tag_name.as_ref() == "figure" {
+                    let figure_sel = Selection::from(*node);
+                    if !figure_sel.select_matcher(&MATCHER_IMG_PICTURE).exists() {
+                        //if the item is a <figure> that does not contain an image or picture,
+                        //create one and place it inside the figure
+                        //see the nytimes-3 testcase for an example
+                        let img_node = node.tree.new_element("img");
+                        img_node.set_attr(copy_to, &attr.value);
+                        node.append_child(&img_node.id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn clean_headers(sel: &Selection, flags: &FlagSet<GrabFlags>) {
+    for h_node in sel.select_matcher(&MATCHER_HEADING).nodes() {
+        if get_class_weight(h_node, flags.contains(GrabFlags::WeightClasses)) < 0.0 {
+            h_node.remove_from_parent();
+        }
+    }
+}
+
+pub(crate) fn prep_article(article_node: &NodeRef, flags: &FlagSet<GrabFlags>, cfg: &Config) {
+    let article_sel = Selection::from(*article_node);
+    // *Important*: Currently the order of calling 'cleaning' functions is matters.
+    // It shouldn't be but it is.
+
+    // Clean out elements with little content that have "share" in their id/class combinations from final top candidates,
+    // which means we don't remove the top candidates even they have "share".
+    remove_share_elements(&article_sel, cfg.char_threshold);
+
+    // Check for data tables before we continue, to avoid removing items in
+    // those tables, which will often be isolated even though they're
+    // visually linked to other content-ful elements (text, images, etc.).
+    mark_data_tables(&article_sel);
+
+    fix_lazy_images(&article_sel);
+
+    clean_conditionally(&article_sel, &MATCHER_FORM_FIELDSET, flags);
+
+    // Clean out junk from the article content
+    clean(&article_sel);
+    clean_math(&article_sel);
+
+    clean_headers(&article_sel, flags);
+
+    // Do these last as the previous stuff may have removed junk
+    // that will affect these
+    clean_conditionally(&article_sel, &MATCHER_TABLE_UL_DIV, flags);
+
+    // replace H1 with H2 as H1 should be only title that is displayed separately
+    article_sel.select("h1").rename("h2");
+    // remove all presentational attributes
+    clean_styles(article_node);
+
+    // Remove extra paragraphs
+
+    // At this point, nasty iframes have been removed; only embedded video
+    // ones remain.
+    for p_node in article_sel.select("p").nodes() {
+        let p_sel = Selection::from(*p_node);
+        let content_el_count = p_sel.select_matcher(&MATCHER_IMG_EMBEDS).length();
+        if content_el_count == 0 && p_node.normalized_char_count() == 0 {
+            p_sel.remove();
+        }
+    }
+
+    for br_node in article_node.find_descendants("br") {
+        if let Some(next_node) = br_node.next_element_sibling() {
+            if next_node.has_name("p") {
+                br_node.remove_from_parent();
+            }
+        }
+    }
+
+    fix_single_cell_tables(&article_sel);
+}
+
+fn fix_single_cell_tables(sel: &Selection) {
+    // Remove single-cell tables
+    for table_node in sel.select("table").nodes() {
+        let tbody = single_child_element(table_node, "tbody").unwrap_or(*table_node);
+
+        if let Some(row) = single_child_element(&tbody, "tr") {
+            if let Some(cell) = single_child_element(&row, "td") {
+                let new_name = if cell.children_it(false).all(|c| is_phrasing_content(&c)) {
+                    "p"
+                } else {
+                    "div"
+                };
+                cell.rename(new_name);
+                table_node.replace_with(&cell);
+            }
+        }
+    }
+}
+
+fn remove_share_elements(root_sel: &Selection, share_element_threshold: usize) {
+    for child in root_sel.select("*[class],*[id]").nodes() {
+        let mut has_share_sign: bool;
+        {
+            let Some(el) = child.element_ref() else {
+                continue;
+            };
+            let attrs = &el.attrs;
+            has_share_sign = attrs
+                .iter()
+                .find(|a| &a.name.local == "class")
+                .is_some_and(|s| contains_share_elements(&s.value));
+            if !has_share_sign {
+                has_share_sign = attrs
+                    .iter()
+                    .find(|a| &a.name.local == "id")
+                    .is_some_and(|s| contains_share_elements(&s.value));
+            }
+        }
+
+        if has_share_sign && child.normalized_char_count() < share_element_threshold {
+            child.remove_from_parent();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use dom_query::Document;
+
+    use super::*;
+
+    #[test]
+    fn test_text_density_cmp() {
+        // Reference: the real helper short-circuits instead of computing the full density.
+        let density = |node: &NodeRef, char_count: usize| {
+            let children: usize = Selection::from(*node)
+                .select_matcher(&MATCHER_UL_OL)
+                .nodes()
+                .iter()
+                .map(|n| n.normalized_char_count())
+                .sum();
+            if char_count == 0 || children == 0 {
+                0.0
+            } else {
+                children as f32 / char_count as f32
+            }
+        };
+
+        let doc = Document::from(
+            r#"<div id="list"><ul><li>one two</li></ul></div>
+               <div id="mixed"><ul><li>one two</li></ul>three four</div>
+               <div id="text">plain text</div>
+               <div id="exact"><ul><li>abcdefghi</li></ul>x</div>
+               <div id="empty"></div>"#,
+        );
+
+        for node in doc.select("div").nodes() {
+            let char_count = node.normalized_char_count();
+            let density = density(node, char_count);
+            for threshold in [0.0, 0.1, 0.5, 0.9, 1.0, 2.0] {
+                for ordering in [Ordering::Less, Ordering::Greater] {
+                    assert_eq!(
+                        text_density_cmp(node, &MATCHER_UL_OL, char_count, threshold, ordering),
+                        density.partial_cmp(&threshold) == Some(ordering),
+                        "id={:?}, density={density}, threshold={threshold}, ordering={ordering:?}",
+                        node.attr_or("id", "")
+                    );
+                }
+            }
+        }
+
+        let list = doc.select("#list").nodes()[0];
+        let mixed = doc.select("#mixed").nodes()[0];
+        let exact = doc.select("#exact").nodes()[0];
+        assert!(text_density_cmp(
+            &list,
+            &MATCHER_UL_OL,
+            list.normalized_char_count(),
+            0.9,
+            Ordering::Greater
+        ));
+        assert!(!text_density_cmp(
+            &mixed,
+            &MATCHER_UL_OL,
+            mixed.normalized_char_count(),
+            0.9,
+            Ordering::Greater
+        ));
+        // Density is exactly 0.9: neither `<` nor `>` holds.
+        let exact_char_count = exact.normalized_char_count();
+        assert_eq!(
+            density(&exact, exact_char_count).partial_cmp(&0.9),
+            Some(Ordering::Equal)
+        );
+        for ordering in [Ordering::Less, Ordering::Greater] {
+            assert!(!text_density_cmp(
+                &exact,
+                &MATCHER_UL_OL,
+                exact_char_count,
+                0.9,
+                ordering
+            ));
+        }
+    }
+
+    #[test]
+    fn test_fix_lazy_images() {
+        struct TestCase<'a> {
+            fragment: String,
+            expected_attr_name: &'a str,
+        }
+
+        // Long enough to survive the base64 length check in `fix_lazy_images`.
+        let stub = format!("data:image/gif;base64,{}", "R0lGODlhAQABAAAA".repeat(9));
+        let real = "https://example.com/real.jpg";
+        let cases = [
+            // `loading="lazy"` alone is no sign of a placeholder: wikipedia sets it on
+            // images with a working `src`, next to a `resource` attribute pointing at
+            // the file description page.
+            TestCase {
+                fragment: format!(r#"loading="lazy" src="{real}" resource="./File:Real.jpg""#),
+                expected_attr_name: "src",
+            },
+            TestCase {
+                fragment: format!(r#"loading="lazy" srcset="{real}" resource="./File:Real.jpg""#),
+                expected_attr_name: "srcset",
+            },
+            // With no usable address of its own the hint still works.
+            TestCase {
+                fragment: format!(r#"loading="lazy" src="{stub}" data-src="{real}""#),
+                expected_attr_name: "src",
+            },
+            TestCase {
+                fragment: format!(r#"loading="lazy" srcset="{stub}" data-srcset="{real}""#),
+                expected_attr_name: "src",
+            },
+            TestCase {
+                fragment: format!(r#"loading="lazy" src=" {stub}" data-src="{real}""#),
+                expected_attr_name: "src",
+            },
+            // Whitespace is not an address either.
+            TestCase {
+                fragment: format!(r#"loading="lazy" src="   " data-src="{real}""#),
+                expected_attr_name: "src",
+            },
+            TestCase {
+                fragment: format!(r#"loading="lazy" srcset="   " data-srcset="{real}""#),
+                expected_attr_name: "src",
+            },
+            // A `lazy` class means a placeholder even when `src` looks usable.
+            TestCase {
+                fragment: format!(
+                    r#"class="lazyload" src="https://example.com/ph.png" data-src="{real}""#
+                ),
+                expected_attr_name: "src",
+            },
+            // No lazy hint at all: the address stays as it is.
+            TestCase {
+                fragment: format!(r#"src="{real}" data-src="https://example.com/other.jpg""#),
+                expected_attr_name: "src",
+            },
+        ];
+
+        for case in cases {
+            let attrs = case.fragment;
+            let contents = format!("<html><body><img {attrs}></body></html>");
+            let doc = Document::from(contents.as_str());
+            fix_lazy_images(&doc.select("body"));
+            assert_eq!(
+                doc.select("img")
+                    .attr_or(case.expected_attr_name, "")
+                    .to_string(),
+                real,
+                "<img {attrs}>"
+            );
+        }
+    }
+
+    #[test]
+    fn test_should_clean_conditionally_keeps_pre() {
+        let flags = FlagSet::full();
+        for class in ["scroll-mt-2", "md:hidden", "overflow-hidden"] {
+            let html = format!(r#"<div class="{class}"><pre><code>cargo test</code></pre></div>"#);
+            let doc = Document::from(html.as_str());
+            let pre_wrapper = doc.select("div").nodes()[0];
+            assert!(
+                !should_clean_conditionally(&pre_wrapper, &flags),
+                "class={class:?} with <pre>"
+            );
+
+            let html =
+                format!(r##"<div class="{class}"><a href="#">one</a><a href="#">two</a></div>"##);
+            let doc = Document::from(html.as_str());
+            let clutter = doc.select("div").nodes()[0];
+            assert!(
+                should_clean_conditionally(&clutter, &flags),
+                "class={class:?} without <pre>"
+            );
+        }
+    }
+
+    #[test]
+    fn test_textish_text() {
+        let cases = [
+            ("direct text", false),
+            ("<div></div>", false),
+            ("<p>text</p>", true),
+            ("<span>text</span>", true),
+            ("<span><p>text</p></span>", true),
+            (r##"<a href="#">text</a>"##, false),
+            ("<p> </p>", false),
+        ];
+
+        for (inner, expected) in cases {
+            let html = format!(r#"<div id="node">{inner}</div>"#);
+            let doc = Document::from(html.as_str());
+            let node = doc.select("#node").nodes()[0];
+            assert_eq!(
+                text_density_cmp(&node, &MATCHER_TEXTISH, 1, 0.0, Ordering::Greater),
+                expected,
+                "inner={inner:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_colspan_values() {
+        let cases = [
+            // zero is clamped to 1
+            ("0", 2),
+            //oversized decimal is clamped
+            ("99999999999999999999999", 1001),
+            //usize::MAX is clamped
+            (&usize::MAX.to_string(), 1001),
+            // negative values give 1 colspan
+            ("-1", 2),
+            // bad value gives 1 colspan
+            ("abc", 2),
+        ];
+
+        for (case, col_count) in cases {
+            let html = format!(
+                r#"<table><tr><td colspan="{case}">a</td><td colspan="1">b</td></tr></table>"#
+            );
+            let doc = Document::from(html);
+            assert_eq!(get_row_and_col_count(&doc.select("table")), (1, col_count));
+        }
+    }
+}

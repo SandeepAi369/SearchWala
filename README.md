@@ -15,7 +15,7 @@ agree on, and answers with citations you can click, using any LLM or none.
 
 [![Release](https://img.shields.io/github/v/release/SandeepAi369/SearchWala?label=release&color=blue)](https://github.com/SandeepAi369/SearchWala/releases/latest)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?logo=rust)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-307_passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-323_passing-brightgreen)](#development)
 [![License](https://img.shields.io/badge/license-Apache%202.0-purple)](./LICENSE)
 [![Author](https://img.shields.io/badge/author-SandeepCH-0A7CFF?logo=github)](https://github.com/SandeepAi369)
 [![Stars](https://img.shields.io/github/stars/SandeepAi369/SearchWala?style=social)](https://github.com/SandeepAi369/SearchWala/stargazers)
@@ -30,11 +30,16 @@ agree on, and answers with citations you can click, using any LLM or none.
 
 - **Consensus, not one index.** Pages rank by how many *independent* search
   indexes agree on them. Seven Bing-derived engines count as one vote.
-- **It reads the pages.** Full text is extracted (trafilatura + Readability +
-  a deep reader for Next.js, Shadow DOM and paywall-teaser pages), not just
-  snippets.
-- **Answers you can check.** Every `[n]` links to the exact source the model
-  saw, and each citation is checked against the cited text.
+- **It reads the pages.** Full text and rich metadata (`published`, `modified`,
+  `byline`, `site_name`, normalized `language`, Markdown tables & LaTeX) are
+  extracted (`dom_smoothie` formatted primary + `rs-trafilatura` second opinion
+  + a deep reader for Next.js, Sandpack, Shadow DOM and hydration payloads),
+  with pre-scrape triage skipping off-topic or stale URLs before fetching.
+- **Answers you can check.** LLM-first semantic query understanding, 100%
+  algorithmic official-domain matching (zero hardcoded site lists), chunk-level
+  inline date freshness, and pre-LLM sentence pruning & deduplication pack more
+  verified facts into fewer tokens. Every `[n]` links to the exact source the
+  model saw, and each citation is checked against the cited text.
 - **Works without an LLM.** You still get ranked sources and a quick answer
   quoted word for word from them.
 - **Your chats, saved on your machine.** Every conversation is kept locally
@@ -182,13 +187,13 @@ branch. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 - **[Full reference](docs/REFERENCE.md):** all 17 engines, the stealth TLS
   layer, extraction benchmarks, ranking, every API endpoint and every setting
-- **[Engineering log](docs/IMPLEMENTATION_BLUEPRINT.md):** the v7 → v8.1
+- **[Engineering log](docs/IMPLEMENTATION_BLUEPRINT.md):** the v7 → v8.2
   rebuild, bug by bug
 
 ## Development
 
 ```bash
-cargo test --release                          # 307 unit tests
+cargo test --release                          # 323 unit tests
 cargo run --release --bin intent_probe        # intent accuracy: 50/50
 cargo run --release --bin eval -- --limit 20 --focus fast   # retrieval quality
 cargo run --release --bin highlight_probe     # quick answers on 45 saved real queries

@@ -118,7 +118,9 @@ pub fn parse_startpage_html(html: &str, rank_base: usize) -> Vec<RawSearchResult
     // Startpage uses hashed CSS suffixes (`result-link css-xyz123`), so we
     // match on the stable substring rather than an exact class.
     for el in document.select(&SEL_RESULT) {
-        let Some(link) = el.select(&SEL_LINK).next() else { continue };
+        let Some(link) = el.select(&SEL_LINK).next() else {
+            continue;
+        };
         let href = match link.value().attr("href") {
             Some(h) if h.starts_with("http") && !h.contains("startpage.com") => h.to_string(),
             _ => continue,
@@ -166,7 +168,10 @@ mod tests {
         </body></html>"#;
         let r = parse_startpage_html(html, 0);
         assert_eq!(r.len(), 1);
-        assert!(!r[0].snippet.is_empty(), "v7.0 always returned an empty snippet");
+        assert!(
+            !r[0].snippet.is_empty(),
+            "v7.0 always returned an empty snippet"
+        );
         assert!(r[0].snippet.contains("snippet text"));
         assert_eq!(r[0].rank_position, 1);
     }

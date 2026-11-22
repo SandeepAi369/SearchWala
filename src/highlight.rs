@@ -33,8 +33,34 @@ const MIN_SCORE: f64 = 2.0;
 
 /// Hindi function words: not content terms.
 const HI_STOPWORDS: &[&str] = &[
-    "की", "का", "के", "है", "हैं", "क्या", "में", "और", "को", "से", "पर", "एक", "यह", "वह", "था", "थे", "हो", "कौन", "कैसे", "कब", "कहाँ", "क्यों", "ने",
-    "किसने", "कहां", "कितना", "कितने", "कितनी",
+    "की",
+    "का",
+    "के",
+    "है",
+    "हैं",
+    "क्या",
+    "में",
+    "और",
+    "को",
+    "से",
+    "पर",
+    "एक",
+    "यह",
+    "वह",
+    "था",
+    "थे",
+    "हो",
+    "कौन",
+    "कैसे",
+    "कब",
+    "कहाँ",
+    "क्यों",
+    "ने",
+    "किसने",
+    "कहां",
+    "कितना",
+    "कितने",
+    "कितनी",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -98,7 +124,12 @@ fn sentences(text: &str) -> Vec<String> {
 }
 
 fn ends_with_abbreviation(s: &str) -> bool {
-    let tail = s.trim_end_matches('.').rsplit(' ').next().unwrap_or("").to_ascii_lowercase();
+    let tail = s
+        .trim_end_matches('.')
+        .rsplit(' ')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     matches!(tail.as_str(), "e.g" | "i.e" | "vs" | "mr" | "mrs" | "dr" | "st" | "approx" | "no" | "fig" | "etc" | "jr" | "sr" | "inc" | "ltd" | "co")
         || (tail.len() == 1 && tail.chars().all(|c| c.is_ascii_alphabetic()))
         // Dotted initialisms: "U.S.", "U.K.", "Ph.D."
@@ -128,7 +159,9 @@ fn clean(s: &str) -> String {
             ']' if depth > 0 => {
                 depth -= 1;
                 let b = bracket.trim().to_ascii_lowercase();
-                let is_ref = b.chars().all(|c| c.is_ascii_digit() || c.is_whitespace() || c == ',')
+                let is_ref = b
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c.is_whitespace() || c == ',')
                     || b.starts_with("citation")
                     || b.starts_with("note")
                     || b == "edit";
@@ -156,7 +189,8 @@ fn is_emoji(c: char) -> bool {
 }
 
 static GLUED_HEADING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"[a-z](The|In|A|An|This|It|He|She|They|On|At|As|For|When|After|Before)\b").unwrap()
+    regex::Regex::new(r"[a-z](The|In|A|An|This|It|He|She|They|On|At|As|For|When|After|Before)\b")
+        .unwrap()
 });
 
 static NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -166,13 +200,17 @@ static NUMBER: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"\d[\d,]*(?:\.\d+)?").unwrap());
 
 /// Words that start capitalised names but are not names.
-const NOT_NAMES: &[&str] = &["The", "In", "A", "An", "This", "It", "On", "At", "For", "When", "After", "Before", "He", "She", "They", "His", "Her"];
+const NOT_NAMES: &[&str] = &[
+    "The", "In", "A", "An", "This", "It", "On", "At", "For", "When", "After", "Before", "He",
+    "She", "They", "His", "Her",
+];
 
 /// The person/thing most sources agree on, by surname (last word of a
 /// capitalised multi-word name), counted once per source. Redundancy across
 /// independent pages is the classic signal for factoid answers (AskMSR).
 fn consensus_name(passages: &[&SourceResult], query_lower: &str) -> Option<String> {
-    let mut by_source: std::collections::HashMap<String, std::collections::HashSet<&str>> = Default::default();
+    let mut by_source: std::collections::HashMap<String, std::collections::HashSet<&str>> =
+        Default::default();
     for p in passages {
         for m in NAME.find_iter(&p.extracted_text) {
             let words: Vec<&str> = m.as_str().split_whitespace().collect();
@@ -183,7 +221,10 @@ fn consensus_name(passages: &[&SourceResult], query_lower: &str) -> Option<Strin
             if query_lower.contains(&surname.to_lowercase()) {
                 continue; // a query word ("Telephone"), not an answer
             }
-            by_source.entry(surname.to_string()).or_default().insert(p.url.as_str());
+            by_source
+                .entry(surname.to_string())
+                .or_default()
+                .insert(p.url.as_str());
         }
     }
     by_source
@@ -196,7 +237,8 @@ fn consensus_name(passages: &[&SourceResult], query_lower: &str) -> Option<Strin
 
 /// Distinct sources containing each number.
 fn number_support(passages: &[&SourceResult]) -> std::collections::HashMap<String, usize> {
-    let mut by_number: std::collections::HashMap<String, std::collections::HashSet<&str>> = Default::default();
+    let mut by_number: std::collections::HashMap<String, std::collections::HashSet<&str>> =
+        Default::default();
     for p in passages {
         for m in NUMBER.find_iter(&p.extracted_text) {
             let n = m.as_str().replace(',', "");
@@ -210,24 +252,61 @@ fn number_support(passages: &[&SourceResult]) -> std::collections::HashMap<Strin
 
 /// Hindi question words. "क्या" also means "whether", but in a quick-answer
 /// candidate it is almost always the question being repeated.
-const HI_QUESTION_WORDS: &[&str] = &["क्या", "किसने", "कौन", "कब", "कहाँ", "कहां", "कैसे", "क्यों", "कितना", "कितने", "कितनी"];
+const HI_QUESTION_WORDS: &[&str] = &[
+    "क्या",
+    "किसने",
+    "कौन",
+    "कब",
+    "कहाँ",
+    "कहां",
+    "कैसे",
+    "क्यों",
+    "कितना",
+    "कितने",
+    "कितनी",
+];
 
 /// Article filler that announces an answer instead of giving it.
 const FILLER: &[&str] = &[
-    "in this article", "in today's article", "this article", "we will tell", "we will discuss", "let us know", "let's know",
-    "read on", "find out", "आर्टिकल", "क्या आप जानते", "आइये जानते", "आइए जानते", "जानते है", "इस लेख", "आज के इस", "जानते हैं", "बताएंगे", "बताने वाले", "जानकारी देंगे", "जानकारी देंगें",
+    "in this article",
+    "in today's article",
+    "this article",
+    "we will tell",
+    "we will discuss",
+    "let us know",
+    "let's know",
+    "read on",
+    "find out",
+    "आर्टिकल",
+    "क्या आप जानते",
+    "आइये जानते",
+    "आइए जानते",
+    "जानते है",
+    "इस लेख",
+    "आज के इस",
+    "जानते हैं",
+    "बताएंगे",
+    "बताने वाले",
+    "जानकारी देंगे",
+    "जानकारी देंगें",
 ];
 
 /// Navigation boxes, year lists, tables flattened into text: "१८९६• १९००•
 /// १९०४• …" (live, a Hindi Wikipedia navbox).
 fn looks_like_debris(s: &str) -> bool {
-    let bullets = s.chars().filter(|c| matches!(c, '•' | '|' | '·' | '►' | '»')).count();
+    let bullets = s
+        .chars()
+        .filter(|c| matches!(c, '•' | '|' | '·' | '►' | '»'))
+        .count();
     if bullets >= 3 {
         return true;
     }
     let non_space = s.chars().filter(|c| !c.is_whitespace()).count().max(1);
     let digits = s.chars().filter(|c| c.is_numeric()).count();
-    let letters = s.chars().filter(|c| c.is_alphabetic() || ('\u{0900}'..='\u{0DFF}').contains(c)).count();
+    let letters = s
+        .chars()
+        .filter(|c| c.is_alphabetic() || ('\u{0900}'..='\u{0DFF}').contains(c))
+        .count();
     digits * 3 > non_space || letters * 2 < non_space
 }
 
@@ -239,14 +318,26 @@ fn starts_with_name(s: &str) -> bool {
             let mut c = w.chars();
             c.next().is_some_and(|f| f.is_uppercase()) && c.next().is_some_and(|f| f.is_lowercase())
         })
-        && !matches!(words[0], "The" | "In" | "A" | "An" | "This" | "It" | "On" | "At" | "For")
+        && !matches!(
+            words[0],
+            "The" | "In" | "A" | "An" | "This" | "It" | "On" | "At" | "For"
+        )
 }
 
 fn is_definition_query(query: &str) -> bool {
     let q = query.trim().to_lowercase();
-    ["what is ", "what are ", "what's ", "define ", "definition of ", "meaning of ", "who is ", "who was "]
-        .iter()
-        .any(|p| q.starts_with(p))
+    [
+        "what is ",
+        "what are ",
+        "what's ",
+        "define ",
+        "definition of ",
+        "meaning of ",
+        "who is ",
+        "who was ",
+    ]
+    .iter()
+    .any(|p| q.starts_with(p))
         || q.contains(" क्या है")
         || q.contains(" कौन है")
 }
@@ -257,17 +348,39 @@ fn is_definition_query(query: &str) -> bool {
 /// fullfact.org's quote of "SARS-CoV-2 doesn't exist, and the vaccines
 /// actually destroy your immune system" as its quick answer.
 const FACT_CHECK_HOSTS: &[&str] = &[
-    "fullfact.org", "snopes.com", "politifact.com", "factcheck.org", "leadstories.com", "healthfeedback.org",
-    "sciencefeedback.co", "checkyourfact.com", "factcheck.afp.com", "altnews.in", "boomlive.in", "factly.in",
-    "vishvasnews.com", "newschecker.in", "thequint.com/news/webqoof", "misbar.com", "truthorfiction.com",
+    "fullfact.org",
+    "snopes.com",
+    "politifact.com",
+    "factcheck.org",
+    "leadstories.com",
+    "healthfeedback.org",
+    "sciencefeedback.co",
+    "checkyourfact.com",
+    "factcheck.afp.com",
+    "altnews.in",
+    "boomlive.in",
+    "factly.in",
+    "vishvasnews.com",
+    "newschecker.in",
+    "thequint.com/news/webqoof",
+    "misbar.com",
+    "truthorfiction.com",
 ];
 
 fn is_fact_check_page(url: &str, title: &str) -> bool {
     let u = url.to_ascii_lowercase();
-    let host_and_path = u.split("://").nth(1).unwrap_or(&u).trim_start_matches("www.");
+    let host_and_path = u
+        .split("://")
+        .nth(1)
+        .unwrap_or(&u)
+        .trim_start_matches("www.");
     let t = title.to_lowercase();
-    FACT_CHECK_HOSTS.iter().any(|h| host_and_path.starts_with(h))
-        || ["fact-check", "factcheck", "fact_check"].iter().any(|m| u.contains(m))
+    FACT_CHECK_HOSTS
+        .iter()
+        .any(|h| host_and_path.starts_with(h))
+        || ["fact-check", "factcheck", "fact_check"]
+            .iter()
+            .any(|m| u.contains(m))
         || t.contains("fact check")
         || t.contains("fact-check")
 }
@@ -277,49 +390,86 @@ fn is_fact_check_page(url: &str, title: &str) -> bool {
 /// "…posts claim that:" just before it.
 fn is_reported_claim(s: &str, previous: Option<&str>) -> bool {
     let lower = s.to_lowercase();
-    if ["claim:", "myth:", "fake:", "false:", "rumour:", "rumor:", "misleading:"].iter().any(|p| lower.starts_with(p)) {
+    if [
+        "claim:",
+        "myth:",
+        "fake:",
+        "false:",
+        "rumour:",
+        "rumor:",
+        "misleading:",
+    ]
+    .iter()
+    .any(|p| lower.starts_with(p))
+    {
         return true;
     }
     let first = s.chars().next();
     let last = s.trim_end_matches(['.', '!']).chars().last();
-    if first.is_some_and(|c| matches!(c, '"' | '“' | '‘' | '\'')) && last.is_some_and(|c| matches!(c, '"' | '”' | '’' | '\'')) {
+    if first.is_some_and(|c| matches!(c, '"' | '“' | '‘' | '\''))
+        && last.is_some_and(|c| matches!(c, '"' | '”' | '’' | '\''))
+    {
         return true;
     }
     // "Many people assume the seasons happen because Earth moves closer to
     // the Sun…" states the misconception; it answers only when the same
     // sentence rebuts it ("…, but there's no evidence").
     let belief = [
-        "many people assume", "many people think", "many people believe", "some people think", "some people believe",
-        "it is commonly believed", "it's commonly believed", "common misconception", "popular belief", "you may have heard",
-        "you might think", "people often think",
+        "many people assume",
+        "many people think",
+        "many people believe",
+        "some people think",
+        "some people believe",
+        "it is commonly believed",
+        "it's commonly believed",
+        "common misconception",
+        "popular belief",
+        "you may have heard",
+        "you might think",
+        "people often think",
     ];
-    let rebutted = [", but ", " however", "no evidence", "not true", "isn't true", "is false", "is a myth", "actually"];
+    let rebutted = [
+        ", but ",
+        " however",
+        "no evidence",
+        "not true",
+        "isn't true",
+        "is false",
+        "is a myth",
+        "actually",
+    ];
     if belief.iter().any(|b| lower.contains(b)) && !rebutted.iter().any(|r| lower.contains(r)) {
         return true;
     }
     previous.is_some_and(|p| {
         let p = p.to_lowercase();
         p.ends_with(':')
-            && ["claim", "post", "viral", "rumour", "rumor", "myth", "message", "video", "said", "says", "wrote"]
-                .iter()
-                .any(|w| p.contains(w))
+            && [
+                "claim", "post", "viral", "rumour", "rumor", "myth", "message", "video", "said",
+                "says", "wrote",
+            ]
+            .iter()
+            .any(|w| p.contains(w))
     })
 }
 
 /// Common English words that carry no answer content.
 const EN_STOPWORDS: &[&str] = &[
-    "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "they", "them", "their", "have", "has",
-    "had", "not", "but", "can", "will", "would", "could", "should", "its", "it's", "into", "than", "then", "there",
-    "which", "who", "what", "when", "where", "why", "how", "also", "been", "being", "more", "most", "such", "some",
-    "any", "all", "each", "other", "these", "those", "our", "your", "you", "his", "her", "she", "him", "one", "may",
-    "use", "used", "very", "just", "only", "about", "does", "did", "doe",
+    "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "they", "them",
+    "their", "have", "has", "had", "not", "but", "can", "will", "would", "could", "should", "its",
+    "it's", "into", "than", "then", "there", "which", "who", "what", "when", "where", "why", "how",
+    "also", "been", "being", "more", "most", "such", "some", "any", "all", "each", "other",
+    "these", "those", "our", "your", "you", "his", "her", "she", "him", "one", "may", "use",
+    "used", "very", "just", "only", "about", "does", "did", "doe",
 ];
 
 /// Content words of `lower` that are not query terms: what the sentence adds.
 fn new_words<'a>(lower: &'a str, stems: &[String]) -> Vec<&'a str> {
     lower
         .split(|c: char| !crate::util::is_word_char(c))
-        .filter(|w| w.chars().count() >= 3 && !EN_STOPWORDS.contains(w) && !HI_STOPWORDS.contains(w))
+        .filter(|w| {
+            w.chars().count() >= 3 && !EN_STOPWORDS.contains(w) && !HI_STOPWORDS.contains(w)
+        })
         .filter(|w| !stems.iter().any(|st| w.starts_with(st.as_str())))
         .collect()
 }
@@ -330,8 +480,14 @@ const LEAD_CHARS: usize = 700;
 
 /// The opening of the best-ranked extracted pages (by selection rank), as
 /// passages. Snippet fallbacks are skipped: they are not the page.
-pub fn leads(sources: &[SourceResult], rank_of: impl Fn(&str) -> Option<usize>) -> Vec<SourceResult> {
-    let mut v: Vec<&SourceResult> = sources.iter().filter(|s| s.extractor != "snippet").collect();
+pub fn leads(
+    sources: &[SourceResult],
+    rank_of: impl Fn(&str) -> Option<usize>,
+) -> Vec<SourceResult> {
+    let mut v: Vec<&SourceResult> = sources
+        .iter()
+        .filter(|s| s.extractor != "snippet")
+        .collect();
     v.sort_by_key(|s| rank_of(&s.url).unwrap_or(usize::MAX));
     v.into_iter()
         .take(LEAD_PAGES)
@@ -344,7 +500,10 @@ pub fn leads(sources: &[SourceResult], rank_of: impl Fn(&str) -> Option<usize>) 
                 .filter(|l| l.chars().count() >= 60)
                 .collect::<Vec<_>>()
                 .join(" ");
-            SourceResult { extracted_text: crate::util::truncate_chars(&body, LEAD_CHARS).to_string(), ..s.clone() }
+            SourceResult {
+                extracted_text: crate::util::truncate_chars(&body, LEAD_CHARS).to_string(),
+                ..s.clone()
+            }
         })
         .filter(|s| !s.extracted_text.is_empty())
         .collect()
@@ -353,11 +512,16 @@ pub fn leads(sources: &[SourceResult], rank_of: impl Fn(&str) -> Option<usize>) 
 /// Do two consecutive query terms appear within a few words, in order?
 /// ("invented the telephone" in "who invented the telephone".)
 fn has_phrase(sentence_lower: &str, stems: &[String]) -> bool {
-    let words: Vec<&str> = sentence_lower.split(|c: char| !crate::util::is_word_char(c)).filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = sentence_lower
+        .split(|c: char| !crate::util::is_word_char(c))
+        .filter(|w| !w.is_empty())
+        .collect();
     stems.windows(2).any(|pair| {
         words.iter().enumerate().any(|(i, w)| {
             w.starts_with(pair[0].as_str())
-                && words[i + 1..words.len().min(i + 4)].iter().any(|n| n.starts_with(pair[1].as_str()))
+                && words[i + 1..words.len().min(i + 4)]
+                    .iter()
+                    .any(|n| n.starts_with(pair[1].as_str()))
         })
     })
 }
@@ -365,10 +529,20 @@ fn has_phrase(sentence_lower: &str, stems: &[String]) -> bool {
 /// Pick the best answer sentence(s), or None when no sentence covers enough
 /// of the query to be worth showing. `leads` are page openings (see
 /// [`leads`]); their first sentences get a bonus.
-pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult], leads: &[SourceResult]) -> Option<Highlight> {
+pub fn extract(
+    query: &str,
+    intel: &QueryIntelligence,
+    results: &[SourceResult],
+    leads: &[SourceResult],
+) -> Option<Highlight> {
     let terms: Vec<String> = crate::ranking::query_terms(query)
         .into_iter()
-        .filter(|t| !matches!(t.as_str(), "today" | "now" | "latest" | "current" | "explain"))
+        .filter(|t| {
+            !matches!(
+                t.as_str(),
+                "today" | "now" | "latest" | "current" | "explain"
+            )
+        })
         .filter(|t| !HI_STOPWORDS.contains(&t.as_str()))
         .collect();
     if terms.is_empty() {
@@ -376,22 +550,48 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
     }
     let stems: Vec<String> = terms.iter().map(|t| stem(t)).collect();
     let wants_number = matches!(intel.intent, QueryIntent::Factual | QueryIntent::Temporal)
-        || ["how many", "how much", "how far", "how long", "how old", "when ", "population", "price", "temperature"]
-            .iter()
-            .any(|p| query.to_lowercase().contains(p));
+        || [
+            "how many",
+            "how much",
+            "how far",
+            "how long",
+            "how old",
+            "when ",
+            "population",
+            "price",
+            "temperature",
+        ]
+        .iter()
+        .any(|p| query.to_lowercase().contains(p));
     let definitional = is_definition_query(query);
     let who_question = query.trim().to_lowercase().starts_with("who ");
 
     let query_lower = query.trim().to_lowercase();
-    let all_passages: Vec<&SourceResult> = leads.iter().chain(results.iter().take(PASSAGES * 2)).collect();
-    let answer_name = if who_question { consensus_name(&all_passages, &query_lower) } else { None };
-    let numbers = if wants_number { number_support(&all_passages) } else { Default::default() };
+    let all_passages: Vec<&SourceResult> = leads
+        .iter()
+        .chain(results.iter().take(PASSAGES * 2))
+        .collect();
+    let answer_name = if who_question {
+        consensus_name(&all_passages, &query_lower)
+    } else {
+        None
+    };
+    let numbers = if wants_number {
+        number_support(&all_passages)
+    } else {
+        Default::default()
+    };
     // Words per distinct page, for corroboration: an answer's new words show
     // up on other independent pages; a quoted claim or an off-topic aside
     // usually doesn't.
     let mut page_words: Vec<(&str, std::collections::HashSet<String>)> = Vec::new();
     for p in &all_passages {
-        let words = p.extracted_text.to_lowercase().split(|c: char| !crate::util::is_word_char(c)).map(stem).collect::<Vec<_>>();
+        let words = p
+            .extracted_text
+            .to_lowercase()
+            .split(|c: char| !crate::util::is_word_char(c))
+            .map(stem)
+            .collect::<Vec<_>>();
         match page_words.iter_mut().find(|(u, _)| *u == p.url.as_str()) {
             Some((_, set)) => set.extend(words),
             None => page_words.push((p.url.as_str(), words.into_iter().collect())),
@@ -400,17 +600,28 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
     // The query restated (minus a trailing "?") — a sentence that repeats it
     // is usually announcing an answer, not giving one.
     let query_phrase: String = query_lower.trim_end_matches(['?', '।']).trim().to_string();
-    let question_form = ["what ", "who ", "how ", "why ", "when ", "where ", "which ", "is ", "are ", "can ", "does ", "do "]
-        .iter()
-        .any(|w| query_lower.starts_with(w))
-        || ["क्या", "कौन", "कैसे", "क्यों", "कब", "कहाँ"].iter().any(|w| query_lower.contains(w));
+    let question_form = [
+        "what ", "who ", "how ", "why ", "when ", "where ", "which ", "is ", "are ", "can ",
+        "does ", "do ",
+    ]
+    .iter()
+    .any(|w| query_lower.starts_with(w))
+        || ["क्या", "कौन", "कैसे", "क्यों", "कब", "कहाँ"]
+            .iter()
+            .any(|w| query_lower.contains(w));
 
     // Candidates: (passage, rank position, is_lead).
     let candidates: Vec<(&SourceResult, usize, bool)> = leads
         .iter()
         .enumerate()
         .map(|(i, r)| (r, i, true))
-        .chain(results.iter().take(PASSAGES).enumerate().map(|(i, r)| (r, i, false)))
+        .chain(
+            results
+                .iter()
+                .take(PASSAGES)
+                .enumerate()
+                .map(|(i, r)| (r, i, false)),
+        )
         .collect();
     let mut best: Option<(f64, usize, usize, Vec<String>)> = None;
     for (ci, &(r, ri, is_lead)) in candidates.iter().enumerate() {
@@ -429,7 +640,9 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
             // heading "Why do noise-cancelling headphones work well on
             // airplane hum but not on people talking?" matched every query
             // word and beat the sentences that explain it.
-            if s.trim_end_matches(['"', '”', '’', '\'', ')']).ends_with('?') {
+            if s.trim_end_matches(['"', '”', '’', '\'', ')'])
+                .ends_with('?')
+            {
                 continue;
             }
             if is_reported_claim(s, si.checked_sub(1).map(|i| sents[i].as_str())) {
@@ -441,7 +654,9 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
             if added.is_empty() {
                 continue;
             }
-            let matched: Vec<usize> = (0..stems.len()).filter(|&i| lower.contains(stems[i].as_str())).collect();
+            let matched: Vec<usize> = (0..stems.len())
+                .filter(|&i| lower.contains(stems[i].as_str()))
+                .collect();
             let coverage = matched.len() as f64 / stems.len() as f64;
             if coverage < MIN_COVERAGE {
                 continue;
@@ -451,9 +666,18 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
                 score += 0.8;
             }
             if definitional
-                && [" is a ", " is an ", " is the ", " are ", " refers to ", " means ", " was a ", " was an "]
-                    .iter()
-                    .any(|p| lower.contains(p))
+                && [
+                    " is a ",
+                    " is an ",
+                    " is the ",
+                    " are ",
+                    " refers to ",
+                    " means ",
+                    " was a ",
+                    " was an ",
+                ]
+                .iter()
+                .any(|p| lower.contains(p))
             {
                 score += 0.6;
             }
@@ -473,20 +697,30 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
                 score += 0.25 * support.saturating_sub(1).min(4) as f64;
             }
             // Questions and restatements of the question are not answers.
-            if s.contains('?') || (question_form && query_phrase.chars().count() >= 8 && lower.contains(&query_phrase)) {
+            if s.contains('?')
+                || (question_form
+                    && query_phrase.chars().count() >= 8
+                    && lower.contains(&query_phrase))
+            {
                 score -= 1.0;
             }
             // A Hindi sentence holding the query's question word asks it
             // ("ताजमहल किसने बनवाया था / … (Taj Mahal Kisne Banaya Tha)");
             // the answer ("शाहजहाँ ने…") doesn't contain it.
-            if HI_QUESTION_WORDS.iter().any(|w| query_lower.contains(w) && s.contains(w)) {
+            if HI_QUESTION_WORDS
+                .iter()
+                .any(|w| query_lower.contains(w) && s.contains(w))
+            {
                 continue;
             }
             if FILLER.iter().any(|f| lower.contains(f)) {
                 score -= 1.5;
             }
             // Hindi definitional answer: "… नई दिल्ली है।"
-            if definitional && (s.ends_with("है।") || s.ends_with("हैं।") || s.ends_with("था।")) && !s.contains("क्या") {
+            if definitional
+                && (s.ends_with("है।") || s.ends_with("हैं।") || s.ends_with("था।"))
+                && !s.contains("क्या")
+            {
                 score += 0.4;
             }
             // A heading glued onto the sentence ("Legal HeadachesThe inventor").
@@ -500,9 +734,20 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
                 score += 1.2;
             }
             // Opens by pointing back at a sentence the reader cannot see.
-            if ["because of this", "this ", "these ", "that ", "it ", "they ", "thus", "therefore", "however", "as a result"]
-                .iter()
-                .any(|p| lower.starts_with(p))
+            if [
+                "because of this",
+                "this ",
+                "these ",
+                "that ",
+                "it ",
+                "they ",
+                "thus",
+                "therefore",
+                "however",
+                "as a result",
+            ]
+            .iter()
+            .any(|p| lower.starts_with(p))
             {
                 score -= 0.5;
             }
@@ -518,21 +763,35 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
                 score += 0.8;
             }
             // Navigation, calculators, cookie text.
-            if ["click", "cookie", "subscribe", "sign up", "calculator", "enter the"].iter().any(|p| lower.contains(p)) {
+            if [
+                "click",
+                "cookie",
+                "subscribe",
+                "sign up",
+                "calculator",
+                "enter the",
+            ]
+            .iter()
+            .any(|p| lower.contains(p))
+            {
                 score -= 1.0;
             }
             // A page about the query beats a page that mentions it: the
             // sentence "...100 °C, the boiling point of water at sea level"
             // came from "Bain-marie" before this, over "Boiling point".
             let title = r.title.to_lowercase();
-            let title_cov = stems.iter().filter(|s| title.contains(s.as_str())).count() as f64 / stems.len() as f64;
+            let title_cov = stems.iter().filter(|s| title.contains(s.as_str())).count() as f64
+                / stems.len() as f64;
             score += 1.5 * title_cov;
             // Independent engines agreeing on the page.
             let engines = r.engine.split(',').filter(|e| !e.is_empty()).count();
             score += 0.15 * (engines.saturating_sub(1).min(3)) as f64;
             // No closing punctuation: a heading or menu run the extractor
             // joined into one line ("बना थाताजमहल किसने बनवाया था…").
-            if !s.trim_end().ends_with(['.', '!', '।', ')', '"', '”', '’', '\'']) {
+            if !s
+                .trim_end()
+                .ends_with(['.', '!', '।', ')', '"', '”', '’', '\''])
+            {
                 score -= 0.8;
             }
             // Fact-check pages quote the claims they rebut; their rebuttals
@@ -548,7 +807,9 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
                     .iter()
                     .filter(|w| {
                         let w = stem(w);
-                        page_words.iter().any(|(u, set)| *u != r.url.as_str() && set.contains(&w))
+                        page_words
+                            .iter()
+                            .any(|(u, set)| *u != r.url.as_str() && set.contains(&w))
                     })
                     .count();
                 score += 0.8 * (corroborated as f64 / added.len() as f64 - 0.5);
@@ -580,7 +841,9 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
                 && next.chars().next().is_some_and(|c| !c.is_lowercase())
                 && !next.contains('?')
                 && !FILLER.iter().any(|f| next_lower.contains(f))
-                && !HI_QUESTION_WORDS.iter().any(|w| query_lower.contains(w) && next.contains(w))
+                && !HI_QUESTION_WORDS
+                    .iter()
+                    .any(|w| query_lower.contains(w) && next.contains(w))
                 && !is_reported_claim(next, Some(text.as_str()))
             {
                 text = format!("{text} {next}");
@@ -590,20 +853,38 @@ pub fn extract(query: &str, intel: &QueryIntelligence, results: &[SourceResult],
     // Index into `results` for the UI; a lead's page may not have a ranked
     // passage, in which case the first passage from the same URL (or 0).
     let result_index = results.iter().position(|x| x.url == r.url).unwrap_or(0);
-    Some(Highlight { text, terms: found, url: r.url.clone(), title: r.title.clone(), result_index })
+    Some(Highlight {
+        text,
+        terms: found,
+        url: r.url.clone(),
+        title: r.title.clone(),
+        result_index,
+    })
 }
 
 /// Save the highlight's exact inputs and output, so a scoring change can be
 /// replayed offline against real pages (`cargo run --bin highlight_probe`)
 /// instead of judged on whatever the engines return that day. Opt-in via
 /// `DUMP_HIGHLIGHT_DIR`.
-pub fn dump_case(query: &str, intel_query: &str, results: &[SourceResult], leads: &[SourceResult], got: Option<&Highlight>) {
-    let Ok(dir) = std::env::var("DUMP_HIGHLIGHT_DIR") else { return };
+pub fn dump_case(
+    query: &str,
+    intel_query: &str,
+    results: &[SourceResult],
+    leads: &[SourceResult],
+    got: Option<&Highlight>,
+) {
+    let Ok(dir) = std::env::var("DUMP_HIGHLIGHT_DIR") else {
+        return;
+    };
     if dir.trim().is_empty() {
         return;
     }
     let _ = std::fs::create_dir_all(&dir);
-    let slug: String = query.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).take(60).collect();
+    let slug: String = query
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .take(60)
+        .collect();
     let case = serde_json::json!({
         "query": query,
         "intel_query": intel_query,
@@ -611,7 +892,10 @@ pub fn dump_case(query: &str, intel_query: &str, results: &[SourceResult], leads
         "leads": leads,
         "highlight": got.map(|h| &h.text),
     });
-    let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{slug}.json")), case.to_string());
+    let _ = std::fs::write(
+        std::path::Path::new(&dir).join(format!("{slug}.json")),
+        case.to_string(),
+    );
 }
 
 #[cfg(test)]
@@ -668,23 +952,48 @@ mod tests {
 
     #[test]
     fn leads_follow_selection_rank_and_skip_snippets() {
-        let mut snippet = src("https://c.test/", "C", &"snippet text that is long enough to count as a line of content. ".repeat(2));
+        let mut snippet = src(
+            "https://c.test/",
+            "C",
+            &"snippet text that is long enough to count as a line of content. ".repeat(2),
+        );
         snippet.extractor = "snippet";
         let pages = vec![
-            src("https://b.test/", "B", &format!("B title\n{}", "Second ranked page opening sentence with enough characters to count. ".repeat(2))),
-            src("https://a.test/", "A", &"First ranked page opening sentence with enough characters to count. ".repeat(2)),
+            src(
+                "https://b.test/",
+                "B",
+                &format!(
+                    "B title\n{}",
+                    "Second ranked page opening sentence with enough characters to count. "
+                        .repeat(2)
+                ),
+            ),
+            src(
+                "https://a.test/",
+                "A",
+                &"First ranked page opening sentence with enough characters to count. ".repeat(2),
+            ),
             snippet,
         ];
-        let rank = |u: &str| match u { "https://a.test/" => Some(0), "https://b.test/" => Some(1), _ => Some(2) };
+        let rank = |u: &str| match u {
+            "https://a.test/" => Some(0),
+            "https://b.test/" => Some(1),
+            _ => Some(2),
+        };
         let l = leads(&pages, rank);
         assert_eq!(l.len(), 2);
         assert_eq!(l[0].url, "https://a.test/");
-        assert!(!l[1].extracted_text.starts_with("B title"), "short title line skipped");
+        assert!(
+            !l[1].extracted_text.starts_with("B title"),
+            "short title line skipped"
+        );
     }
 
     #[test]
     fn splitter_handles_glued_sentences_and_initialisms() {
-        let s = sentences("Bell won the patent.In 1887, the U.S. government sued to annul it. Done here.");
+        let s = sentences(
+            "Bell won the patent.In 1887, the U.S. government sued to annul it. Done here.",
+        );
         assert_eq!(s[0], "Bell won the patent.");
         assert_eq!(s[1], "In 1887, the U.S. government sued to annul it.");
     }
@@ -722,17 +1031,37 @@ mod tests {
             src("https://b.test/", "नई दिल्ली", "नई दिल्ली भारत की राजधानी है। यह दिल्ली राष्ट्रीय राजधानी क्षेत्र का हिस्सा है।"),
         ];
         let h = extract(q, &analyze_query(q), &results, &[]).unwrap();
-        assert!(h.text.starts_with("नई दिल्ली भारत की राजधानी है"), "{}", h.text);
+        assert!(
+            h.text.starts_with("नई दिल्ली भारत की राजधानी है"),
+            "{}",
+            h.text
+        );
     }
 
     #[test]
     fn numbers_confirmed_by_several_sources_win() {
         let q = "boiling point of water at sea level";
         let results = vec![
-            src("https://a.test/", "Water facts", "At sea level the boiling point of water is 102 °C according to one blog."),
-            src("https://b.test/", "Boiling point", "The boiling point of water at sea level is 100 °C (212 °F)."),
-            src("https://c.test/", "Physics", "Water boils at 100 °C under standard pressure."),
-            src("https://d.test/", "Cooking", "Pasta water reaches 100 °C when boiling."),
+            src(
+                "https://a.test/",
+                "Water facts",
+                "At sea level the boiling point of water is 102 °C according to one blog.",
+            ),
+            src(
+                "https://b.test/",
+                "Boiling point",
+                "The boiling point of water at sea level is 100 °C (212 °F).",
+            ),
+            src(
+                "https://c.test/",
+                "Physics",
+                "Water boils at 100 °C under standard pressure.",
+            ),
+            src(
+                "https://d.test/",
+                "Cooking",
+                "Pasta water reaches 100 °C when boiling.",
+            ),
         ];
         let h = extract(q, &analyze_query(q), &results, &[]).unwrap();
         assert!(h.text.contains("100 °C"), "{}", h.text);
@@ -740,9 +1069,15 @@ mod tests {
 
     #[test]
     fn navigation_debris_is_never_a_highlight() {
-        assert!(looks_like_debris("१८९६• १९००• १९०४• १९०८• १९१२• १९२०• भारत ने फ़्रांस की राजधानी पैरिस में भाग लिया था।"));
-        assert!(looks_like_debris("2019 2020 2021 2022 2023 2024 2025 capital"));
-        assert!(!looks_like_debris("The boiling point of water at sea level is 100 °C (212 °F)."));
+        assert!(looks_like_debris(
+            "१८९६• १९००• १९०४• १९०८• १९१२• १९२०• भारत ने फ़्रांस की राजधानी पैरिस में भाग लिया था।"
+        ));
+        assert!(looks_like_debris(
+            "2019 2020 2021 2022 2023 2024 2025 capital"
+        ));
+        assert!(!looks_like_debris(
+            "The boiling point of water at sea level is 100 °C (212 °F)."
+        ));
         assert!(!looks_like_debris("नई दिल्ली भारत की राजधानी है।"));
     }
 
@@ -764,20 +1099,33 @@ mod tests {
             "Photosynthesis research has a long history [ 3 ]. Photosynthesis is the process by which plants use light energy to make sugars from carbon dioxide and water [ 4 ].",
         )];
         let h = extract(q, &analyze_query(q), &results, &[]).unwrap();
-        assert!(h.text.starts_with("Photosynthesis is the process"), "{}", h.text);
-        assert!(!h.text.contains("[ 4 ]"), "reference markers must be removed: {}", h.text);
+        assert!(
+            h.text.starts_with("Photosynthesis is the process"),
+            "{}",
+            h.text
+        );
+        assert!(
+            !h.text.contains("[ 4 ]"),
+            "reference markers must be removed: {}",
+            h.text
+        );
     }
 
     #[test]
     fn none_when_nothing_covers_the_query() {
         let q = "capital of France";
-        let results = vec![src("https://a.test/x", "x", "Odisha is a state in eastern India with a long coastline.")];
+        let results = vec![src(
+            "https://a.test/x",
+            "x",
+            "Odisha is a state in eastern India with a long coastline.",
+        )];
         assert!(extract(q, &analyze_query(q), &results, &[]).is_none());
     }
 
     #[test]
     fn sentence_splitter_respects_decimals_and_abbreviations() {
-        let s = sentences("Water boils at 99.97 °C at 1 atm, e.g. at sea level. Next sentence here.");
+        let s =
+            sentences("Water boils at 99.97 °C at 1 atm, e.g. at sea level. Next sentence here.");
         assert_eq!(s.len(), 2, "{s:?}");
         assert!(s[0].contains("99.97"));
     }
@@ -797,7 +1145,11 @@ mod tests {
             src("https://f.test/", "How noise-cancelling headphones work", "Noise-cancelling headphones use microphones to measure incoming sound and play an inverted wave, which cancels steady low-frequency engine hum far better than changing speech."),
         ];
         let h = extract(q, &analyze_query(q), &results, &[]).unwrap();
-        assert!(h.text.starts_with("Noise-cancelling headphones use"), "{}", h.text);
+        assert!(
+            h.text.starts_with("Noise-cancelling headphones use"),
+            "{}",
+            h.text
+        );
     }
 
     #[test]
@@ -830,10 +1182,22 @@ mod tests {
 
     #[test]
     fn reported_claims_are_recognised() {
-        assert!(is_reported_claim("Claim: 5G towers spread the coronavirus.", None));
-        assert!(is_reported_claim("\u{201c}Vaccines destroy your immune system.\u{201d}", None));
-        assert!(is_reported_claim("Vaccines destroy your immune system.", Some("A viral post claims:")));
-        assert!(!is_reported_claim("Vaccines train your immune system.", Some("Here is how they work.")));
+        assert!(is_reported_claim(
+            "Claim: 5G towers spread the coronavirus.",
+            None
+        ));
+        assert!(is_reported_claim(
+            "\u{201c}Vaccines destroy your immune system.\u{201d}",
+            None
+        ));
+        assert!(is_reported_claim(
+            "Vaccines destroy your immune system.",
+            Some("A viral post claims:")
+        ));
+        assert!(!is_reported_claim(
+            "Vaccines train your immune system.",
+            Some("Here is how they work.")
+        ));
     }
 
     #[test]
@@ -842,19 +1206,40 @@ mod tests {
         // transliteration.
         let q = "ताजमहल किसने बनवाया";
         let results = vec![
-            src("https://a.test/", "ताजमहल किसने बनवाया", "ताजमहल किसने बनवाया था / ताजमहल किसने बनाया था (Taj Mahal Kisne Banaya Tha)।"),
-            src("https://b.test/", "ताजमहल", "मुगल बादशाह शाहजहाँ ने अपनी पत्नी मुमताज़ महल की याद में ताजमहल बनवाया था। #TajMahal 🔥"),
+            src(
+                "https://a.test/",
+                "ताजमहल किसने बनवाया",
+                "ताजमहल किसने बनवाया था / ताजमहल किसने बनाया था (Taj Mahal Kisne Banaya Tha)।",
+            ),
+            src(
+                "https://b.test/",
+                "ताजमहल",
+                "मुगल बादशाह शाहजहाँ ने अपनी पत्नी मुमताज़ महल की याद में ताजमहल बनवाया था। #TajMahal 🔥",
+            ),
         ];
         let h = extract(q, &analyze_query(q), &results, &[]).unwrap();
         assert!(h.text.starts_with("मुगल बादशाह शाहजहाँ"), "{}", h.text);
-        assert!(!h.text.contains('#') && !h.text.contains('🔥'), "{}", h.text);
+        assert!(
+            !h.text.contains('#') && !h.text.contains('🔥'),
+            "{}",
+            h.text
+        );
     }
 
     #[test]
     fn fact_check_pages_are_recognised() {
-        assert!(is_fact_check_page("https://www.snopes.com/fact-check/x/", "x"));
+        assert!(is_fact_check_page(
+            "https://www.snopes.com/fact-check/x/",
+            "x"
+        ));
         assert!(is_fact_check_page("https://fullfact.org/health/y/", "y"));
-        assert!(is_fact_check_page("https://news.example/2026/z", "Fact Check: z"));
-        assert!(!is_fact_check_page("https://en.wikipedia.org/wiki/Fact", "Fact"));
+        assert!(is_fact_check_page(
+            "https://news.example/2026/z",
+            "Fact Check: z"
+        ));
+        assert!(!is_fact_check_page(
+            "https://en.wikipedia.org/wiki/Fact",
+            "Fact"
+        ));
     }
 }

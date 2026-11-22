@@ -52,7 +52,10 @@ fn page_capacity() -> u64 {
 }
 
 fn cache_enabled() -> bool {
-    !matches!(std::env::var("CACHE").as_deref(), Ok("off") | Ok("0") | Ok("false"))
+    !matches!(
+        std::env::var("CACHE").as_deref(),
+        Ok("off") | Ok("0") | Ok("false")
+    )
 }
 
 /// (engine, normalized query, page index) -> that engine's results.
@@ -86,7 +89,11 @@ static PAGE_MISS: AtomicU64 = AtomicU64::new(0);
 
 /// Normalize a query for cache keying: case- and whitespace-insensitive.
 pub fn query_key(q: &str) -> String {
-    q.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    q.trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ── SERP tier ──
@@ -114,7 +121,8 @@ pub async fn put_serp(engine: &str, query: &str, page: usize, results: Vec<RawSe
         // and caching it would persist the failure for the whole TTL.
         return;
     }
-    SERP.insert((engine.to_string(), query_key(query), page), results).await;
+    SERP.insert((engine.to_string(), query_key(query), page), results)
+        .await;
 }
 
 // ── PAGE tier ──
@@ -173,8 +181,14 @@ fn ratio(h: u64, m: u64) -> f64 {
 }
 
 pub fn stats() -> CacheStats {
-    let (sh, sm) = (SERP_HITS.load(Ordering::Relaxed), SERP_MISS.load(Ordering::Relaxed));
-    let (ph, pm) = (PAGE_HITS.load(Ordering::Relaxed), PAGE_MISS.load(Ordering::Relaxed));
+    let (sh, sm) = (
+        SERP_HITS.load(Ordering::Relaxed),
+        SERP_MISS.load(Ordering::Relaxed),
+    );
+    let (ph, pm) = (
+        PAGE_HITS.load(Ordering::Relaxed),
+        PAGE_MISS.load(Ordering::Relaxed),
+    );
     CacheStats {
         enabled: cache_enabled(),
         serp_entries: SERP.entry_count(),
@@ -208,10 +222,16 @@ mod tests {
 
     #[test]
     fn query_key_is_case_and_whitespace_insensitive() {
-        assert_eq!(query_key("  Cricket   World  CUP "), query_key("cricket world cup"));
+        assert_eq!(
+            query_key("  Cricket   World  CUP "),
+            query_key("cricket world cup")
+        );
         assert_eq!(query_key("A\tB\nC"), "a b c");
         // Distinct queries stay distinct.
-        assert_ne!(query_key("cricket world cup"), query_key("cricket world cup 2027"));
+        assert_ne!(
+            query_key("cricket world cup"),
+            query_key("cricket world cup 2027")
+        );
     }
 
     #[test]
@@ -228,7 +248,9 @@ mod tests {
         let got = get_serp("eng", q, 0).await.expect("should be cached");
         assert_eq!(got.len(), 1);
         // Case/whitespace variants hit the same entry.
-        assert!(get_serp("eng", "  SERP-ROUNDTRIP-UNIQUE-QUERY ", 0).await.is_some());
+        assert!(get_serp("eng", "  SERP-ROUNDTRIP-UNIQUE-QUERY ", 0)
+            .await
+            .is_some());
         // A different page is a different key.
         assert!(get_serp("eng", q, 1).await.is_none());
         // A different engine is a different key.
@@ -254,15 +276,25 @@ mod tests {
         };
         put_page("https://pagecache-test.example/article", e).await;
         // www/trailing-slash/tracking variants must hit the same entry.
-        assert!(get_page("https://www.pagecache-test.example/article/").await.is_some());
-        assert!(get_page("https://pagecache-test.example/article?utm_source=x").await.is_some());
-        assert!(get_page("https://pagecache-test.example/different").await.is_none());
+        assert!(get_page("https://www.pagecache-test.example/article/")
+            .await
+            .is_some());
+        assert!(
+            get_page("https://pagecache-test.example/article?utm_source=x")
+                .await
+                .is_some()
+        );
+        assert!(get_page("https://pagecache-test.example/different")
+            .await
+            .is_none());
     }
 
     #[tokio::test]
     async fn empty_pages_are_never_cached() {
         put_page("https://empty-page-test.example/x", Extracted::default()).await;
-        assert!(get_page("https://empty-page-test.example/x").await.is_none());
+        assert!(get_page("https://empty-page-test.example/x")
+            .await
+            .is_none());
     }
 
     #[test]

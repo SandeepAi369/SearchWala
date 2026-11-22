@@ -44,7 +44,8 @@ fn languages(query: &str) -> Vec<String> {
 /// The Wikipedia edition for the dominant non-Latin script in `query`.
 /// Devanagari maps to Hindi, the most-read Devanagari edition.
 fn script_language(query: &str) -> Option<&'static str> {
-    let mut counts: std::collections::HashMap<&'static str, usize> = std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<&'static str, usize> =
+        std::collections::HashMap::new();
     for c in query.chars() {
         let lang = match c as u32 {
             0x0900..=0x097F => "hi",
@@ -84,7 +85,11 @@ fn parse_languages(raw: &str) -> Vec<String> {
         .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
         .take(4)
         .collect();
-    if out.is_empty() { vec!["en".to_string()] } else { out }
+    if out.is_empty() {
+        vec!["en".to_string()]
+    } else {
+        out
+    }
 }
 
 /// Strip the `<span class="searchmatch">` highlighting Wikipedia wraps around
@@ -114,7 +119,8 @@ impl super::SearchEngine for Wikipedia {
         let mut out = Vec::new();
 
         let langs = languages(query);
-        let auto_fallback = langs.len() == 2 && langs[1] == "en" && std::env::var("WIKIPEDIA_LANGS").is_err();
+        let auto_fallback =
+            langs.len() == 2 && langs[1] == "en" && std::env::var("WIKIPEDIA_LANGS").is_err();
         for (i, lang) in langs.into_iter().enumerate() {
             if auto_fallback && i == 1 && out.len() >= NATIVE_HITS_ENOUGH {
                 break;
@@ -147,7 +153,11 @@ impl super::SearchEngine for Wikipedia {
                 .unwrap_or_default();
 
             for hit in hits {
-                let title = hit.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let title = hit
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
                 if title.is_empty() {
                     continue;
                 }
@@ -207,7 +217,9 @@ mod tests {
         assert!(langs.contains(&"en".to_string()));
         assert!(langs.contains(&"hi".to_string()));
         assert!(
-            !langs.iter().any(|l| l.contains('/') || l.contains(' ') || l.contains('.')),
+            !langs
+                .iter()
+                .any(|l| l.contains('/') || l.contains(' ') || l.contains('.')),
             "unsafe language code survived: {langs:?}"
         );
     }

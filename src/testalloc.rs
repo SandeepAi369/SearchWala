@@ -94,7 +94,10 @@ mod tests {
             kept.push(format!("retained string number {i} with some padding"));
         }
         let growth = live_bytes().saturating_sub(before);
-        assert!(growth > 50_000, "retained allocs should be visible, saw {growth}");
+        assert!(
+            growth > 50_000,
+            "retained allocs should be visible, saw {growth}"
+        );
         std::hint::black_box(&kept);
     }
 
@@ -112,6 +115,9 @@ mod tests {
         .join()
         .unwrap();
         let growth = live_bytes().saturating_sub(before);
-        assert!(growth < 64 * 1024, "another thread's allocations leaked in: {growth}");
+        assert!(
+            growth < 64 * 1024,
+            "another thread's allocations leaked in: {growth}"
+        );
     }
 }

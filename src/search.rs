@@ -24,15 +24,15 @@ use tokio::task::JoinSet;
 
 use crate::config;
 use crate::engines;
-use crate::fetcher::{self, Fetcher};
 use crate::extractor;
+use crate::fetcher::{self, Fetcher};
 use crate::llm;
 use crate::models::*;
 use crate::modes;
-use crate::synthesis;
 use crate::proxy_pool::ProxyPoolManager;
 use crate::query_intel;
 use crate::ranking;
+use crate::synthesis;
 use crate::url_utils;
 
 /// Parameters for one search request.
@@ -150,7 +150,10 @@ fn pick_title(url: &str, engine_title: &str, extracted: String) -> String {
     // Content words only: "the" shared by "The Legend of Tennessee
     // Moltisanti" and "episode of The Sopranos" is not agreement.
     let words = |s: &str| -> std::collections::HashSet<String> {
-        crate::ranking::query_terms(s).into_iter().map(|w| crate::highlight::stem(&w)).collect()
+        crate::ranking::query_terms(s)
+            .into_iter()
+            .map(|w| crate::highlight::stem(&w))
+            .collect()
     };
     if words(engine_title).is_disjoint(&words(&extracted)) {
         engine_title.to_string()
@@ -264,7 +267,11 @@ pub async fn execute_search_full(
         if params.enable_copilot {
             if let Some(cfg) = &params.llm {
                 let rewritten = crate::copilot::rewrite_query(&effective_query, cfg).await;
-                tracing::info!("Copilot rewrote query: [{}] -> [{}]", effective_query, rewritten);
+                tracing::info!(
+                    "Copilot rewrote query: [{}] -> [{}]",
+                    effective_query,
+                    rewritten
+                );
                 copilot_out = Some(rewritten.clone());
                 effective_query = rewritten;
             }
@@ -275,7 +282,11 @@ pub async fn execute_search_full(
     let mut intel = query_intel::analyze_query(&effective_query);
     // Merge entities from raw query as well so nothing from the raw prompt is lost
     for raw_ent in query_intel::analyze_query(&query).key_entities {
-        if !intel.key_entities.iter().any(|e| e.eq_ignore_ascii_case(&raw_ent)) {
+        if !intel
+            .key_entities
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(&raw_ent))
+        {
             intel.key_entities.push(raw_ent);
         }
     }
@@ -333,7 +344,8 @@ pub async fn execute_search_full(
     if intel.is_time_sensitive && !matches!(mode, modes::Mode::Study | modes::Mode::Academic) {
         let q_lower = effective_query.to_lowercase();
         let current_year = chrono::Utc::now().year();
-        let has_year = ((current_year - 15)..=(current_year + 10)).any(|y| q_lower.contains(&y.to_string()));
+        let has_year =
+            ((current_year - 15)..=(current_year + 10)).any(|y| q_lower.contains(&y.to_string()));
         if !has_year {
             effective_query = format!("{} {}", effective_query, current_year);
         }
@@ -346,43 +358,46 @@ pub async fn execute_search_full(
         profile.max_sub_queries
     };
 
-    let mut query_variations: Vec<String> =
-        if sub_query_cap > 1 && query_intel::multi_query_enabled() {
-            if let Some(ref plan) = semantic_plan {
-                let mut v = vec![effective_query.clone()];
-                for sq in &plan.sub_queries {
-                    if !v.iter().any(|existing| existing.eq_ignore_ascii_case(sq)) {
-                        v.push(sq.clone());
-                    }
-                }
-                v.truncate(sub_query_cap);
-                v
-            } else {
-                let mut planned = None;
-                if profile.llm_query_planning {
-                    if let Some(cfg) = &params.llm {
-                        planned = synthesis::plan_subqueries(
-                            &effective_query,
-                            cfg,
-                            sub_query_cap.saturating_sub(1),
-                        )
-                        .await;
-                    }
-                }
-                match planned {
-                    Some(p) => {
-                        tracing::info!("LLM planned {} sub-queries", p.len());
-                        let mut v = vec![effective_query.clone()];
-                        v.extend(p);
-                        v.truncate(sub_query_cap);
-                        v
-                    }
-                    None => modes::facet_queries(&effective_query, &intel, profile.facets, sub_query_cap),
+    let mut query_variations: Vec<String> = if sub_query_cap > 1
+        && query_intel::multi_query_enabled()
+    {
+        if let Some(ref plan) = semantic_plan {
+            let mut v = vec![effective_query.clone()];
+            for sq in &plan.sub_queries {
+                if !v.iter().any(|existing| existing.eq_ignore_ascii_case(sq)) {
+                    v.push(sq.clone());
                 }
             }
+            v.truncate(sub_query_cap);
+            v
         } else {
-            vec![effective_query.clone()]
-        };
+            let mut planned = None;
+            if profile.llm_query_planning {
+                if let Some(cfg) = &params.llm {
+                    planned = synthesis::plan_subqueries(
+                        &effective_query,
+                        cfg,
+                        sub_query_cap.saturating_sub(1),
+                    )
+                    .await;
+                }
+            }
+            match planned {
+                Some(p) => {
+                    tracing::info!("LLM planned {} sub-queries", p.len());
+                    let mut v = vec![effective_query.clone()];
+                    v.extend(p);
+                    v.truncate(sub_query_cap);
+                    v
+                }
+                None => {
+                    modes::facet_queries(&effective_query, &intel, profile.facets, sub_query_cap)
+                }
+            }
+        }
+    } else {
+        vec![effective_query.clone()]
+    };
     if query_variations.is_empty() {
         query_variations.push(effective_query.clone());
     }
@@ -394,19 +409,28 @@ pub async fn execute_search_full(
             .map(|q| modes::apply_site_filter(q, profile.site_filter))
             .collect();
     }
-    tracing::info!("Sub-queries: {:?}", query_variations.iter().map(|q| crate::util::truncate_chars(q, 60)).collect::<Vec<_>>());
+    tracing::info!(
+        "Sub-queries: {:?}",
+        query_variations
+            .iter()
+            .map(|q| crate::util::truncate_chars(q, 60))
+            .collect::<Vec<_>>()
+    );
 
     let engine_list = engines::filter_healthy(profile.engines.clone());
     let engine_instances = engines::get_engines(&engine_list);
 
-    emit(&progress, Progress::Plan {
-        mode: mode.as_str().into(),
-        tier: profile.tier.into(),
-        domain: domain.as_str().into(),
-        engines: engine_instances.len(),
-        sub_queries: query_variations.clone(),
-        max_urls: profile.max_urls,
-    })
+    emit(
+        &progress,
+        Progress::Plan {
+            mode: mode.as_str().into(),
+            tier: profile.tier.into(),
+            domain: domain.as_str().into(),
+            engines: engine_instances.len(),
+            sub_queries: query_variations.clone(),
+            max_urls: profile.max_urls,
+        },
+    )
     .await;
 
     // ── Dispatch ──
@@ -454,7 +478,10 @@ pub async fn execute_search_full(
         }
         let per_query: Vec<(String, Vec<RawSearchResult>)> =
             query_variations.iter().cloned().zip(grouped).collect();
-        Some(ranking::cross_query_scores(&per_query, &query_variations[0]))
+        Some(ranking::cross_query_scores(
+            &per_query,
+            &query_variations[0],
+        ))
     };
     let mut all_results: Vec<RawSearchResult> = tagged.into_iter().flat_map(|(_, v)| v).collect();
 
@@ -465,17 +492,24 @@ pub async fn execute_search_full(
     }
 
     let engine_dispatch_ms = stage_start.elapsed().as_millis();
-    let families: std::collections::HashSet<&str> =
-        all_results.iter().map(|r| engines::engine_family(&r.engine)).collect();
+    let families: std::collections::HashSet<&str> = all_results
+        .iter()
+        .map(|r| engines::engine_family(&r.engine))
+        .collect();
     tracing::info!(
         "⏱ Stage [engine_dispatch]: {}ms — {} results, {} families",
-        engine_dispatch_ms, all_results.len(), families.len()
+        engine_dispatch_ms,
+        all_results.len(),
+        families.len()
     );
-    emit(&progress, Progress::Engines {
-        raw_results: all_results.len(),
-        families: families.len(),
-        ms: engine_dispatch_ms,
-    })
+    emit(
+        &progress,
+        Progress::Engines {
+            raw_results: all_results.len(),
+            families: families.len(),
+            ms: engine_dispatch_ms,
+        },
+    )
     .await;
 
     // ── Consensus ranking + source selection ──
@@ -563,7 +597,13 @@ pub async fn execute_search_full(
             found_by_families: c.families.len(),
         })
         .collect();
-    emit(&progress, Progress::Sources { results: search_results.clone() }).await;
+    emit(
+        &progress,
+        Progress::Sources {
+            results: search_results.clone(),
+        },
+    )
+    .await;
 
     // ── Scrape ──
     let concurrency = config::concurrency().min(40);
@@ -583,96 +623,103 @@ pub async fn execute_search_full(
     // deadline still caps the wait.
     let must_finish = MUST_FINISH_TOP.min(ranked.len());
     let mut pending_top: std::collections::HashSet<usize> = (0..must_finish).collect();
-    let selection_rank: HashMap<String, usize> =
-        ranked.iter().enumerate().map(|(i, c)| (c.url.clone(), i)).collect();
+    let selection_rank: HashMap<String, usize> = ranked
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.url.clone(), i))
+        .collect();
     for (rank_idx, c) in ranked.into_iter().enumerate() {
         let sem = semaphore.clone();
         let client = scrape_client.clone();
         join_set.spawn(async move {
-          let result = async move {
-            let engine_name = c.engines.join(",");
+            let result = async move {
+                let engine_name = c.engines.join(",");
 
-            // Engine-supplied text (OpenAlex / arXiv abstracts): no fetch.
-            // Publisher landing pages are slow, often paywalled, often blocked.
-            if let Some(ft) = c.full_text.as_ref().filter(|t| crate::util::char_len(t) >= 150) {
-                return Some(SourceResult {
-                    url: c.url.clone(),
-                    title: c.title.clone(),
-                    extracted_text: ft.clone(),
-                    char_count: crate::util::char_len(ft),
-                    engine: engine_name,
-                    published: c.published,
-                    language: None,
-                    byline: None,
-                    site_name: None,
-                    confidence: 0.9,
-                    extractor: "abstract",
-                });
-            }
-
-            if let Some(cached) = crate::cache_layer::get_page(&c.url).await {
-                return Some(SourceResult {
-                    url: c.url.clone(),
-                    title: pick_title(&c.url, &c.title, cached.title.clone()),
-                    extracted_text: cached.text.clone(),
-                    char_count: crate::util::char_len(&cached.text),
-                    engine: engine_name,
-                    published: cached.published.or(c.published),
-                    language: cached.language.clone(),
-                    byline: cached.byline.clone(),
-                    site_name: cached.site_name.clone(),
-                    confidence: cached.confidence,
-                    extractor: cached.source,
-                });
-            }
-
-            let scraped = {
-                let _permit = sem.acquire().await.ok()?;
-                scrape_url(&client, &c.url, scrape_timeout, scrape_max_bytes, mode).await
-            };
-            match scraped {
-                Some(e) => {
-                    crate::cache_layer::put_page(&c.url, e.clone()).await;
-                    let title = pick_title(&c.url, &c.title, e.title);
-                    Some(SourceResult {
-                        char_count: crate::util::char_len(&e.text),
-                        url: c.url,
-                        title,
-                        extracted_text: e.text,
-                        engine: engine_name,
-                        published: e.published.or(c.published),
-                        language: e.language,
-                        byline: e.byline,
-                        site_name: e.site_name,
-                        confidence: e.confidence,
-                        extractor: e.source,
-                    })
-                }
-                // Blocked or empty page: in modes where that is routine
-                // (Reddit CAPTCHA walls, YouTube description-only pages) the
-                // engine snippet is the best text available. Low confidence so
-                // it ranks below any real extraction.
-                None if snippet_fallback && crate::util::char_len(&c.snippet) >= 80 => {
-                    let text = format!("{}\n\n{}", c.title, c.snippet);
-                    Some(SourceResult {
-                        char_count: crate::util::char_len(&text),
-                        url: c.url,
-                        title: c.title,
-                        extracted_text: text,
+                // Engine-supplied text (OpenAlex / arXiv abstracts): no fetch.
+                // Publisher landing pages are slow, often paywalled, often blocked.
+                if let Some(ft) = c
+                    .full_text
+                    .as_ref()
+                    .filter(|t| crate::util::char_len(t) >= 150)
+                {
+                    return Some(SourceResult {
+                        url: c.url.clone(),
+                        title: c.title.clone(),
+                        extracted_text: ft.clone(),
+                        char_count: crate::util::char_len(ft),
                         engine: engine_name,
                         published: c.published,
                         language: None,
                         byline: None,
                         site_name: None,
-                        confidence: 0.35,
-                        extractor: "snippet",
-                    })
+                        confidence: 0.9,
+                        extractor: "abstract",
+                    });
                 }
-                None => None,
+
+                if let Some(cached) = crate::cache_layer::get_page(&c.url).await {
+                    return Some(SourceResult {
+                        url: c.url.clone(),
+                        title: pick_title(&c.url, &c.title, cached.title.clone()),
+                        extracted_text: cached.text.clone(),
+                        char_count: crate::util::char_len(&cached.text),
+                        engine: engine_name,
+                        published: cached.published.or(c.published),
+                        language: cached.language.clone(),
+                        byline: cached.byline.clone(),
+                        site_name: cached.site_name.clone(),
+                        confidence: cached.confidence,
+                        extractor: cached.source,
+                    });
+                }
+
+                let scraped = {
+                    let _permit = sem.acquire().await.ok()?;
+                    scrape_url(&client, &c.url, scrape_timeout, scrape_max_bytes, mode).await
+                };
+                match scraped {
+                    Some(e) => {
+                        crate::cache_layer::put_page(&c.url, e.clone()).await;
+                        let title = pick_title(&c.url, &c.title, e.title);
+                        Some(SourceResult {
+                            char_count: crate::util::char_len(&e.text),
+                            url: c.url,
+                            title,
+                            extracted_text: e.text,
+                            engine: engine_name,
+                            published: e.published.or(c.published),
+                            language: e.language,
+                            byline: e.byline,
+                            site_name: e.site_name,
+                            confidence: e.confidence,
+                            extractor: e.source,
+                        })
+                    }
+                    // Blocked or empty page: in modes where that is routine
+                    // (Reddit CAPTCHA walls, YouTube description-only pages) the
+                    // engine snippet is the best text available. Low confidence so
+                    // it ranks below any real extraction.
+                    None if snippet_fallback && crate::util::char_len(&c.snippet) >= 80 => {
+                        let text = format!("{}\n\n{}", c.title, c.snippet);
+                        Some(SourceResult {
+                            char_count: crate::util::char_len(&text),
+                            url: c.url,
+                            title: c.title,
+                            extracted_text: text,
+                            engine: engine_name,
+                            published: c.published,
+                            language: None,
+                            byline: None,
+                            site_name: None,
+                            confidence: 0.35,
+                            extractor: "snippet",
+                        })
+                    }
+                    None => None,
+                }
             }
-          }
-          .await;
-          (rank_idx, result)
+            .await;
+            (rank_idx, result)
         });
     }
 
@@ -703,7 +750,10 @@ pub async fn execute_search_full(
         {
             tracing::info!(
                 "Scrape early-exit: {} sources / {} chars ({}/{} tasks)",
-                raw_scraped_results.len(), scraped_chars, done, total_tasks
+                raw_scraped_results.len(),
+                scraped_chars,
+                done,
+                total_tasks
             );
             join_set.abort_all();
             break;
@@ -766,7 +816,15 @@ pub async fn execute_search_full(
         scraped_chars / scraped_count.max(1),
         by_extractor
     );
-    emit(&progress, Progress::Extracted { sources: scraped_count, chars: scraped_chars, ms: scrape_ms }).await;
+    emit(
+        &progress,
+        Progress::Extracted {
+            sources: scraped_count,
+            chars: scraped_chars,
+            ms: scrape_ms,
+        },
+    )
+    .await;
 
     // ── Rank chunks ──
     // Build the lexical ranking query: preserve the user's raw question while
@@ -885,14 +943,9 @@ pub async fn execute_search_full(
                                 });
                             }
                             let _permit = sem.acquire().await.ok()?;
-                            let scraped = scrape_url(
-                                &client,
-                                &c.url,
-                                scrape_timeout,
-                                scrape_max_bytes,
-                                mode,
-                            )
-                            .await?;
+                            let scraped =
+                                scrape_url(&client, &c.url, scrape_timeout, scrape_max_bytes, mode)
+                                    .await?;
                             crate::cache_layer::put_page(&c.url, scraped.clone()).await;
                             let title = pick_title(&c.url, &c.title, scraped.title);
                             Some(SourceResult {
@@ -954,18 +1007,36 @@ pub async fn execute_search_full(
 
     let rank_ms = stage_start.elapsed().as_millis();
     let scraped_count = raw_scraped_results.len();
-    tracing::info!("⏱ Stage [rank]: {}ms — {} chunks from {} sources", rank_ms, results.len(), scraped_count);
+    tracing::info!(
+        "⏱ Stage [rank]: {}ms — {} chunks from {} sources",
+        rank_ms,
+        results.len(),
+        scraped_count
+    );
 
     // The verbatim answer sentence is known as soon as passages are ranked;
     // streaming clients show it while the LLM is still writing. The opening
     // of the best-ranked pages is considered too: ranked passages favour
     // sentences dense in query words, and the lead is where an article
     // states its answer.
-    let leads = crate::highlight::leads(&raw_scraped_results, |url| selection_rank.get(url).copied());
+    let leads =
+        crate::highlight::leads(&raw_scraped_results, |url| selection_rank.get(url).copied());
     let highlight = crate::highlight::extract(&effective_query, &intel, &results, &leads);
-    crate::highlight::dump_case(&effective_query, &intel_query, &results, &leads, highlight.as_ref());
+    crate::highlight::dump_case(
+        &effective_query,
+        &intel_query,
+        &results,
+        &leads,
+        highlight.as_ref(),
+    );
     if let Some(h) = &highlight {
-        emit(&progress, Progress::Highlight { highlight: h.clone() }).await;
+        emit(
+            &progress,
+            Progress::Highlight {
+                highlight: h.clone(),
+            },
+        )
+        .await;
     }
 
     // ── Synthesis ──
@@ -981,14 +1052,33 @@ pub async fn execute_search_full(
     let stage_start = std::time::Instant::now();
     let llm_result = match params.llm {
         Some(cfg) if !results.is_empty() => {
-            emit(&progress, Progress::Synthesizing { synthesis: format!("{:?}", profile.synthesis) }).await;
-            synthesis::synthesize(&query, cfg, &results, &intel, &profile, &memory_text, temp_db, session_id.as_deref()).await
+            emit(
+                &progress,
+                Progress::Synthesizing {
+                    synthesis: format!("{:?}", profile.synthesis),
+                },
+            )
+            .await;
+            synthesis::synthesize(
+                &query,
+                cfg,
+                &results,
+                &intel,
+                &profile,
+                &memory_text,
+                temp_db,
+                session_id.as_deref(),
+            )
+            .await
         }
         Some(_) => llm::LlmExecutionResult {
             llm_error: Some("llm_skipped: no scraped content available".to_string()),
             ..Default::default()
         },
-        None => llm::LlmExecutionResult { llm_error: llm_config_error, ..Default::default() },
+        None => llm::LlmExecutionResult {
+            llm_error: llm_config_error,
+            ..Default::default()
+        },
     };
     let llm_ms = stage_start.elapsed().as_millis();
 
@@ -1001,8 +1091,16 @@ pub async fn execute_search_full(
         "⏱ Pipeline TOTAL: {:.0}ms — engines={}ms scrape={}ms rank={}ms rrf={}ms llm={}ms | \
          raw={} selected={} scraped={} chunks={} mode={}",
         elapsed * 1000.0,
-        engine_dispatch_ms, scrape_ms, rank_ms, rrf_ms, llm_ms,
-        total_raw, deduped_count, scraped_count, results.len(), profile.tier
+        engine_dispatch_ms,
+        scrape_ms,
+        rank_ms,
+        rrf_ms,
+        llm_ms,
+        total_raw,
+        deduped_count,
+        scraped_count,
+        results.len(),
+        profile.tier
     );
 
     let sources_processed = results.len();
@@ -1152,7 +1250,8 @@ async fn dispatch_engines(
                 };
 
                 let mut results =
-                    engines::with_page_budget(page_budget, engine.search(&fetcher, &query_variant)).await;
+                    engines::with_page_budget(page_budget, engine.search(&fetcher, &query_variant))
+                        .await;
 
                 // A 200 page of filler that ignores the query is a block, not
                 // data: drop it (and never cache it). Mixed pages lose only
@@ -1163,7 +1262,10 @@ async fn dispatch_engines(
                         tracing::info!("{}: dropped {} off-topic results", ename, n);
                     }
                     engines::health::SerpVerdict::Blocked => {
-                        tracing::warn!("{}: results unrelated to the query — soft block, discarded", ename);
+                        tracing::warn!(
+                            "{}: results unrelated to the query — soft block, discarded",
+                            ename
+                        );
                         engines::health::record_block(&ename, 0);
                     }
                 }
@@ -1179,7 +1281,8 @@ async fn dispatch_engines(
                 // Empty results are deliberately NOT cached — an empty result
                 // is usually a block or selector rot, and caching it would
                 // persist the failure for the whole TTL.
-                crate::cache_layer::put_serp(&ename, &query_variant, page_budget, results.clone()).await;
+                crate::cache_layer::put_serp(&ename, &query_variant, page_budget, results.clone())
+                    .await;
 
                 (variation_idx, results)
             });
@@ -1214,25 +1317,30 @@ async fn dispatch_engines(
     let soft_instant = tokio::time::Instant::now() + deadline.mul_f64(0.6);
     let mut soft_passed = false;
 
-    let sufficient = |all: &Vec<(usize, Vec<RawSearchResult>)>, relaxed: bool| -> Option<(usize, usize)> {
-        let flat_len: usize = all.iter().map(|(_, v)| v.len()).sum();
-        // Past the soft deadline, two thirds of the target count is enough.
-        let need_results = if relaxed { min_results_to_exit.saturating_mul(2) / 3 } else { min_results_to_exit };
-        if flat_len < need_results {
-            return None;
-        }
-        let fams: std::collections::HashSet<&str> = all
-            .iter()
-            .flat_map(|(_, v)| v.iter())
-            .map(|r| engines::engine_family(&r.engine))
-            .collect();
-        let need = if relaxed {
-            min_families_to_exit.saturating_sub(1).max(2)
-        } else {
-            min_families_to_exit
+    let sufficient =
+        |all: &Vec<(usize, Vec<RawSearchResult>)>, relaxed: bool| -> Option<(usize, usize)> {
+            let flat_len: usize = all.iter().map(|(_, v)| v.len()).sum();
+            // Past the soft deadline, two thirds of the target count is enough.
+            let need_results = if relaxed {
+                min_results_to_exit.saturating_mul(2) / 3
+            } else {
+                min_results_to_exit
+            };
+            if flat_len < need_results {
+                return None;
+            }
+            let fams: std::collections::HashSet<&str> = all
+                .iter()
+                .flat_map(|(_, v)| v.iter())
+                .map(|r| engines::engine_family(&r.engine))
+                .collect();
+            let need = if relaxed {
+                min_families_to_exit.saturating_sub(1).max(2)
+            } else {
+                min_families_to_exit
+            };
+            (fams.len() >= need).then_some((flat_len, fams.len()))
         };
-        (fams.len() >= need).then_some((flat_len, fams.len()))
-    };
 
     loop {
         if tasks_completed >= total_tasks {
@@ -1244,7 +1352,11 @@ async fn dispatch_engines(
                 "Engine early-exit{}: {} results from {} independent families \
                  ({}/{} tasks done) — aborting {} slower task(s)",
                 if soft_passed { " (soft deadline)" } else { "" },
-                n, f, tasks_completed, total_tasks, join_set.len()
+                n,
+                f,
+                tasks_completed,
+                total_tasks,
+                join_set.len()
             );
             join_set.abort_all();
             break;
@@ -1284,7 +1396,8 @@ async fn dispatch_engines(
             None => {
                 tracing::debug!(
                     "Engine collect: set drained at {}/{} tasks",
-                    tasks_completed, total_tasks
+                    tasks_completed,
+                    total_tasks
                 );
                 break;
             }
@@ -1304,8 +1417,10 @@ async fn dispatch_engines(
     let flat: Vec<&RawSearchResult> = all.iter().flat_map(|(_, v)| v.iter()).collect();
     let producing: std::collections::HashSet<&str> =
         flat.iter().map(|r| r.engine.as_str()).collect();
-    let families: std::collections::HashSet<&str> =
-        flat.iter().map(|r| engines::engine_family(&r.engine)).collect();
+    let families: std::collections::HashSet<&str> = flat
+        .iter()
+        .map(|r| engines::engine_family(&r.engine))
+        .collect();
     tracing::info!(
         "Engine dispatch: {}/{} tasks done | {} engines produced results | {} independent families | {} raw results",
         tasks_completed, total_tasks, producing.len(), families.len(), flat.len()
@@ -1364,9 +1479,10 @@ async fn scrape_url_inner(
 
     // Accept-Encoding is NOT set by hand: reqwest advertises exactly what it
     // can decode (the Phase-1 zstd fix), and a manual header would override it.
-    let mut req = client
-        .get(&target_url)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
+    let mut req = client.get(&target_url).header(
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    );
 
     req = config::apply_browser_headers(req, &target_url);
 
@@ -1448,19 +1564,28 @@ async fn scrape_url_inner(
     // The AMP variant is server-rendered with minimal markup, so it often
     // reads where the canonical page (a JS shell, a consent wall) does not.
     // One extra fetch, never in Fast mode.
-    let amp = if mode == modes::Mode::Fast { None } else { crate::deep_reader::amp_url(&html, &target_url) };
-    let page_url = target_url.clone();
-    let extracted = match tokio::task::spawn_blocking(move || extractor::extract(&html, &page_url)).await {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::debug!("extraction task failed for {}: {}", target_url, e);
-            return ScrapeResult::Skip;
-        }
+    let amp = if mode == modes::Mode::Fast {
+        None
+    } else {
+        crate::deep_reader::amp_url(&html, &target_url)
     };
+    let page_url = target_url.clone();
+    let extracted =
+        match tokio::task::spawn_blocking(move || extractor::extract(&html, &page_url)).await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::debug!("extraction task failed for {}: {}", target_url, e);
+                return ScrapeResult::Skip;
+            }
+        };
     if !extractor::is_usable(&extracted) {
         if let Some(amp_url) = amp {
             if let Some(mut e) = fetch_and_extract(client, &amp_url, timeout, max_bytes).await {
-                tracing::debug!("AMP fallback read {} chars for {}", e.text.len(), target_url);
+                tracing::debug!(
+                    "AMP fallback read {} chars for {}",
+                    e.text.len(),
+                    target_url
+                );
                 e.source = "amp";
                 return ScrapeResult::Ok(e);
             }
@@ -1497,7 +1622,9 @@ async fn fetch_and_extract(
         return None;
     }
     let page_url = url.to_string();
-    let e = tokio::task::spawn_blocking(move || extractor::extract(&html, &page_url)).await.ok()?;
+    let e = tokio::task::spawn_blocking(move || extractor::extract(&html, &page_url))
+        .await
+        .ok()?;
     extractor::is_usable(&e).then_some(e)
 }
 
@@ -1508,7 +1635,9 @@ async fn fetch_and_extract(
 /// output, turning www.reddit.com into `old.old.reddit.com`. Reddit mode never
 /// fetched a valid thread URL.
 pub fn reddit_to_old(url: &str) -> String {
-    let Ok(mut u) = url::Url::parse(url) else { return url.to_string() };
+    let Ok(mut u) = url::Url::parse(url) else {
+        return url.to_string();
+    };
     let host = u.host_str().unwrap_or_default().to_lowercase();
     let is_reddit = host == "reddit.com" || host.ends_with(".reddit.com");
     if !is_reddit || host == "old.reddit.com" {
@@ -1601,16 +1730,34 @@ mod tests {
             reddit_to_old("https://www.reddit.com/r/rust/comments/abc/title/"),
             "https://old.reddit.com/r/rust/comments/abc/title/"
         );
-        assert_eq!(reddit_to_old("https://reddit.com/r/x"), "https://old.reddit.com/r/x");
-        assert_eq!(reddit_to_old("https://m.reddit.com/r/x"), "https://old.reddit.com/r/x");
-        assert_eq!(reddit_to_old("https://old.reddit.com/r/x"), "https://old.reddit.com/r/x");
+        assert_eq!(
+            reddit_to_old("https://reddit.com/r/x"),
+            "https://old.reddit.com/r/x"
+        );
+        assert_eq!(
+            reddit_to_old("https://m.reddit.com/r/x"),
+            "https://old.reddit.com/r/x"
+        );
+        assert_eq!(
+            reddit_to_old("https://old.reddit.com/r/x"),
+            "https://old.reddit.com/r/x"
+        );
     }
 
     #[test]
     fn reddit_rewrite_leaves_other_hosts_and_media_alone() {
-        assert_eq!(reddit_to_old("https://notreddit.com/r/x"), "https://notreddit.com/r/x");
-        assert_eq!(reddit_to_old("https://i.reddit.com/x.png"), "https://i.reddit.com/x.png");
-        assert_eq!(reddit_to_old("https://example.com/reddit.com/x"), "https://example.com/reddit.com/x");
+        assert_eq!(
+            reddit_to_old("https://notreddit.com/r/x"),
+            "https://notreddit.com/r/x"
+        );
+        assert_eq!(
+            reddit_to_old("https://i.reddit.com/x.png"),
+            "https://i.reddit.com/x.png"
+        );
+        assert_eq!(
+            reddit_to_old("https://example.com/reddit.com/x"),
+            "https://example.com/reddit.com/x"
+        );
         assert_eq!(reddit_to_old("not a url"), "not a url");
     }
 }
@@ -1621,17 +1768,34 @@ mod title_tests {
 
     #[test]
     fn keeps_engine_title_when_extracted_title_is_unrelated() {
-        assert_eq!(pick_title("https://x.test/a", "Bain-marie", "type of heated bath".into()), "Bain-marie");
+        assert_eq!(
+            pick_title(
+                "https://x.test/a",
+                "Bain-marie",
+                "type of heated bath".into()
+            ),
+            "Bain-marie"
+        );
         assert_eq!(
             pick_title("https://x.test/p", "Paris - Travel guide", "Paris".into()),
             "Paris",
             "a related extracted title (site suffix stripped) is preferred"
         );
-        assert_eq!(pick_title("https://x.test/e", "", "Extracted".into()), "Extracted");
-        assert_eq!(pick_title("https://x.test/e", "Engine", "".into()), "Engine");
+        assert_eq!(
+            pick_title("https://x.test/e", "", "Extracted".into()),
+            "Extracted"
+        );
+        assert_eq!(
+            pick_title("https://x.test/e", "Engine", "".into()),
+            "Engine"
+        );
         // Shared stopwords are not agreement.
         assert_eq!(
-            pick_title("https://x.test/s", "The Legend of Tennessee Moltisanti", "episode of The Sopranos (S1 E8)".into()),
+            pick_title(
+                "https://x.test/s",
+                "The Legend of Tennessee Moltisanti",
+                "episode of The Sopranos (S1 E8)".into()
+            ),
             "The Legend of Tennessee Moltisanti"
         );
     }
@@ -1639,15 +1803,25 @@ mod title_tests {
     #[test]
     fn wikipedia_titles_come_from_the_url() {
         assert_eq!(
-            pick_title("https://en.wikipedia.org/wiki/Invention_of_the_telephone", "", "aspect of history relating to telephones".into()),
+            pick_title(
+                "https://en.wikipedia.org/wiki/Invention_of_the_telephone",
+                "",
+                "aspect of history relating to telephones".into()
+            ),
             "Invention of the telephone"
         );
-        assert_eq!(wikipedia_title("https://hi.wikipedia.org/wiki/%E0%A4%AD%E0%A4%BE%E0%A4%B0%E0%A4%A4").as_deref(), Some("भारत"));
-        assert_eq!(wikipedia_title("https://en.wikipedia.org/wiki/Special:Search"), None);
+        assert_eq!(
+            wikipedia_title("https://hi.wikipedia.org/wiki/%E0%A4%AD%E0%A4%BE%E0%A4%B0%E0%A4%A4")
+                .as_deref(),
+            Some("भारत")
+        );
+        assert_eq!(
+            wikipedia_title("https://en.wikipedia.org/wiki/Special:Search"),
+            None
+        );
         assert_eq!(wikipedia_title("https://example.org/wiki/X"), None);
     }
 }
-
 
 /// Combines the user's raw query with any resolved or typo-corrected entities
 /// from Semantic Query Understanding so BM25 scores both raw terms and resolved
@@ -1787,8 +1961,6 @@ fn build_corrective_query(
     (!already_ran).then_some(candidate)
 }
 
-
-
 /// Adaptive Pre-Scrape Title, Subdomain & Snippet Triage (zero hardcoded domain or year lists).
 /// Evaluates a SERP candidate's title, URL/subdomain structure, and snippet against
 /// target entities, query terms, and dynamic temporal context BEFORE scraping full HTML.
@@ -1831,7 +2003,10 @@ fn pre_scrape_triage_score(
         let mut hit = false;
         for t in ent
             .split_whitespace()
-            .map(|t| t.trim_matches(|ch: char| !crate::util::is_word_char(ch)).to_lowercase())
+            .map(|t| {
+                t.trim_matches(|ch: char| !crate::util::is_word_char(ch))
+                    .to_lowercase()
+            })
             .filter(|t| t.chars().count() >= 3)
         {
             if title_lower.contains(&t) || snippet_lower.contains(&t) || url_lower.contains(&t) {
@@ -1853,7 +2028,8 @@ fn pre_scrape_triage_score(
         if term.chars().count() < 3 {
             continue;
         }
-        let in_title_or_url = title_lower.contains(term.as_str()) || url_lower.contains(term.as_str());
+        let in_title_or_url =
+            title_lower.contains(term.as_str()) || url_lower.contains(term.as_str());
         let in_snippet = snippet_lower.contains(term.as_str());
         if in_title_or_url {
             term_hits_title += 1;
@@ -1895,8 +2071,7 @@ fn pre_scrape_triage_score(
 
     // Boost scholarly, institutional, or primary documentation sources on research/historical queries
     if (entity_hits_in_meta > 0 || term_hits_title > 0)
-        && (modes::is_structural_scholarly_url(&host, &path)
-            || modes::is_institutional_host(&host))
+        && (modes::is_structural_scholarly_url(&host, &path) || modes::is_institutional_host(&host))
     {
         s *= 1.28;
     }
@@ -1908,7 +2083,9 @@ fn pre_scrape_triage_score(
         let meta_text = format!("{} {} {}", title_lower, snippet_lower, path);
 
         let mentions_current_year = meta_text.contains(&cur_year_str)
-            || c.published.map(|d| d.year() >= current_year).unwrap_or(false);
+            || c.published
+                .map(|d| d.year() >= current_year)
+                .unwrap_or(false);
 
         if mentions_current_year {
             s *= 1.25;
@@ -1929,15 +2106,15 @@ fn pre_scrape_triage_score(
     }
 
     // 4. Encyclopedia Pre-Scrape Demotion on Live / Product Queries
-    if crate::llm::is_encyclopedia_url(&c.url, None) && mode != modes::Mode::Study {
-        if intel.is_time_sensitive
+    if crate::llm::is_encyclopedia_url(&c.url, None)
+        && mode != modes::Mode::Study
+        && (intel.is_time_sensitive
             || matches!(
                 intel.semantic_category,
                 query_intel::SemanticCategory::LiveNews | query_intel::SemanticCategory::ProductOrg
-            )
-        {
-            s *= 0.65;
-        }
+            ))
+    {
+        s *= 0.65;
     }
 
     if c.full_text.is_some() && matches!(mode, modes::Mode::Academic | modes::Mode::Study) {
@@ -1964,7 +2141,9 @@ mod stage1_sufficiency_tests {
         let stale_unrelated = vec![SourceResult {
             url: "https://en.wikipedia.org/wiki/Google_Play".to_string(),
             title: "Google Play".to_string(),
-            extracted_text: format!("Google Play is a digital distribution service updated in {past_year}."),
+            extracted_text: format!(
+                "Google Play is a digital distribution service updated in {past_year}."
+            ),
             char_count: 72,
             engine: "wikipedia".to_string(),
             published: Utc.with_ymd_and_hms(past_year, 5, 10, 0, 0, 0).single(),
@@ -1982,7 +2161,9 @@ mod stage1_sufficiency_tests {
         let fresh_matching = vec![SourceResult {
             url: "https://antigravity.google/changelog".to_string(),
             title: "Google Antigravity Changelog".to_string(),
-            extracted_text: format!("Google Antigravity release notes and platform updates ({current_year})."),
+            extracted_text: format!(
+                "Google Antigravity release notes and platform updates ({current_year})."
+            ),
             char_count: 75,
             engine: "brave".to_string(),
             published: Utc.with_ymd_and_hms(current_year, 3, 15, 0, 0, 0).single(),
@@ -2013,7 +2194,8 @@ mod stage1_sufficiency_tests {
         let official_cand = Candidate {
             url: "https://antigravity.google/changelog".to_string(),
             title: format!("Google Antigravity Changelog ({current_year})"),
-            snippet: "Latest release features, agentic IDE tools, and workspace updates.".to_string(),
+            snippet: "Latest release features, agentic IDE tools, and workspace updates."
+                .to_string(),
             engines: vec!["brave".to_string()],
             families: vec!["brave"],
             rrf: 0.02,
@@ -2066,7 +2248,13 @@ mod stage1_sufficiency_tests {
             modes::Domain::General,
         );
 
-        assert!(s_official > s_stale * 3.0, "official ({s_official}) must beat stale ({s_stale})");
-        assert!(s_official > s_wiki * 3.0, "official ({s_official}) must beat off-topic wiki ({s_wiki})");
+        assert!(
+            s_official > s_stale * 3.0,
+            "official ({s_official}) must beat stale ({s_stale})"
+        );
+        assert!(
+            s_official > s_wiki * 3.0,
+            "official ({s_official}) must beat off-topic wiki ({s_wiki})"
+        );
     }
 }

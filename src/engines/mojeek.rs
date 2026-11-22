@@ -20,8 +20,7 @@ const PAGES: usize = 3;
 
 static SEL_LI: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("ul.results-standard li, ul.results li").unwrap());
-static SEL_TITLE: LazyLock<Selector> =
-    LazyLock::new(|| Selector::parse("a.title, h2 a").unwrap());
+static SEL_TITLE: LazyLock<Selector> = LazyLock::new(|| Selector::parse("a.title, h2 a").unwrap());
 static SEL_SNIPPET: LazyLock<Selector> = LazyLock::new(|| Selector::parse("p.s").unwrap());
 
 #[async_trait::async_trait]
@@ -88,7 +87,9 @@ pub fn parse_mojeek_html(html: &str, rank_base: usize) -> Vec<RawSearchResult> {
     let mut results = Vec::new();
 
     for element in document.select(&SEL_LI) {
-        let Some(link) = element.select(&SEL_TITLE).next() else { continue };
+        let Some(link) = element.select(&SEL_TITLE).next() else {
+            continue;
+        };
         let href = match link.value().attr("href") {
             Some(h) if h.starts_with("http") && !h.contains("mojeek.com") => h.to_string(),
             _ => continue,

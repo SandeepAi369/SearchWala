@@ -11,27 +11,26 @@ pub mod cache_layer;
 pub mod chats;
 pub mod config;
 pub mod copilot;
+pub mod deep_reader;
 pub mod engines;
-pub mod fetcher;
-pub mod host_gate;
 pub mod eval;
 pub mod extractor;
-pub mod llm;
-pub mod deep_reader;
+pub mod fetcher;
 pub mod highlight;
-pub mod modes;
+pub mod host_gate;
+pub mod llm;
 pub mod models;
+pub mod modes;
+pub mod proxy_pool;
 pub mod query_intel;
 pub mod ranking;
 pub mod search;
 pub mod ssrf;
 pub mod synthesis;
-pub mod url_utils;
 #[cfg(test)]
 pub mod testalloc;
-pub mod proxy_pool;
+pub mod url_utils;
 pub mod util;
-
 
 /// Test-only counting allocator, so leak regressions can assert on live
 /// allocated bytes instead of process RSS (which is polluted by the parallel

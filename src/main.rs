@@ -24,7 +24,10 @@ use std::time::Instant;
 use axum::{
     extract::{Json, Query},
     http::StatusCode,
-    response::{Html, IntoResponse, sse::{Event, Sse}},
+    response::{
+        sse::{Event, Sse},
+        Html, IntoResponse,
+    },
     routing::{get, post},
     Router,
 };
@@ -44,8 +47,11 @@ struct AppState {
 
 const SEARCH_UI: &str = include_str!("../ui.html");
 
-
-fn params_from(body: SearchRequest, focus_override: Option<&str>, default_llm_urls: Option<usize>) -> search::SearchParams {
+fn params_from(
+    body: SearchRequest,
+    focus_override: Option<&str>,
+    default_llm_urls: Option<usize>,
+) -> search::SearchParams {
     search::SearchParams {
         query: body.query.trim().to_string(),
         max_results: body.max_results.or(default_llm_urls),
@@ -67,32 +73,59 @@ fn params_from(body: SearchRequest, focus_override: Option<&str>, default_llm_ur
 /// the search API, so without this any website could read saved
 /// conversations from http://localhost:8000.
 fn from_own_page(headers: &axum::http::HeaderMap) -> bool {
-    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
     let bind = std::env::var("BIND").unwrap_or_else(|_| "127.0.0.1".into());
     let loopback_bind = matches!(bind.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]");
-    let host_name = host.rsplit_once(':').map_or(host, |(h, p)| if p.chars().all(|c| c.is_ascii_digit()) { h } else { host });
+    let host_name = host.rsplit_once(':').map_or(host, |(h, p)| {
+        if p.chars().all(|c| c.is_ascii_digit()) {
+            h
+        } else {
+            host
+        }
+    });
     if loopback_bind && !matches!(host_name, "127.0.0.1" | "localhost" | "[::1]") {
         return false;
     }
-    match headers.get(axum::http::header::ORIGIN).and_then(|o| o.to_str().ok()) {
+    match headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|o| o.to_str().ok())
+    {
         None => true,
-        Some(origin) => origin.split_once("://").is_some_and(|(_, rest)| rest == host),
+        Some(origin) => origin
+            .split_once("://")
+            .is_some_and(|(_, rest)| rest == host),
     }
 }
 
 fn forbidden() -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": "conversations are only available to the SearchWala page on this machine" })))
+    (
+        StatusCode::FORBIDDEN,
+        Json(
+            serde_json::json!({ "error": "conversations are only available to the SearchWala page on this machine" }),
+        ),
+    )
 }
 
 /// Saves the question (when the request opts in with `save: true` and saving
 /// is on) and loads the conversation's earlier turns as memory (when the
 /// request asks for them and has an LLM). Scripts and tools calling the API
 /// without `save` leave nothing on disk.
-async fn begin_turn(state: &AppState, body: &SearchRequest, trusted: bool, params: &mut search::SearchParams) -> Option<(String, i64)> {
+async fn begin_turn(
+    state: &AppState,
+    body: &SearchRequest,
+    trusted: bool,
+    params: &mut search::SearchParams,
+) -> Option<(String, i64)> {
     let store = state.chats.as_ref().filter(|_| trusted)?;
     let mode = body.focus_mode.clone().unwrap_or_else(|| "auto".into());
     let turn = if body.save == Some(true) && store.saving_enabled().await {
-        match store.begin_turn(body.conversation_id.clone(), &params.query, &mode).await {
+        match store
+            .begin_turn(body.conversation_id.clone(), &params.query, &mode)
+            .await
+        {
             Ok(t) => Some(t),
             Err(e) => {
                 tracing::warn!("chats: could not save the question: {e}");
@@ -103,28 +136,58 @@ async fn begin_turn(state: &AppState, body: &SearchRequest, trusted: bool, param
         None
     };
     let wanted = body.memory_turns.unwrap_or(0);
-    let conversation = turn.as_ref().map(|(c, _)| c.clone()).or_else(|| body.conversation_id.clone());
+    let conversation = turn
+        .as_ref()
+        .map(|(c, _)| c.clone())
+        .or_else(|| body.conversation_id.clone());
     if let (true, true, Some(conv)) = (wanted > 0, params.llm.is_some(), conversation) {
         let before = turn.as_ref().map_or(i64::MAX, |(_, t)| *t);
-        params.memory = store.prior_turns(&conv, before, wanted).await.unwrap_or_default();
+        params.memory = store
+            .prior_turns(&conv, before, wanted)
+            .await
+            .unwrap_or_default();
     }
     turn
 }
 
 /// Completes the saved turn with the answer and what the UI rendered.
-async fn finish_turn(state: &AppState, turn: &Option<(String, i64)>, response: &mut SearchResponse) {
-    let (Some(store), Some((conv, id))) = (state.chats.as_ref(), turn) else { return };
+async fn finish_turn(
+    state: &AppState,
+    turn: &Option<(String, i64)>,
+    response: &mut SearchResponse,
+) {
+    let (Some(store), Some((conv, id))) = (state.chats.as_ref(), turn) else {
+        return;
+    };
     response.conversation_id = Some(conv.clone());
     response.turn_id = Some(*id);
-    let status = if response.llm_answer.is_some() || response.sources_processed > 0 { "done" } else { "failed" };
+    let status = if response.llm_answer.is_some() || response.sources_processed > 0 {
+        "done"
+    } else {
+        "failed"
+    };
     let json = serde_json::to_value(&*response).ok();
-    if let Err(e) = store.finish_turn(*id, status, response.search_query.clone(), response.llm_answer.clone(), json).await {
+    if let Err(e) = store
+        .finish_turn(
+            *id,
+            status,
+            response.search_query.clone(),
+            response.llm_answer.clone(),
+            json,
+        )
+        .await
+    {
         tracing::warn!("chats: could not save the answer: {e}");
     }
 }
 
 /// The non-streaming endpoints: save around one pipeline run.
-async fn run_saved(state: &AppState, body: SearchRequest, headers: &axum::http::HeaderMap, focus_override: Option<&str>) -> SearchResponse {
+async fn run_saved(
+    state: &AppState,
+    body: SearchRequest,
+    headers: &axum::http::HeaderMap,
+    focus_override: Option<&str>,
+) -> SearchResponse {
     let mut params = params_from(body.clone(), focus_override, None);
     let turn = begin_turn(state, &body, from_own_page(headers), &mut params).await;
     let mut response = search::execute_search_full(params, Some(&state.temp_db), None).await;
@@ -252,10 +315,16 @@ async fn stream_handler(
         let (ptx, mut prx) = tokio::sync::mpsc::channel::<search::Progress>(32);
         let pipeline = {
             let state = state.clone();
-            tokio::spawn(async move { search::execute_search_full(params, Some(&state.temp_db), Some(ptx)).await })
+            tokio::spawn(async move {
+                search::execute_search_full(params, Some(&state.temp_db), Some(ptx)).await
+            })
         };
         if let Some((conv, id)) = &turn {
-            state.running.lock().unwrap_or_else(|p| p.into_inner()).insert(*id, pipeline.abort_handle());
+            state
+                .running
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(*id, pipeline.abort_handle());
             let ev = serde_json::json!({ "type": "turn", "conversation_id": conv, "turn_id": id });
             let _ = tx.send(Ok(Event::default().data(ev.to_string()))).await;
         }
@@ -279,7 +348,11 @@ async fn stream_handler(
 
         let outcome = pipeline.await;
         if let Some((_, id)) = &turn {
-            state.running.lock().unwrap_or_else(|p| p.into_inner()).remove(id);
+            state
+                .running
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(id);
         }
         let final_event = match outcome {
             Ok(mut resp) => {
@@ -288,7 +361,11 @@ async fn stream_handler(
             }
             Err(e) => {
                 if let (Some(store), Some((_, id))) = (state.chats.as_ref(), &turn) {
-                    let status = if e.is_cancelled() { "stopped" } else { "failed" };
+                    let status = if e.is_cancelled() {
+                        "stopped"
+                    } else {
+                        "failed"
+                    };
                     let _ = store.finish_turn(*id, status, None, None, None).await;
                 }
                 serde_json::json!({ "type": "error", "error": e.to_string() })
@@ -297,9 +374,13 @@ async fn stream_handler(
         if client_gone {
             return;
         }
-        let _ = tx.send(Ok(Event::default().data(final_event.to_string()))).await;
         let _ = tx
-            .send(Ok(Event::default().data(serde_json::json!({ "type": "done" }).to_string())))
+            .send(Ok(Event::default().data(final_event.to_string())))
+            .await;
+        let _ = tx
+            .send(Ok(
+                Event::default().data(serde_json::json!({ "type": "done" }).to_string())
+            ))
             .await;
     });
 
@@ -313,7 +394,10 @@ async fn stream_handler(
 
 type ApiResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
 
-fn store_for<'a>(state: &'a AppState, headers: &axum::http::HeaderMap) -> Result<&'a chats::ChatStore, (StatusCode, Json<serde_json::Value>)> {
+fn store_for<'a>(
+    state: &'a AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<&'a chats::ChatStore, (StatusCode, Json<serde_json::Value>)> {
     if !from_own_page(headers) {
         return Err(forbidden());
     }
@@ -323,11 +407,17 @@ fn store_for<'a>(state: &'a AppState, headers: &axum::http::HeaderMap) -> Result
 }
 
 fn db_error(e: String) -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({ "error": e })),
+    )
 }
 
 fn not_found() -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "no such conversation" })))
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "error": "no such conversation" })),
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -337,16 +427,33 @@ struct ListQuery {
 }
 
 /// GET /api/chats?q=&limit= — conversations, most recent first.
-async fn chats_list_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap, Query(q): Query<ListQuery>) -> ApiResult {
+async fn chats_list_handler(
+    state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<ListQuery>,
+) -> ApiResult {
     let store = store_for(&state, &headers)?;
-    let list = store.list(q.q, q.limit.unwrap_or(500)).await.map_err(db_error)?;
-    Ok(Json(serde_json::json!({ "saving": store.saving_enabled().await, "conversations": list })))
+    let list = store
+        .list(q.q, q.limit.unwrap_or(500))
+        .await
+        .map_err(db_error)?;
+    Ok(Json(
+        serde_json::json!({ "saving": store.saving_enabled().await, "conversations": list }),
+    ))
 }
 
 /// GET /api/chats/{id} — every turn, as it was rendered.
-async fn chat_get_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> ApiResult {
+async fn chat_get_handler(
+    state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult {
     let store = store_for(&state, &headers)?;
-    let conv = store.get(&id).await.map_err(db_error)?.ok_or_else(not_found)?;
+    let conv = store
+        .get(&id)
+        .await
+        .map_err(db_error)?
+        .ok_or_else(not_found)?;
     Ok(Json(serde_json::to_value(conv).unwrap_or_default()))
 }
 
@@ -370,7 +477,11 @@ async fn chat_rename_handler(
 }
 
 /// DELETE /api/chats/{id}
-async fn chat_delete_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap, axum::extract::Path(id): axum::extract::Path<String>) -> ApiResult {
+async fn chat_delete_handler(
+    state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult {
     let store = store_for(&state, &headers)?;
     if !store.delete(&id).await.map_err(db_error)? {
         return Err(not_found());
@@ -379,7 +490,10 @@ async fn chat_delete_handler(state: axum::extract::State<Arc<AppState>>, headers
 }
 
 /// DELETE /api/chats — every conversation.
-async fn chats_delete_all_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult {
+async fn chats_delete_all_handler(
+    state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> ApiResult {
     let store = store_for(&state, &headers)?;
     let n = store.delete_all().await.map_err(db_error)?;
     Ok(Json(serde_json::json!({ "deleted": n })))
@@ -391,23 +505,41 @@ struct SavingBody {
 }
 
 /// GET /api/chats/settings
-async fn chats_settings_get_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult {
+async fn chats_settings_get_handler(
+    state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> ApiResult {
     let store = store_for(&state, &headers)?;
-    Ok(Json(serde_json::json!({ "saving": store.saving_enabled().await })))
+    Ok(Json(
+        serde_json::json!({ "saving": store.saving_enabled().await }),
+    ))
 }
 
 /// PUT /api/chats/settings {"saving": bool}
-async fn chats_settings_put_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(body): Json<SavingBody>) -> ApiResult {
+async fn chats_settings_put_handler(
+    state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<SavingBody>,
+) -> ApiResult {
     let store = store_for(&state, &headers)?;
     store.set_saving(body.saving).await.map_err(db_error)?;
     Ok(Json(serde_json::json!({ "saving": body.saving })))
 }
 
 /// POST /api/chats/turns/{id}/stop — cancels a running saved turn.
-async fn turn_stop_handler(state: axum::extract::State<Arc<AppState>>, headers: axum::http::HeaderMap, axum::extract::Path(id): axum::extract::Path<i64>) -> ApiResult {
+async fn turn_stop_handler(
+    state: axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> ApiResult {
     let store = store_for(&state, &headers)?;
     let stopped = store.stop_turn(id).await.map_err(db_error)?;
-    if let Some(h) = state.running.lock().unwrap_or_else(|p| p.into_inner()).remove(&id) {
+    if let Some(h) = state
+        .running
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&id)
+    {
         h.abort();
     }
     Ok(Json(serde_json::json!({ "stopped": stopped })))
@@ -448,16 +580,31 @@ async fn config_handler() -> impl IntoResponse {
 /// `no-store`: the page is compiled into the binary, so after an upgrade a
 /// cached copy would be a different UI talking to a newer API.
 async fn root_handler() -> impl IntoResponse {
-    ([(axum::http::header::CACHE_CONTROL, "no-store")], Html(SEARCH_UI))
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Html(SEARCH_UI),
+    )
 }
 
 /// POST /api/models - Dynamic model fetcher
 async fn models_handler(
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let api_key = body.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let base_url = body.get("base_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let provider = body.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let api_key = body
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let base_url = body
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let provider = body
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     if base_url.trim().is_empty() && provider.trim().is_empty() {
         return Err((
@@ -470,7 +617,10 @@ async fn models_handler(
     // it with the user's credentials. Without this check, any page in the
     // user's browser could use it to read loopback services and cloud metadata.
     // (An empty base_url means the provider's built-in endpoint.)
-    if let Err(e) = Some(base_url.trim()).filter(|b| !b.is_empty()).map_or(Ok(()), |b| ssrf::validate_llm_base_url(b).map(|_| ())) {
+    if let Err(e) = Some(base_url.trim())
+        .filter(|b| !b.is_empty())
+        .map_or(Ok(()), |b| ssrf::validate_llm_base_url(b).map(|_| ()))
+    {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": format!("rejected base_url: {e}") })),
@@ -581,9 +731,12 @@ static TTS_GATE: std::sync::LazyLock<tokio::sync::Semaphore> =
 async fn tts_handler(
     Query(params): Query<TtsQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let _permit = TTS_GATE
-        .try_acquire()
-        .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, "TTS busy, retry shortly".to_string()))?;
+    let _permit = TTS_GATE.try_acquire().map_err(|_| {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            "TTS busy, retry shortly".to_string(),
+        )
+    })?;
 
     let text = params.text.trim().to_string();
     if text.is_empty() {
@@ -614,22 +767,26 @@ async fn tts_handler(
             let mut buf = String::new();
             let mut is_ref = true;
             while let Some(&next) = chars.peek() {
-                if next == ']' { chars.next(); break; }
-                if !next.is_ascii_digit() && next != ',' && next != ' ' { is_ref = false; }
+                if next == ']' {
+                    chars.next();
+                    break;
+                }
+                if !next.is_ascii_digit() && next != ',' && next != ' ' {
+                    is_ref = false;
+                }
                 buf.push(next);
                 chars.next();
             }
-            if !is_ref { result.push_str(&buf); } // Keep non-numeric bracket content
+            if !is_ref {
+                result.push_str(&buf);
+            } // Keep non-numeric bracket content
         } else {
             result.push(ch);
         }
     }
 
     // Final cleanup
-    let final_text: String = result
-        .split_whitespace()
-        .collect::<Vec<&str>>()
-        .join(" ");
+    let final_text: String = result.split_whitespace().collect::<Vec<&str>>().join(" ");
 
     // Use the OS temp dir (not a hardcoded /tmp) and guarantee cleanup even on
     // the error paths — v7.0 returned early on a non-zero exit status BEFORE
@@ -641,27 +798,50 @@ async fn tts_handler(
     ));
     let _tmp_guard = TempFileGuard(tmp_path.clone());
 
-    // Resolve edge-tts dynamically from EDGE_TTS_PATH, $HOME/.local/bin/edge-tts
-    // (standard pip install --user location, not in $PATH for non-login shells),
+    // Resolve edge-tts dynamically from EDGE_TTS_PATH, $HOME/.local/bin/edge-tts,
+    // /home/$USER/.local/bin/edge-tts (when HOME is overridden in clean-room runs),
     // system bin directories, or $PATH (zero hardcoded username).
     let edge_tts_path = std::env::var("EDGE_TTS_PATH").unwrap_or_else(|_| {
+        let mut candidates: Vec<String> = Vec::new();
         if let Ok(home) = std::env::var("HOME") {
-            let user_local = format!("{}/.local/bin/edge-tts", home.trim_end_matches('/'));
-            if std::path::Path::new(&user_local).exists() {
-                return user_local;
+            candidates.push(format!(
+                "{}/.local/bin/edge-tts",
+                home.trim_end_matches('/')
+            ));
+        }
+        if let Ok(user) = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")) {
+            if !user.trim().is_empty() {
+                candidates.push(format!("/home/{}/.local/bin/edge-tts", user.trim()));
             }
         }
-        for path in &["/usr/local/bin/edge-tts", "/usr/bin/edge-tts"] {
-            if std::path::Path::new(path).exists() {
-                return (*path).to_string();
+        candidates.push("/usr/local/bin/edge-tts".to_string());
+        candidates.push("/usr/bin/edge-tts".to_string());
+        for cand in candidates {
+            if std::path::Path::new(&cand).exists() {
+                return cand;
             }
         }
         "edge-tts".to_string()
     });
 
     // An English voice reads Devanagari as silence or gibberish.
-    let voice = if final_text.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c)) { "hi-IN-SwaraNeural" } else { "en-US-AvaNeural" };
-    let output = tokio::process::Command::new(&edge_tts_path)
+    let voice = if final_text
+        .chars()
+        .any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
+    {
+        "hi-IN-SwaraNeural"
+    } else {
+        "en-US-AvaNeural"
+    };
+    let mut cmd = tokio::process::Command::new(&edge_tts_path);
+    // If edge-tts lives in <prefix>/.local/bin/edge-tts, set PYTHONUSERBASE=<prefix>/.local
+    // so Python locates user site-packages even when HOME is overridden (e.g. HOME=/tmp/sw_clean).
+    if let Some(local_base) = edge_tts_path.strip_suffix("/bin/edge-tts") {
+        if local_base.ends_with("/.local") {
+            cmd.env("PYTHONUSERBASE", local_base);
+        }
+    }
+    let output = cmd
         .arg("--text")
         .arg(&final_text)
         .arg("--voice")
@@ -672,15 +852,27 @@ async fn tts_handler(
         .arg(&tmp_path)
         .output()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("edge-tts not found: {e}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("edge-tts not found: {e}"),
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("edge-tts error: {stderr}")));
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("edge-tts error: {stderr}"),
+        ));
     }
 
-    let audio_bytes = tokio::fs::read(&tmp_path).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read error: {e}")))?;
+    let audio_bytes = tokio::fs::read(&tmp_path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read error: {e}"),
+        )
+    })?;
     // cleanup handled by _tmp_guard on drop
 
     Ok((
@@ -725,7 +917,10 @@ async fn main() {
     let temp_db = cache::TempDb::new();
     let chats = match chats::ChatStore::open_default() {
         Ok(s) => {
-            tracing::info!("  Conversations: {:?}", chats::ChatStore::data_dir().join("searchwala.db"));
+            tracing::info!(
+                "  Conversations: {:?}",
+                chats::ChatStore::data_dir().join("searchwala.db")
+            );
             Some(s)
         }
         Err(e) => {
@@ -753,14 +948,25 @@ async fn main() {
         .route("/config", get(config_handler))
         .route("/search", get(root_handler).post(search_handler))
         .route("/search/auto-llm", post(search_auto_llm_handler))
-        .route("/search/lite-llm", post(search_auto_llm_handler))  // backward compat
+        .route("/search/lite-llm", post(search_auto_llm_handler)) // backward compat
         .route("/search/research-llm", post(search_research_llm_handler))
         .route("/search/stream", post(stream_handler))
         .route("/api/models", post(models_handler))
-        .route("/api/chats", get(chats_list_handler).delete(chats_delete_all_handler))
-        .route("/api/chats/settings", get(chats_settings_get_handler).put(chats_settings_put_handler))
+        .route(
+            "/api/chats",
+            get(chats_list_handler).delete(chats_delete_all_handler),
+        )
+        .route(
+            "/api/chats/settings",
+            get(chats_settings_get_handler).put(chats_settings_put_handler),
+        )
         .route("/api/chats/turns/{id}/stop", post(turn_stop_handler))
-        .route("/api/chats/{id}", get(chat_get_handler).patch(chat_rename_handler).delete(chat_delete_handler))
+        .route(
+            "/api/chats/{id}",
+            get(chat_get_handler)
+                .patch(chat_rename_handler)
+                .delete(chat_delete_handler),
+        )
         .route("/api/tts", get(tts_handler))
         .route("/health/engines", get(engine_health_handler))
         .route("/health/cache", get(cache_stats_handler))

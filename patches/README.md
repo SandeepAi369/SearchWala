@@ -12,3 +12,11 @@ wreq-util uses zstd to decompress TLS certificates sent by remote servers, so
 the vulnerable code is reachable. Upstream's only fix is the 3.0 release
 candidate line. Delete this directory and the `[patch.crates-io]` entry once a
 stable wreq-util depends on zstd >= 0.14.3.
+
+## dom_smoothie 0.19.0 (`bench/all-strategies`)
+
+Includes the 7 upstreamed content & metadata extraction improvements (`unwrap_noscript_if_small`,
+same-class sibling parent promotion, section heading retention, `<math>` TeX annotation recovery,
+header data-table retention, JSON-LD `@graph` + array `@type` traversal, and extended meta
+published/modified timestamp matching). Remove once a crates.io release of `dom_smoothie` ships
+all 7 fixes.
