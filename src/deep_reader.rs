@@ -103,6 +103,56 @@ pub fn strip_sandpack_placeholders(html: &str) -> Option<String> {
     Some(out)
 }
 
+static NOSCRIPT_BLOCK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<noscript\b[^>]*>(.*?)</noscript\s*>").unwrap());
+static SEL_BODY_P: LazyLock<Selector> = LazyLock::new(|| Selector::parse("body p").unwrap());
+static SEL_BODY_NOSCRIPT_P: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("body noscript p").unwrap());
+static SEL_FRAG_P: LazyLock<Selector> = LazyLock::new(|| Selector::parse("p").unwrap());
+
+/// Unwrap `<noscript>` blocks that carry substantial paragraph prose (`>= 200`
+/// chars) when the rest of `<body>` falls below 500 chars (e.g., Discourse or
+/// SPA shells that ship full article HTML inside `<noscript>`). Returns `None`
+/// without allocating when no `<noscript>` fallback needs unwrapping.
+pub fn unwrap_noscript_fallbacks(html: &str) -> Option<String> {
+    if !NOSCRIPT_BLOCK.is_match(html) {
+        return None;
+    }
+    let doc = Html::parse_document(html);
+    let norm_len = |el: scraper::ElementRef<'_>| -> usize {
+        el.text()
+            .flat_map(|t| t.split_whitespace())
+            .map(|w| w.chars().count() + 1)
+            .sum::<usize>()
+    };
+    let total_p: usize = doc.select(&SEL_BODY_P).map(&norm_len).sum();
+    let noscript_p: usize = doc.select(&SEL_BODY_NOSCRIPT_P).map(&norm_len).sum();
+    if noscript_p < 200 || total_p.saturating_sub(noscript_p) >= 500 {
+        return None;
+    }
+
+    let mut out = String::with_capacity(html.len());
+    let mut last = 0;
+    let mut changed = false;
+    for cap in NOSCRIPT_BLOCK.captures_iter(html) {
+        let Some(full) = cap.get(0) else { continue };
+        let Some(inner) = cap.get(1) else { continue };
+        let frag = Html::parse_fragment(inner.as_str());
+        let p_chars: usize = frag.select(&SEL_FRAG_P).map(&norm_len).sum();
+        if p_chars >= 200 {
+            out.push_str(&html[last..full.start()]);
+            out.push_str(inner.as_str());
+            last = full.end();
+            changed = true;
+        }
+    }
+    if !changed {
+        return None;
+    }
+    out.push_str(&html[last..]);
+    Some(out)
+}
+
 // ----------------------------------------------------------------------------
 // Hydration data
 // ----------------------------------------------------------------------------

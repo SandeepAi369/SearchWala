@@ -138,7 +138,6 @@ fn word_count(s: &str) -> usize {
 fn readability_extract(html: &str, url: &str) -> Option<Extracted> {
     let cfg = dom_smoothie::Config {
         text_mode: dom_smoothie::TextMode::Formatted,
-        unwrap_noscript_if_small: true,
         ..Default::default()
     };
     let mut r = dom_smoothie::Readability::new(html, Some(url), Some(cfg)).ok()?;
@@ -155,7 +154,8 @@ fn readability_extract(html: &str, url: &str) -> Option<Extracted> {
     } else {
         0.65
     };
-    let published = article
+    let mut title = article.title;
+    let mut published = article
         .published_time
         .as_deref()
         .and_then(parse_datetime_utc)
@@ -166,10 +166,30 @@ fn readability_extract(html: &str, url: &str) -> Option<Extracted> {
                 .and_then(parse_datetime_utc)
         });
     let language = article.lang.as_deref().and_then(normalize_lang);
-    let byline = clean_opt_str(article.byline);
-    let site_name = clean_opt_str(article.site_name);
+    let mut byline = clean_opt_str(article.byline);
+    let mut site_name = clean_opt_str(article.site_name);
+    // Upstream dom_smoothie does not traverse JSON-LD `@graph` or array `@type`,
+    // nor all Dublin Core meta date names (`dcterms.modified`, etc.); fill any
+    // missing metadata cleanly from flattened JSON-LD and `<meta>` tags.
+    if (byline.is_none() || site_name.is_none() || published.is_none() || html.contains("@graph"))
+        && html.contains("ld+json")
+    {
+        if let Some(meta) = json_ld_metadata(html) {
+            if let Some(h) = meta.headline {
+                if html.contains("@graph") || title.trim().is_empty() {
+                    title = h;
+                }
+            }
+            byline = byline.or(meta.byline);
+            site_name = site_name.or(meta.site_name);
+            published = published.or(meta.published);
+        }
+    }
+    if published.is_none() {
+        published = meta_datetime_fallback(html);
+    }
     Some(Extracted {
-        title: article.title,
+        title,
         text,
         published,
         language,
@@ -229,16 +249,19 @@ fn wants_second_opinion(primary: &Extracted, html_len: usize) -> bool {
 
 /// Extract readable content from a page.
 ///
-/// DOM extraction (`dom_smoothie` primary with `TextMode::Formatted` and
-/// `unwrap_noscript_if_small: true`, then `rs-trafilatura` as a conditional
-/// second opinion) runs on the page after Stage 1 pre-cleaners. Structured
-/// sources then compete with the DOM result: JSON-LD `articleBody` wins when
-/// clearly longer (paywalled teasers); hydration data wins on JS shells.
+/// DOM extraction (`dom_smoothie` primary with `TextMode::Formatted`, then
+/// `rs-trafilatura` as a conditional second opinion) runs on the page after
+/// Stage 1 pre-cleaners (Shadow DOM, Sandpack placeholders, SPA `<noscript>`
+/// fallbacks). Structured sources then compete with the DOM result: JSON-LD
+/// `articleBody` wins when clearly longer (paywalled teasers); hydration data
+/// wins on JS shells.
 pub fn extract(html: &str, url: &str) -> Extracted {
     let unwrapped = crate::deep_reader::unwrap_shadow_templates(html);
     let html = unwrapped.as_deref().unwrap_or(html);
     let de_sandpacked = crate::deep_reader::strip_sandpack_placeholders(html);
     let html = de_sandpacked.as_deref().unwrap_or(html);
+    let noscript_unwrapped = crate::deep_reader::unwrap_noscript_fallbacks(html);
+    let html = noscript_unwrapped.as_deref().unwrap_or(html);
 
     let mut best = readability_extract(html, url).unwrap_or_default();
 
@@ -327,6 +350,8 @@ static SEL_TITLE: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse(
 static SEL_H1: LazyLock<Option<Selector>> = LazyLock::new(|| Selector::parse("h1").ok());
 static SEL_META_DESC: LazyLock<Option<Selector>> =
     LazyLock::new(|| Selector::parse("meta[name='description']").ok());
+static SEL_META_ANY: LazyLock<Option<Selector>> =
+    LazyLock::new(|| Selector::parse("meta[content]").ok());
 static SEL_JSON_LD: LazyLock<Option<Selector>> =
     LazyLock::new(|| Selector::parse("script[type='application/ld+json']").ok());
 
@@ -432,6 +457,148 @@ pub fn json_ld_article_body(html: &str) -> Option<String> {
         }
     }
     best
+}
+
+#[derive(Default)]
+struct JsonLdMeta {
+    headline: Option<String>,
+    byline: Option<String>,
+    site_name: Option<String>,
+    published: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+fn ld_person_name(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => clean_opt_str(Some(s.clone())),
+        serde_json::Value::Object(o) => {
+            clean_opt_str(o.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        }
+        serde_json::Value::Array(arr) => {
+            let names: Vec<String> = arr.iter().filter_map(ld_person_name).collect();
+            (!names.is_empty()).then(|| names.join(", "))
+        }
+        _ => None,
+    }
+}
+
+fn json_ld_metadata(html: &str) -> Option<JsonLdMeta> {
+    let doc = Html::parse_document(html);
+    let sel = SEL_JSON_LD.as_ref()?;
+    let mut nodes = Vec::new();
+    for script in doc.select(sel) {
+        let raw = script.text().collect::<String>();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw.trim()) {
+            flatten_ld(&v, &mut nodes);
+        }
+    }
+    let is_article = |n: &serde_json::Value| {
+        ld_types(n).iter().any(|t| {
+            matches!(
+                t.as_str(),
+                "Article"
+                    | "NewsArticle"
+                    | "TechArticle"
+                    | "BlogPosting"
+                    | "ScholarlyArticle"
+                    | "Report"
+                    | "OpinionNewsArticle"
+                    | "AnalysisNewsArticle"
+                    | "LiveBlogPosting"
+            )
+        })
+    };
+    let mut meta = JsonLdMeta::default();
+    for n in nodes.iter().filter(|n| is_article(n)) {
+        if meta.headline.is_none() {
+            meta.headline = clean_opt_str(
+                n.get("headline")
+                    .or_else(|| n.get("name"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            );
+        }
+        if meta.byline.is_none() {
+            meta.byline = n.get("author").and_then(ld_person_name);
+        }
+        if meta.site_name.is_none() {
+            meta.site_name = n.get("publisher").and_then(ld_person_name);
+        }
+        if meta.published.is_none() {
+            meta.published = n
+                .get("datePublished")
+                .or_else(|| n.get("dateCreated"))
+                .or_else(|| n.get("dateModified"))
+                .and_then(|v| v.as_str())
+                .and_then(parse_datetime_utc);
+        }
+    }
+    (meta.headline.is_some()
+        || meta.byline.is_some()
+        || meta.site_name.is_some()
+        || meta.published.is_some())
+    .then_some(meta)
+}
+
+/// Fallback date lookup from `<meta name|property="..." content="...">` for
+/// published/modified keys not covered by upstream `dom_smoothie` (such as
+/// `dcterms.modified`, `dcterms:issued`, `article:modified_time`, `pubdate`).
+fn meta_datetime_fallback(html: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let doc = Html::parse_document(html);
+    let sel = SEL_META_ANY.as_ref()?;
+    let mut modified: Option<chrono::DateTime<chrono::Utc>> = None;
+    for el in doc.select(sel) {
+        let Some(content) = el.value().attr("content") else {
+            continue;
+        };
+        let key = el
+            .value()
+            .attr("property")
+            .or_else(|| el.value().attr("name"))
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        let is_pub = matches!(
+            key.as_str(),
+            "article:published_time"
+                | "og:published_time"
+                | "published_time"
+                | "pubdate"
+                | "publishdate"
+                | "datepublished"
+                | "parsely-pub-date"
+                | "dcterms.created"
+                | "dcterms:created"
+                | "dcterms.issued"
+                | "dcterms:issued"
+                | "dcterms.available"
+                | "dcterms:available"
+                | "dc.date.issued"
+                | "dc.date.created"
+        );
+        if is_pub {
+            if let Some(dt) = parse_datetime_utc(content) {
+                return Some(dt);
+            }
+        }
+        let is_mod = matches!(
+            key.as_str(),
+            "article:modified_time"
+                | "og:updated_time"
+                | "modified_time"
+                | "datemodified"
+                | "last-modified"
+                | "dcterms.modified"
+                | "dcterms:modified"
+                | "dc.date.modified"
+        );
+        if is_mod && modified.is_none() {
+            modified = parse_datetime_utc(content);
+        }
+    }
+    modified
 }
 
 /// Walk arrays and `@graph` so nested nodes are reachable. Yoast and RankMath
