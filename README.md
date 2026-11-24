@@ -2,10 +2,11 @@
 
 # ⚡ SearchWala
 
-### A private meta-search and answer engine, in one Rust binary
+### A private meta-search, web scraper, and MCP server — in one Rust binary
 
-Ask a question. SearchWala searches 17 engines at once, reads the pages they
-agree on, and answers with citations you can click, using any LLM or none.
+Ask a question or connect an AI agent. SearchWala searches 19 engines at once,
+reads the pages they agree on, and answers with citations you can click — using
+any LLM or none.
 
 [![CI](https://github.com/SandeepAi369/SearchWala/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SandeepAi369/SearchWala/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/SandeepAi369/SearchWala/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/SandeepAi369/SearchWala/actions/workflows/codeql.yml)
@@ -13,9 +14,10 @@ agree on, and answers with citations you can click, using any LLM or none.
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/SandeepAi369/SearchWala/badge)](https://scorecard.dev/viewer/?uri=github.com/SandeepAi369/SearchWala)
 [![Dependabot](https://img.shields.io/badge/dependabot-enabled-025E8C?logo=dependabot&logoColor=white)](.github/dependabot.yml)
 
+[![Crates.io](https://img.shields.io/crates/v/searchwala?color=orange&logo=rust)](https://crates.io/crates/searchwala)
 [![Release](https://img.shields.io/github/v/release/SandeepAi369/SearchWala?label=release&color=blue)](https://github.com/SandeepAi369/SearchWala/releases/latest)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?logo=rust)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-359_passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-360_passing-brightgreen)](#development)
 [![License](https://img.shields.io/badge/license-Apache%202.0-purple)](./LICENSE)
 [![Author](https://img.shields.io/badge/author-SandeepCH-0A7CFF?logo=github)](https://github.com/SandeepAi369)
 [![Stars](https://img.shields.io/github/stars/SandeepAi369/SearchWala?style=social)](https://github.com/SandeepAi369/SearchWala/stargazers)
@@ -128,13 +130,23 @@ Measured on 20 hand-labelled queries against live engines, Deep reaches
 
 ## Quick start
 
+### Install from crates.io (recommended)
+
+```bash
+cargo install searchwala
+searchwala              # open http://127.0.0.1:8000 (web UI + /mcp)
+searchwala mcp          # or run as a zero-dependency stdio MCP server
+```
+
+### Build from source
+
 ```bash
 git clone https://github.com/SandeepAi369/SearchWala && cd SearchWala
 cargo build --release
 ./target/release/searchwala        # open http://127.0.0.1:8000
 ```
 
-Or download the prebuilt Linux binary from
+Or download a prebuilt Linux binary from
 [Releases](https://github.com/SandeepAi369/SearchWala/releases/latest), or use
 Docker:
 
@@ -165,7 +177,7 @@ SearchWala ships a native, zero-dependency **Model Context Protocol (MCP)** serv
 {
   "mcpServers": {
     "searchwala": {
-      "command": "/path/to/searchwala",
+      "command": "searchwala",
       "args": ["mcp"]
     }
   }
@@ -201,15 +213,16 @@ branch. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 ## Documentation
 
 - **[MCP Server Guide](docs/MCP.md):** connect AI agents via `searchwala mcp` (stdio) or `/mcp` (Streamable HTTP), tool schemas, domain filtering, and client configs
-- **[Full reference](docs/REFERENCE.md):** all 17 engines, the stealth TLS
+- **MCP Registry:** `mcp-name: io.github.SandeepAi369/searchwala`
+- **[Full reference](docs/REFERENCE.md):** all 19 engines, the stealth TLS
   layer, extraction benchmarks, ranking, every API endpoint and every setting
-- **[Engineering log](docs/IMPLEMENTATION_BLUEPRINT.md):** the v7 → v8.2
+- **[Engineering log](docs/IMPLEMENTATION_BLUEPRINT.md):** the v7 → v8.3
   rebuild, bug by bug
 
 ## Development
 
 ```bash
-cargo test --release                          # 359 tests
+cargo test --release                          # 360 tests
 cargo run --release --bin intent_probe        # intent accuracy: 50/50
 cargo run --release --bin eval -- --limit 20 --focus fast   # retrieval quality
 cargo run --release --bin highlight_probe     # quick answers on 45 saved real queries
