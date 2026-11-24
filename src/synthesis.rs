@@ -93,9 +93,11 @@ pub fn concise_prompts(q: &str, ctx: &str, domain: Domain) -> (String, String) {
     );
     let user = format!(
         "[VERIFIED EVIDENCE]\n{ctx}\n\n---\n[USER QUESTION]\n{q}\n\n\
-         Lead with a direct 1-2 sentence answer, followed by 2-4 crisp supporting bullets (each \
-         ending with [n]) as needed for accuracy. Do not omit essential facts, but keep every \
-         sentence tight (~100-180 words). End with: **Sources Used:** followed by each cited [n] <url>."
+         Start with a concise heading or 1-2 sentence opening framing the core answer [n], \
+         followed by 2-4 crisp, well-organized bullets with inline [n] citations, and close with \
+         a brief 1-sentence concluding wrap-up tying the takeaway together (without robotic labels \
+         like 'Summary:' or 'Conclusion:'). Keep every sentence tight (~120-200 words) and do not \
+         append a trailing 'Sources Used' or URL list."
     );
     (system, user)
 }

@@ -1999,10 +1999,19 @@ pub(crate) fn build_intent_prompts(
 
     let (intent_instruction, format_instruction) = match &intel.intent {
         QueryIntent::Factual => (
-            "Provide a clear, balanced, medium-length answer. Lead directly with the core fact, \
-             then cover the essential details, numbers, and specifications without bloated prose.".to_string(),
-            "Lead with a 1-2 sentence direct answer, then 3-5 concise bullets (1-2 crisp sentences each, \
-             ~150-250 words total) with [n] citations. Do not pad with tangential background.".to_string(),
+            "Provide a clear, balanced, medium-length answer. Frame the core fact and context up \
+             front, then cover the essential details, numbers, and specifications cleanly without \
+             bloated prose."
+                .to_string(),
+            "Structure the response naturally (~160-260 words total):\n\
+             1. Start with a concise Markdown heading (`## ...`) or 1-2 sentence opening that states \
+             the core answer and frames the context [n].\n\
+             2. Follow with 3-5 well-organized bullet points (1-2 crisp sentences each) covering key \
+             facts, figures, or specifications with inline [n] citations.\n\
+             3. Close with a brief 1-2 sentence concluding paragraph that ties the main points \
+             together naturally for the reader — do not use robotic labels like 'Summary:' or \
+             'Conclusion:'."
+                .to_string(),
         ),
 
         QueryIntent::Temporal => (
@@ -2014,9 +2023,15 @@ pub(crate) fn build_intent_prompts(
                 (e.g., do not pad a recent news list with items from earlier quarters/months).",
                 now, year
             ),
-            "Answer with 3-5 concise, high-signal bullet points (1-2 crisp sentences each, ~150-260 words total) \
-             covering ONLY the genuinely recent updates that match the user's timeframe. Give exact dates, \
-             version/feature names, and [n] citations. Never pad the list with old or undated filler.".to_string(),
+            "Structure the response naturally (~160-280 words total) covering ONLY genuinely recent \
+             updates matching the user's timeframe:\n\
+             1. Start with a clean Markdown heading (`## ...`) and a 1-2 sentence opening framing \
+             the current situation or headline development [n].\n\
+             2. Present 3-5 well-organized bullet points (1-2 crisp sentences each) with exact dates, \
+             version/feature names, and inline [n] citations. Never pad with old or undated filler.\n\
+             3. End with a brief 1-2 sentence concluding paragraph tying together what these recent \
+             updates mean overall — do not use robotic labels like 'Summary:' or 'Conclusion:'."
+                .to_string(),
         ),
 
         QueryIntent::Person => (
@@ -2024,35 +2039,61 @@ pub(crate) fn build_intent_prompts(
                 "The user is asking about a SPECIFIC PERSON. Provide a balanced, medium-length profile as of {}.",
                 now
             ),
-            "Keep the answer focused (~180-260 words) with concise bullets for:\n\
-             - **Current Role / Latest Activity**: What they did or released most recently (with exact dates) [n]\n\
-             - **Key Background & Achievements**: Core highlights and impact [n]".to_string(),
+            "Structure the profile cleanly (~180-280 words total):\n\
+             1. Start with a concise Markdown heading (`## ...`) and a 1-2 sentence opening \
+             introducing who they are and their primary role today [n].\n\
+             2. Use clear, well-organized bullet points covering **Current Role / Latest Activity** \
+             (with exact dates) and **Key Background & Achievements**, citing each claim inline as [n].\n\
+             3. Finish with a brief 1-2 sentence concluding paragraph capturing their broader impact \
+             or current trajectory — do not use robotic labels like 'Summary:' or 'Conclusion:'."
+                .to_string(),
         ),
 
         QueryIntent::Comparison => (
-            "The user wants a clear, well-structured COMPARISON. Compare the core technical dimensions \
-             present in the evidence concisely without repetitive walls of text.".to_string(),
-            "Keep the comparison balanced and scannable (~220-350 words):\n\
-             - **Overview**: 2 crisp sentences defining both sides [n]\n\
-             - **Key Differences**: A compact Markdown comparison table of the core technical dimensions (execution location, cold-start & network latency, runtime model, memory/CPU limits, languages, cost) [n]\n\
-             - **Strengths & Trade-offs**: 2-3 concise bullets per side [n]\n\
-             - **Bottom Line**: 1-2 sentences on which to choose by workload [n]".to_string(),
+            "The user wants a clear, well-structured COMPARISON. Frame both sides clearly, compare \
+             the core dimensions present in the evidence concisely, and finish with a helpful \
+             takeaway without repetitive walls of text."
+                .to_string(),
+            "Structure the comparison cleanly (~230-380 words total):\n\
+             1. Open with a concise Markdown heading (`## ...`) and 1-2 framing sentences defining \
+             both sides and their core distinction [n].\n\
+             2. Include a compact Markdown comparison table of the main dimensions supported by the \
+             sources, followed by 2-3 clear, well-organized bullet points per side covering key \
+             strengths and trade-offs with inline [n] citations.\n\
+             3. Close with a brief 1-2 sentence concluding paragraph tying the trade-offs together \
+             and noting which fits which use case — do not use robotic labels like 'Summary:', \
+             'Conclusion:', or 'Bottom Line:'."
+                .to_string(),
         ),
 
         QueryIntent::HowTo => (
-            "The user wants PRACTICAL INSTRUCTIONS. Provide clear, actionable step-by-step guidance.".to_string(),
-            "Provide 3-6 concise numbered steps (1-2 crisp sentences per step, ~150-250 words total) \
-             with exact commands/parameters and [n] citations.".to_string(),
+            "The user wants PRACTICAL INSTRUCTIONS. Frame the approach clearly, provide actionable \
+             guidance, and close with a concise wrap-up."
+                .to_string(),
+            "Structure the guide cleanly (~160-280 words total):\n\
+             1. Start with a concise Markdown heading (`## ...`) and a 1-2 sentence opening framing \
+             the approach and any prerequisites [n].\n\
+             2. Present 3-6 clear, well-organized bullet points or numbered steps (1-2 crisp \
+             sentences each) with exact commands, settings, or parameters and inline [n] citations.\n\
+             3. End with a brief 1-2 sentence concluding paragraph summarizing the expected outcome \
+             or key tip to keep in mind — do not use robotic labels like 'Summary:' or 'Conclusion:'."
+                .to_string(),
         ),
 
         QueryIntent::Research | QueryIntent::Navigational => (
             format!(
-                "Provide a balanced, well-structured synthesis of the key facts, mechanisms, or historical \
-                 milestones without bloated prose. Date: {}.",
+                "Provide a balanced, well-structured synthesis of the key facts, mechanisms, or \
+                 historical milestones with smooth, reader-friendly flow. Date: {}.",
                 now
             ),
-            "Answer in 4-6 concise, well-structured bullet points (1-2 crisp sentences each, ~180-280 words total) \
-             covering the most important facts, dates, and strategies with [n] citations.".to_string(),
+            "Structure the response naturally (~180-300 words total):\n\
+             1. Open with a clean Markdown heading (`## ...`) and a 1-2 sentence opening framing \
+             the core answer and context [n].\n\
+             2. Present 4-6 well-organized bullet points (1-2 crisp sentences each) covering the most \
+             important facts, mechanisms, dates, or strategies with inline [n] citations.\n\
+             3. End with a brief 1-2 sentence concluding paragraph tying the main points together \
+             cleanly for the reader — do not use robotic labels like 'Summary:' or 'Conclusion:'."
+                .to_string(),
         ),
     };
 
@@ -2063,7 +2104,7 @@ pub(crate) fn build_intent_prompts(
          Follow this strict 3-step reasoning order:\n\
          1. VERIFY AUTHORITY & ENTRY DATE: Check each source's [Official Primary Source] / [Official Vendor Source] tag, published date, and any [Entry Date: YYYY-MM-DD] first.\n\
          2. ENFORCE TEMPORAL SCOPE: Anchor 'latest' or 'past few days' claims strictly to the requested recent window; omit older historical entries from months earlier rather than using them as padding.\n\
-         3. SYNTHESIZE BALANCED, CRISP FACTS: Keep Auto-mode responses balanced and medium-length (~150-280 words, or up to ~350 words with a table for comparisons). Use ONLY the provided sources and cite every claim with [n].{lang}",
+         3. SYNTHESIZE WITH CLEAR FLOW: Keep Auto-mode responses balanced and reader-friendly (~160-300 words, or up to ~380 words with a table for comparisons). Use ONLY the provided sources and cite claims inline with [n]. Always follow a smooth 3-part narrative flow: (a) a clean heading or brief opening framing the core answer and context, (b) well-organized bullet points with inline [n] citations, and (c) a brief, natural concluding wrap-up paragraph tying everything together without robotic labels like 'Summary:' or 'Conclusion:'. Never append a trailing 'Sources Used' or raw URL list.{lang}",
         cat = intel.semantic_category,
         intent = intel.intent,
         lang = LANGUAGE_RULE
@@ -2076,7 +2117,7 @@ pub(crate) fn build_intent_prompts(
          [USER QUESTION]\n\
          {query}\n\n\
          {format_instruction}\n\
-         End with: **Sources Used:** followed by each cited [n] <url>."
+         Cite sources inline as [n] only; do not append a trailing 'Sources Used' or URL list."
     );
 
     (system, user)
@@ -2900,5 +2941,41 @@ mod tests {
             "Incorrect API key provided: <redacted>. Check your key."
         );
         assert_eq!(redact_key("x", ""), "x");
+    }
+
+    #[test]
+    fn intent_prompts_enforce_opening_bullets_and_natural_wrapup() {
+        let intents = [
+            QueryIntent::Factual,
+            QueryIntent::Temporal,
+            QueryIntent::Person,
+            QueryIntent::Comparison,
+            QueryIntent::HowTo,
+            QueryIntent::Research,
+            QueryIntent::Navigational,
+        ];
+        for intent in intents {
+            let mut intel = crate::query_intel::analyze_query("test topic");
+            intel.intent = intent.clone();
+            let (sys, user) = build_intent_prompts("test topic", "[1] Source text", &intel);
+            assert!(
+                sys.contains("SYNTHESIZE WITH CLEAR FLOW"),
+                "missing flow rule for {intent:?}"
+            );
+            assert!(
+                user.contains("heading") && user.contains("bullet points"),
+                "missing opening/bullet structure for {intent:?}: {user}"
+            );
+            assert!(
+                user.contains("concluding paragraph")
+                    && user.contains("'Summary:'")
+                    && user.contains("'Conclusion:'"),
+                "missing natural wrap-up rule for {intent:?}: {user}"
+            );
+            assert!(
+                !user.contains("End with: **Sources Used:**"),
+                "must not append a trailing Sources Used URL list for {intent:?}"
+            );
+        }
     }
 }
