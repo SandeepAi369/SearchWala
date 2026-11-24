@@ -1,10 +1,13 @@
 [package]
 name = "searchwala"
-version = "8.2.0"
+version = "8.3.0"
 edition = "2021"
-description = "Meta-search engine in Rust: cross-engine consensus ranking, trafilatura + Readability extraction, scholarly sources, mode-specific synthesis (fast/auto/deep/study/academic) with optional BYOK LLM"
+description = "Meta-search engine and zero-dependency MCP server in Rust: cross-engine consensus ranking, trafilatura + Readability extraction, domain controls, scholarly sources, and mode-specific synthesis with optional BYOK LLM"
 authors = ["SandeepCH"]
 license = "Apache-2.0"
+repository = "https://github.com/SandeepAi369/SearchWala"
+keywords = ["mcp", "ai-search", "ai-agents", "web-scraper", "self-hosted"]
+categories = ["command-line-utilities", "web-programming"]
 
 [lib]
 name = "searchwala"
