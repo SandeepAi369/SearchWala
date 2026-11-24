@@ -1,6 +1,6 @@
 [package]
 name = "searchwala"
-version = "8.3.0"
+version = "8.3.1"
 edition = "2021"
 description = "Meta-search engine and zero-dependency MCP server in Rust: cross-engine consensus ranking, trafilatura + Readability extraction, domain controls, scholarly sources, and mode-specific synthesis with optional BYOK LLM"
 authors = ["SandeepCH"]
