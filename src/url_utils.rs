@@ -133,6 +133,103 @@ pub fn registrable_domain(host: &str) -> String {
     last_two
 }
 
+/// Normalize a caller-supplied domain filter (e.g. `"docs.rs"`, `"https://www.GitHub.com/foo"`,
+/// `".arxiv.org"`) into a clean lowercase bare hostname (`"docs.rs"`, `"github.com"`, `"arxiv.org"`).
+/// Returns `None` for invalid, empty, or non-domain strings.
+pub fn normalize_domain_filter(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() || s.len() > 2048 {
+        return None;
+    }
+
+    let candidate_host = if s.contains("://") {
+        let u = Url::parse(s).ok()?;
+        u.host_str()?.to_ascii_lowercase()
+    } else {
+        // Strip path/query/fragment/port from bare host strings like "docs.rs/tokio" or "docs.rs:443".
+        let host_port = s.split(['/', '?', '#']).next().unwrap_or("");
+        let host_only = host_port.split(':').next().unwrap_or("");
+        host_only.to_ascii_lowercase()
+    };
+
+    let mut host = candidate_host.trim_matches('.').to_string();
+    while let Some(rest) = host.strip_prefix("www.") {
+        if rest.contains('.') {
+            host = rest.to_string();
+        } else {
+            break;
+        }
+    }
+
+    if host.is_empty() || host.len() > 253 || !host.contains('.') {
+        return None;
+    }
+
+    for label in host.split('.') {
+        if label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            return None;
+        }
+    }
+
+    Some(host)
+}
+
+/// True if `url`'s host is `domain` or a subdomain of `domain` (never substring matching).
+/// Also treats `youtu.be` as matching `youtube.com`.
+pub fn host_matches_domain(url: &str, domain: &str) -> bool {
+    let Ok(u) = Url::parse(url.trim()) else {
+        return false;
+    };
+    let Some(raw_host) = u.host_str() else {
+        return false;
+    };
+    let host = raw_host.trim_end_matches('.').to_ascii_lowercase();
+    let d = domain.trim_matches('.').to_ascii_lowercase();
+    if d.is_empty() || host.is_empty() {
+        return false;
+    }
+    if d == "youtube.com" && host == "youtu.be" {
+        return true;
+    }
+    host == d || host.ends_with(&format!(".{d}"))
+}
+
+/// Subdomain-preserving display domain for grouping discovered sources
+/// (strips `www.`, `m.`, `amp.`, `mobile.`, `www2.` while preserving meaningful
+/// subdomains like `docs.python.org` or `en.wikipedia.org`).
+pub fn display_domain(url: &str) -> String {
+    let Ok(u) = Url::parse(url.trim()) else {
+        return String::new();
+    };
+    let mut host = u
+        .host_str()
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    const DISPLAY_PREFIXES: &[&str] = &["www.", "m.", "amp.", "mobile.", "www2."];
+    loop {
+        let mut stripped = false;
+        for p in DISPLAY_PREFIXES {
+            if let Some(rest) = host.strip_prefix(*p) {
+                if rest.contains('.') {
+                    host = rest.to_string();
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    host
+}
+
 /// A fetchable, tracking-stripped URL (scheme preserved).
 pub fn normalize_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
@@ -388,5 +485,66 @@ mod tests {
         let k = canonical_key("https://www.amarujala.com/क्रिकेट/विश्व-कप?utm_source=fb");
         assert!(!k.is_empty());
         assert!(!k.contains("utm_source"));
+    }
+
+    #[test]
+    fn normalize_domain_filter_handles_urls_subdomains_and_rejects_invalid() {
+        assert_eq!(
+            normalize_domain_filter("docs.rs").as_deref(),
+            Some("docs.rs")
+        );
+        assert_eq!(
+            normalize_domain_filter("https://www.GitHub.com/tokio-rs/tokio?tab=1").as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            normalize_domain_filter(" .arxiv.org. ").as_deref(),
+            Some("arxiv.org")
+        );
+        assert_eq!(
+            normalize_domain_filter("blog.rust-lang.org:443/2026").as_deref(),
+            Some("blog.rust-lang.org")
+        );
+        for bad in [
+            "",
+            "   ",
+            "localhost",
+            "not a domain",
+            "foo..bar",
+            "-bad.com",
+            "bad-.com",
+        ] {
+            assert_eq!(normalize_domain_filter(bad), None, "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn host_matches_domain_is_exact_or_subdomain_never_substring() {
+        assert!(host_matches_domain("https://docs.rs/tokio", "docs.rs"));
+        assert!(host_matches_domain("https://beta.docs.rs/tokio", "docs.rs"));
+        assert!(!host_matches_domain(
+            "https://evil-docs.rs/tokio",
+            "docs.rs"
+        ));
+        assert!(!host_matches_domain(
+            "https://docs.rs.evil.test/",
+            "docs.rs"
+        ));
+        assert!(host_matches_domain("https://youtu.be/abc", "youtube.com"));
+        assert!(!host_matches_domain("not a url", "docs.rs"));
+    }
+
+    #[test]
+    fn display_domain_strips_www_mobile_amp_but_keeps_meaningful_subdomains() {
+        assert_eq!(display_domain("https://www.github.com/a/b"), "github.com");
+        assert_eq!(display_domain("https://m.amp.example.com/x"), "example.com");
+        assert_eq!(
+            display_domain("https://docs.python.org/3/"),
+            "docs.python.org"
+        );
+        assert_eq!(
+            display_domain("https://en.wikipedia.org/wiki/Rust"),
+            "en.wikipedia.org"
+        );
     }
 }

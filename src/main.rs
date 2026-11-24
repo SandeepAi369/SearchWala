@@ -60,6 +60,7 @@ fn params_from(
         llm: body.llm,
         enable_copilot: body.enable_copilot.unwrap_or(false),
         memory: Vec::new(),
+        domain_filter: search::DomainFilter::default(),
     }
 }
 
@@ -695,6 +696,7 @@ async fn about_handler() -> impl IntoResponse {
             "POST /search/lite-llm": "Lite mode LLM synthesis",
             "POST /search/research-llm": "Iterative deep research",
             "POST /search/stream": "SSE streaming",
+            "POST /mcp": "Model Context Protocol (Streamable HTTP)",
             "POST /api/models": "Dynamic model fetcher",
             "GET /api/chats": "Saved conversations (this machine's page only)",
             "GET /api/chats/{id}": "One conversation with every turn",
@@ -885,10 +887,286 @@ async fn tts_handler(
     ))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CliCommand {
+    Serve {
+        port: Option<u16>,
+        bind: Option<String>,
+        enable_mcp: bool,
+    },
+    McpStdio {
+        log_level: Option<String>,
+    },
+    McpHttp {
+        port: Option<u16>,
+        bind: Option<String>,
+        log_level: Option<String>,
+    },
+    Version,
+    Help,
+}
+
+fn print_usage() {
+    println!(
+        "SearchWala v{ver} — Private meta-search, deep extraction, and MCP server\n\n\
+         USAGE:\n\
+         \x20 searchwala                              Start web UI + REST API + /mcp HTTP server (default)\n\
+         \x20 searchwala serve [OPTIONS]              Start HTTP server\n\
+         \x20 searchwala mcp [OPTIONS]                Start Model Context Protocol (MCP) server (stdio by default)\n\
+         \x20 searchwala --version                    Print version and exit\n\
+         \x20 searchwala --help                       Print this help and exit\n\n\
+         SERVE OPTIONS:\n\
+         \x20 --port <PORT>                           Override PORT env var (default: 8000)\n\
+         \x20 --bind <HOST>                           Override BIND env var (default: 127.0.0.1)\n\
+         \x20 --no-mcp                                Disable Streamable HTTP /mcp endpoint\n\n\
+         MCP OPTIONS:\n\
+         \x20 --transport <stdio|http>                MCP transport (default: stdio)\n\
+         \x20 --http                                  Shorthand for --transport http (headless /mcp + /health)\n\
+         \x20 --port <PORT>                           Port for --http mode (default: PORT env or 8000)\n\
+         \x20 --bind <HOST>                           Bind host for --http mode (default: BIND env or 127.0.0.1)\n\
+         \x20 --log-level <LEVEL>                     Log level: error|warn|info|debug|trace|off (default: warn in stdio, info in http)\n",
+        ver = crate::config::VERSION
+    );
+}
+
+fn parse_cli_args(args: &[String]) -> Result<CliCommand, String> {
+    if args.is_empty() {
+        return Ok(CliCommand::Serve {
+            port: None,
+            bind: None,
+            enable_mcp: true,
+        });
+    }
+
+    match args[0].as_str() {
+        "-h" | "--help" | "help" => Ok(CliCommand::Help),
+        "-V" | "--version" | "version" => Ok(CliCommand::Version),
+        "serve" => parse_serve_flags(&args[1..]),
+        "mcp" => parse_mcp_flags(&args[1..]),
+        other if other.starts_with('-') => parse_serve_flags(args),
+        other => Err(format!(
+            "unknown subcommand {other:?} (expected `serve` or `mcp`; run `searchwala --help`)"
+        )),
+    }
+}
+
+fn take_flag_value(args: &[String], idx: &mut usize, flag: &str) -> Result<String, String> {
+    if let Some((_, val)) = args[*idx].split_once('=') {
+        if val.is_empty() {
+            return Err(format!("missing value for {flag}"));
+        }
+        *idx += 1;
+        return Ok(val.to_string());
+    }
+    let val = args
+        .get(*idx + 1)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| format!("missing value for {flag}"))?;
+    *idx += 2;
+    Ok(val.clone())
+}
+
+fn parse_serve_flags(args: &[String]) -> Result<CliCommand, String> {
+    let mut port = None;
+    let mut bind = None;
+    let mut enable_mcp = true;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if matches!(arg, "-h" | "--help") {
+            return Ok(CliCommand::Help);
+        } else if arg == "--no-mcp" {
+            enable_mcp = false;
+            i += 1;
+        } else if arg == "--port" || arg.starts_with("--port=") {
+            let v = take_flag_value(args, &mut i, "--port")?;
+            let p: u16 = v
+                .parse()
+                .map_err(|_| format!("invalid --port value: {v:?}"))?;
+            port = Some(p);
+        } else if arg == "--bind" || arg.starts_with("--bind=") {
+            let v = take_flag_value(args, &mut i, "--bind")?;
+            bind = Some(v);
+        } else {
+            return Err(format!("unknown option for `serve`: {arg:?}"));
+        }
+    }
+    Ok(CliCommand::Serve {
+        port,
+        bind,
+        enable_mcp,
+    })
+}
+
+fn parse_mcp_flags(args: &[String]) -> Result<CliCommand, String> {
+    let mut http_mode = false;
+    let mut port = None;
+    let mut bind = None;
+    let mut log_level = None;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if matches!(arg, "-h" | "--help") {
+            return Ok(CliCommand::Help);
+        } else if arg == "--http" {
+            http_mode = true;
+            i += 1;
+        } else if arg == "--transport" || arg.starts_with("--transport=") {
+            let v = take_flag_value(args, &mut i, "--transport")?.to_ascii_lowercase();
+            match v.as_str() {
+                "stdio" => http_mode = false,
+                "http" | "streamable-http" => http_mode = true,
+                _ => {
+                    return Err(format!(
+                        "unsupported --transport {v:?} (expected `stdio` or `http`)"
+                    ));
+                }
+            }
+        } else if arg == "--port" || arg.starts_with("--port=") {
+            let v = take_flag_value(args, &mut i, "--port")?;
+            let p: u16 = v
+                .parse()
+                .map_err(|_| format!("invalid --port value: {v:?}"))?;
+            port = Some(p);
+        } else if arg == "--bind" || arg.starts_with("--bind=") {
+            let v = take_flag_value(args, &mut i, "--bind")?;
+            bind = Some(v);
+        } else if arg == "--log-level" || arg.starts_with("--log-level=") {
+            let v = take_flag_value(args, &mut i, "--log-level")?.to_ascii_lowercase();
+            if !matches!(
+                v.as_str(),
+                "error" | "warn" | "info" | "debug" | "trace" | "off"
+            ) {
+                return Err(format!(
+                    "invalid --log-level {v:?} (expected error|warn|info|debug|trace|off)"
+                ));
+            }
+            log_level = Some(v);
+        } else {
+            return Err(format!("unknown option for `mcp`: {arg:?}"));
+        }
+    }
+    if http_mode {
+        Ok(CliCommand::McpHttp {
+            port,
+            bind,
+            log_level,
+        })
+    } else {
+        if port.is_some() || bind.is_some() {
+            return Err(
+                "`--port` and `--bind` require `--http` (or `--transport http`) with `mcp`".into(),
+            );
+        }
+        Ok(CliCommand::McpStdio { log_level })
+    }
+}
+
+async fn run_mcp_stdio(log_level: Option<String>) {
+    // MCP stdio framing owns stdout exclusively; route all tracing to stderr
+    // and default to `error` so live upstream engine 429/202 warnings never
+    // spam stderr in MCP hosts (per-engine health is exposed via `search_status`
+    // and `searchwala://health/engines`). Users can still opt in via `--log-level`
+    // or `RUST_LOG`.
+    let filter = match log_level {
+        Some(lvl) => format!("searchwala={lvl}"),
+        None => std::env::var("RUST_LOG").unwrap_or_else(|_| "searchwala=error".to_string()),
+    };
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_target(false)
+        .compact()
+        .init();
+
+    let temp_db = cache::TempDb::new();
+    cache::spawn_temp_db_cleaner(temp_db.clone());
+
+    let server = mcp::McpServer::new(temp_db);
+    if let Err(e) = mcp::stdio::run_stdio(server).await {
+        tracing::error!("MCP stdio transport error: {e}");
+        std::process::exit(1);
+    }
+}
+
+async fn run_mcp_http(
+    port_override: Option<u16>,
+    bind_override: Option<String>,
+    log_level: Option<String>,
+) {
+    let filter = match log_level {
+        Some(lvl) => format!("searchwala={lvl}"),
+        None => std::env::var("RUST_LOG").unwrap_or_else(|_| "searchwala=info".to_string()),
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_target(false)
+        .compact()
+        .init();
+
+    let port = port_override.unwrap_or_else(config::port);
+    let bind_host = bind_override
+        .unwrap_or_else(|| std::env::var("BIND").unwrap_or_else(|_| "127.0.0.1".to_string()));
+    let temp_db = cache::TempDb::new();
+    cache::spawn_temp_db_cleaner(temp_db.clone());
+
+    let server = mcp::McpServer::new(temp_db);
+    if let Err(e) = mcp::http::run_http(server, bind_host, port).await {
+        tracing::error!("MCP HTTP transport error: {e}");
+        std::process::exit(1);
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let _ = dotenvy::dotenv();
 
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let cmd = match parse_cli_args(&raw_args) {
+        Ok(c) => c,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            std::process::exit(2);
+        }
+    };
+
+    match cmd {
+        CliCommand::Help => {
+            print_usage();
+            return;
+        }
+        CliCommand::Version => {
+            println!("searchwala {}", crate::config::VERSION);
+            return;
+        }
+        CliCommand::McpStdio { log_level } => {
+            run_mcp_stdio(log_level).await;
+            return;
+        }
+        CliCommand::McpHttp {
+            port,
+            bind,
+            log_level,
+        } => {
+            run_mcp_http(port, bind, log_level).await;
+            return;
+        }
+        CliCommand::Serve {
+            port,
+            bind,
+            enable_mcp,
+        } => {
+            run_http_server(port, bind, enable_mcp).await;
+        }
+    }
+}
+
+async fn run_http_server(
+    port_override: Option<u16>,
+    bind_override: Option<String>,
+    enable_mcp: bool,
+) {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -898,7 +1176,9 @@ async fn main() {
         .compact()
         .init();
 
-    let port = config::port();
+    let port = port_override.unwrap_or_else(config::port);
+    let bind_host = bind_override
+        .unwrap_or_else(|| std::env::var("BIND").unwrap_or_else(|_| "127.0.0.1".to_string()));
     let engines = modes::all_roster_engines();
 
     tracing::info!("============================================");
@@ -908,7 +1188,11 @@ async fn main() {
     tracing::info!("  Modes: fast, auto, deep, study, academic, reddit, youtube (+ domains)");
     tracing::info!("  Concurrency: {}", config::concurrency());
 
-    tracing::info!("  Features: Iterative Research, TempDb, saved conversations");
+    tracing::info!("  Features: Iterative Research, TempDb, saved conversations, MCP");
+    tracing::info!(
+        "  MCP HTTP: {}",
+        if enable_mcp { "/mcp" } else { "disabled" }
+    );
     tracing::info!("  CORS: permissive");
     tracing::info!("  Port: {}", port);
     tracing::info!("============================================");
@@ -932,6 +1216,7 @@ async fn main() {
     // Spawn background cleanup for expired temp sessions
     cache::spawn_temp_db_cleaner(temp_db.clone());
 
+    let mcp_server = mcp::McpServer::new(temp_db.clone());
     let state = Arc::new(AppState {
         start_time: Instant::now(),
         temp_db,
@@ -939,7 +1224,7 @@ async fn main() {
         running: Default::default(),
     });
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/", get(root_handler))
         .route("/index.html", get(root_handler))
         .route("/ui", get(root_handler))
@@ -970,19 +1255,25 @@ async fn main() {
         .route("/api/tts", get(tts_handler))
         .route("/health/engines", get(engine_health_handler))
         .route("/health/cache", get(cache_stats_handler))
+        .with_state(state);
+
+    if enable_mcp {
+        app = app.merge(mcp::http::mcp_routes(mcp_server, bind_host.clone()));
+    }
+
+    let cors = CorsLayer::permissive().expose_headers([
+        axum::http::header::HeaderName::from_static(mcp::http::HEADER_SESSION_ID),
+        axum::http::header::HeaderName::from_static(mcp::http::HEADER_PROTOCOL_VERSION),
+    ]);
+
+    let app = app
         // v8.0: a handler panic used to abort the task with no response, so the
         // client saw a bare connection reset. The UTF-8 byte-slice bugs in
         // search.rs/llm.rs did exactly that on Hindi queries.
         .layer(tower_http::catch_panic::CatchPanicLayer::new())
         .layer(tower_http::limit::RequestBodyLimitLayer::new(256 * 1024))
-        .layer(CorsLayer::permissive())
-        .with_state(state);
+        .layer(cors);
 
-    // v8.0: default to loopback. This process relays the user's BYOK LLM API
-    // key to a caller-supplied base_url and runs an unauthenticated
-    // subprocess endpoint; binding every interface by default made both
-    // reachable from the local network. Set BIND=0.0.0.0 to expose it.
-    let bind_host = std::env::var("BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
     let addr = format!("{}:{}", bind_host, port);
     tracing::info!("Listening on http://{}", addr);
 
@@ -991,4 +1282,88 @@ async fn main() {
         .expect("Failed to bind address");
 
     axum::serve(listener, app).await.expect("Server error");
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|v| (*v).to_string()).collect()
+    }
+
+    #[test]
+    fn cli_defaults_to_serve_with_no_args() {
+        assert_eq!(
+            parse_cli_args(&[]).unwrap(),
+            CliCommand::Serve {
+                port: None,
+                bind: None,
+                enable_mcp: true
+            }
+        );
+    }
+
+    #[test]
+    fn cli_parses_serve_mcp_http_help_and_version() {
+        assert_eq!(
+            parse_cli_args(&s(&[
+                "serve",
+                "--port",
+                "9000",
+                "--bind=0.0.0.0",
+                "--no-mcp"
+            ]))
+            .unwrap(),
+            CliCommand::Serve {
+                port: Some(9000),
+                bind: Some("0.0.0.0".into()),
+                enable_mcp: false
+            }
+        );
+        assert_eq!(
+            parse_cli_args(&s(&["mcp"])).unwrap(),
+            CliCommand::McpStdio { log_level: None }
+        );
+        assert_eq!(
+            parse_cli_args(&s(&["mcp", "--transport", "stdio", "--log-level=debug"])).unwrap(),
+            CliCommand::McpStdio {
+                log_level: Some("debug".into())
+            }
+        );
+        assert_eq!(
+            parse_cli_args(&s(&["mcp", "--http", "--port=8123", "--bind", "127.0.0.1"])).unwrap(),
+            CliCommand::McpHttp {
+                port: Some(8123),
+                bind: Some("127.0.0.1".into()),
+                log_level: None
+            }
+        );
+        assert_eq!(
+            parse_cli_args(&s(&["mcp", "--transport=http", "--log-level", "warn"])).unwrap(),
+            CliCommand::McpHttp {
+                port: None,
+                bind: None,
+                log_level: Some("warn".into())
+            }
+        );
+        assert_eq!(
+            parse_cli_args(&s(&["--version"])).unwrap(),
+            CliCommand::Version
+        );
+        assert_eq!(parse_cli_args(&s(&["-h"])).unwrap(), CliCommand::Help);
+        assert_eq!(
+            parse_cli_args(&s(&["mcp", "--help"])).unwrap(),
+            CliCommand::Help
+        );
+    }
+
+    #[test]
+    fn cli_rejects_unknown_subcommands_and_invalid_flags() {
+        assert!(parse_cli_args(&s(&["bogus"])).is_err());
+        assert!(parse_cli_args(&s(&["serve", "--port", "notanumber"])).is_err());
+        assert!(parse_cli_args(&s(&["mcp", "--log-level", "verbose"])).is_err());
+        assert!(parse_cli_args(&s(&["mcp", "--transport", "ws"])).is_err());
+        assert!(parse_cli_args(&s(&["mcp", "--port", "8080"])).is_err());
+    }
 }

@@ -19,6 +19,7 @@ pub mod fetcher;
 pub mod highlight;
 pub mod host_gate;
 pub mod llm;
+pub mod mcp;
 pub mod models;
 pub mod modes;
 pub mod proxy_pool;

@@ -267,6 +267,26 @@ fn site_capable_roster() -> Vec<String> {
         .collect()
 }
 
+/// Public list of reliable engines that honour `site:` queries (including an
+/// operator-configured SearXNG instance when enabled).
+pub fn site_capable_engines() -> Vec<String> {
+    with_searxng(site_capable_roster())
+}
+
+/// Secondary site-capable engines used automatically when primary site-capable
+/// engines (`bing`, `duckduckgo`, `brave`, `yahoo`) are quarantined mid-session.
+pub fn site_capable_fallback_engines() -> Vec<String> {
+    ["ecosia", "mojeek", "yandex", "bing_uk", "bing_in"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// True if `name` honours a `site:` operator cleanly.
+pub fn is_site_capable_engine(name: &str) -> bool {
+    matches!(name, "bing" | "duckduckgo" | "brave" | "yahoo" | "searxng")
+}
+
 fn add(list: &mut Vec<String>, names: &[&str]) {
     for n in names {
         if !list.iter().any(|e| e == n) {

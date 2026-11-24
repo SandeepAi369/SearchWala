@@ -104,6 +104,12 @@ pub struct SearchResponse {
     pub chars_extracted: usize,
     pub results: Vec<SourceResult>,
     pub search_results: Vec<SearchHit>,
+    /// Compact domain-level rollup across the full post-exclusion candidate pool
+    /// (before `max_urls` scrape truncation), enabling token-efficient drill-down.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub discovered_domains: Vec<DiscoveredDomain>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub total_discovered_domains: usize,
     pub copilot_query: Option<String>,
     pub llm_answer: Option<String>,
     pub llm_error: Option<String>,
@@ -171,6 +177,17 @@ pub struct SearchHit {
     /// How many INDEPENDENT engine families found it (see engines::engine_family).
     #[serde(default)]
     pub found_by_families: usize,
+}
+
+/// Compact domain-level summary over discovered search candidates.
+#[derive(Debug, Serialize, Clone)]
+pub struct DiscoveredDomain {
+    pub domain: String,
+    pub result_count: usize,
+    pub max_families: usize,
+    pub top_rrf_score: f64,
+    pub top_url: String,
+    pub top_title: String,
 }
 
 #[derive(Debug, Serialize, Default)]

@@ -70,6 +70,20 @@ pub fn proxy_cooldown_secs() -> u64 {
         .unwrap_or(120)
 }
 
+/// Default for MCP `strict_domains` when the caller omits it (`MCP_STRICT_DOMAINS`).
+/// Defaults to `false` so SearchWala keeps its own organic consensus answers
+/// intact while prioritizing `include_domains`.
+pub fn mcp_strict_domains_default() -> bool {
+    matches!(
+        std::env::var("MCP_STRICT_DOMAINS")
+            .ok()
+            .as_deref()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
 /// Random jitter with optional Poisson-like distribution for human realism.
 /// Uniform random between lo..=hi, then applies a bias toward shorter delays
 /// (most human actions are fast with occasional pauses).

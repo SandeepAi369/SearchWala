@@ -35,6 +35,47 @@ use crate::ranking;
 use crate::synthesis;
 use crate::url_utils;
 
+/// Optional domain-level inclusion/exclusion rules for surgical source control.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DomainFilter {
+    /// Normalized lowercase domains to query and prioritize (or restrict to when `strict == true`).
+    pub include: Vec<String>,
+    /// Normalized lowercase domains to drop before triage, summarization, and scraping.
+    pub exclude: Vec<String>,
+    /// When true and `include` is non-empty, strictly restrict results and scraping to `include`.
+    /// When false (default), SearchWala keeps its own organic consensus answers intact while
+    /// prioritizing `include` at the top.
+    pub strict: bool,
+}
+
+impl DomainFilter {
+    pub fn is_excluded(&self, url: &str) -> bool {
+        self.exclude
+            .iter()
+            .any(|d| url_utils::host_matches_domain(url, d))
+    }
+
+    pub fn is_included(&self, url: &str) -> bool {
+        self.include
+            .iter()
+            .any(|d| url_utils::host_matches_domain(url, d))
+    }
+
+    pub fn is_strict_active(&self) -> bool {
+        self.strict && !self.include.is_empty()
+    }
+
+    pub fn allows_url(&self, url: &str) -> bool {
+        if self.is_excluded(url) {
+            return false;
+        }
+        if self.is_strict_active() {
+            return self.is_included(url);
+        }
+        true
+    }
+}
+
 /// Parameters for one search request.
 #[derive(Debug, Clone, Default)]
 pub struct SearchParams {
@@ -50,6 +91,8 @@ pub struct SearchParams {
     /// Earlier turns of the conversation for the LLM, oldest first. Empty
     /// when memory is off.
     pub memory: Vec<crate::chats::PriorTurn>,
+    /// Optional domain include/exclude rules and strict-mode toggle.
+    pub domain_filter: DomainFilter,
 }
 
 /// Pipeline progress, emitted to streaming clients.
@@ -92,6 +135,117 @@ async fn emit(tx: &Option<tokio::sync::mpsc::Sender<Progress>>, p: Progress) {
     }
 }
 
+/// One consensus-ranked search hit returned by [`search_serp_only`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SerpHit {
+    pub rank: usize,
+    pub url: String,
+    pub title: String,
+    pub snippet: String,
+    pub engines: Vec<String>,
+    pub found_by_families: usize,
+    pub rrf_score: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published: Option<chrono::DateTime<chrono::Utc>>,
+    /// Engine-supplied abstract/text when available without scraping (e.g. OpenAlex, arXiv).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abstract_text: Option<String>,
+}
+
+/// Output of [`search_serp_only`] (Stages 1–4: engine dispatch, RRF consensus,
+/// and pre-scrape triage — without page scraping or LLM synthesis).
+#[derive(Debug, serde::Serialize)]
+pub struct SerpSearchResponse {
+    pub query: String,
+    pub mode: String,
+    pub tier: String,
+    pub domain: String,
+    pub intent: String,
+    pub is_time_sensitive: bool,
+    pub sub_queries: Vec<String>,
+    pub elapsed_seconds: f64,
+    pub engine_stats: EngineStats,
+    pub results: Vec<SerpHit>,
+    pub discovered_domains: Vec<DiscoveredDomain>,
+    pub total_discovered_domains: usize,
+}
+
+/// Options for [`fetch_and_extract_url`].
+#[derive(Debug, Clone)]
+pub struct FetchExtractOptions {
+    pub timeout: Duration,
+    pub max_bytes: usize,
+    pub allow_amp_fallback: bool,
+    pub use_cache: bool,
+    /// Accept `text/plain` and `text/markdown` responses directly (useful for
+    /// docs, RFCs, and `llms.txt` when called from `extract_url`).
+    pub allow_plain_text: bool,
+}
+
+impl Default for FetchExtractOptions {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(12),
+            max_bytes: config::max_html_bytes(),
+            allow_amp_fallback: true,
+            use_cache: true,
+            allow_plain_text: true,
+        }
+    }
+}
+
+/// Result of [`fetch_and_extract_url`].
+#[derive(Debug, Clone)]
+pub struct ExtractedPage {
+    pub url: String,
+    pub final_url: String,
+    pub extracted: crate::extractor::Extracted,
+    pub char_count: usize,
+    pub cached: bool,
+    pub elapsed_ms: u64,
+}
+
+/// Typed failure modes for [`fetch_and_extract_url`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtractError {
+    InvalidUrl(String),
+    BlockedBySsrf(String),
+    UnsupportedContentType(String),
+    AntiBotBlocked { status: u16 },
+    HttpStatus { status: u16 },
+    Timeout,
+    NetworkError(String),
+    UnusableContent { chars: usize },
+}
+
+impl std::fmt::Display for ExtractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExtractError::InvalidUrl(msg) => write!(f, "invalid URL: {msg}"),
+            ExtractError::BlockedBySsrf(msg) => write!(f, "URL blocked by SSRF guard: {msg}"),
+            ExtractError::UnsupportedContentType(ct) => {
+                write!(f, "unsupported content type: {ct}")
+            }
+            ExtractError::AntiBotBlocked { status } => {
+                write!(f, "blocked by anti-bot protection (HTTP {status})")
+            }
+            ExtractError::HttpStatus { status } => {
+                write!(f, "upstream returned HTTP {status}")
+            }
+            ExtractError::Timeout => write!(f, "request timed out"),
+            ExtractError::NetworkError(msg) => write!(f, "network error: {msg}"),
+            ExtractError::UnusableContent { chars } => {
+                write!(
+                    f,
+                    "extracted content too short or unreadable ({chars} chars)"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ExtractError {}
+
 /// Back-compatible entry point (no domain, no progress).
 pub async fn execute_search(
     query: &str,
@@ -110,11 +264,192 @@ pub async fn execute_search(
             llm: llm_config,
             enable_copilot: enable_copilot.unwrap_or(false),
             memory: Vec::new(),
+            domain_filter: DomainFilter::default(),
         },
         temp_db,
         None,
     )
     .await
+}
+
+/// Fast SERP-only consensus search (Stages 1–4): runs query intelligence,
+/// mode-appropriate parallel engine dispatch, cross-family RRF consensus, and
+/// pre-scrape triage without fetching target pages.
+pub async fn search_serp_only(
+    query: &str,
+    focus_mode: Option<&str>,
+    domain: Option<&str>,
+    max_results: Option<usize>,
+    domain_filter: &DomainFilter,
+    progress: Option<tokio::sync::mpsc::Sender<Progress>>,
+) -> SerpSearchResponse {
+    let start = std::time::Instant::now();
+    let trimmed = query.trim().to_string();
+    let (mode, domain_val) = modes::parse(focus_mode, domain);
+    let intel = query_intel::analyze_query(&trimmed);
+    let profile = modes::resolve(mode, domain_val, &intel, None);
+    let result_limit = max_results.unwrap_or(15).clamp(1, 50);
+
+    if trimmed.is_empty() {
+        return SerpSearchResponse {
+            query: trimmed,
+            mode: mode.as_str().to_string(),
+            tier: profile.tier.to_string(),
+            domain: domain_val.as_str().to_string(),
+            intent: format!("{:?}", intel.intent),
+            is_time_sensitive: intel.is_time_sensitive,
+            sub_queries: Vec::new(),
+            elapsed_seconds: start.elapsed().as_secs_f64(),
+            engine_stats: EngineStats::default(),
+            results: Vec::new(),
+            discovered_domains: Vec::new(),
+            total_discovered_domains: 0,
+        };
+    }
+
+    let effective_query = apply_recency_hint(&trimmed, &intel, mode);
+    let mut query_variations = if profile.max_sub_queries > 1 && query_intel::multi_query_enabled()
+    {
+        modes::facet_queries(
+            &effective_query,
+            &intel,
+            profile.facets,
+            profile.max_sub_queries,
+        )
+    } else {
+        vec![effective_query.clone()]
+    };
+    if query_variations.is_empty() {
+        query_variations.push(effective_query.clone());
+    }
+    if profile.site_filter.is_some() {
+        query_variations = query_variations
+            .iter()
+            .map(|q| modes::apply_site_filter(q, profile.site_filter))
+            .collect();
+    }
+
+    let engine_list = engines::filter_healthy(profile.engines.clone());
+    let engine_instances = engines::get_engines(&engine_list);
+
+    emit(
+        &progress,
+        Progress::Plan {
+            mode: mode.as_str().into(),
+            tier: profile.tier.into(),
+            domain: domain_val.as_str().into(),
+            engines: engine_instances.len(),
+            sub_queries: query_variations.clone(),
+            max_urls: result_limit,
+        },
+    )
+    .await;
+
+    let (plain_fetcher, stealth_fetcher) = fetcher::build_pair(None);
+    let stealth_engine_set: std::collections::HashSet<String> =
+        config::stealth_engines().into_iter().collect();
+    let stealth_mode = config::stealth_mode();
+    let proxy_pool = ProxyPoolManager::from_env();
+    let engine_concurrency = config::engine_concurrency().clamp(1, 40);
+    let engine_semaphore = Arc::new(Semaphore::new(engine_concurrency));
+
+    let stage_start = std::time::Instant::now();
+    let (tagged, all_queries) = dispatch_with_domain_targets(
+        &engine_instances,
+        &query_variations,
+        &effective_query,
+        domain_filter,
+        profile.site_filter.is_some(),
+        &plain_fetcher,
+        &stealth_fetcher,
+        &stealth_engine_set,
+        &stealth_mode,
+        &proxy_pool,
+        &engine_semaphore,
+        config::jitter_min_ms(),
+        config::jitter_max_ms(),
+        engine_concurrency,
+        profile.engine_deadline,
+        profile.page_budget,
+        profile.engine_early_exit,
+    )
+    .await;
+
+    let fused_scores = compute_fused_scores(&tagged, &all_queries);
+    let mut all_results: Vec<RawSearchResult> = tagged.into_iter().flat_map(|(_, v)| v).collect();
+
+    if profile.site_filter.is_some() {
+        all_results.retain(|r| modes::matches_site_filter(&r.url, profile.site_filter));
+    }
+
+    let engine_dispatch_ms = stage_start.elapsed().as_millis();
+    let families: std::collections::HashSet<&str> = all_results
+        .iter()
+        .map(|r| engines::engine_family(&r.engine))
+        .collect();
+    emit(
+        &progress,
+        Progress::Engines {
+            raw_results: all_results.len(),
+            families: families.len(),
+            ms: engine_dispatch_ms,
+        },
+    )
+    .await;
+
+    let total_raw = all_results.len();
+    let sel = fuse_and_select_candidates(
+        &all_results,
+        fused_scores,
+        &trimmed,
+        &effective_query,
+        &intel,
+        &profile,
+        result_limit,
+        domain_filter,
+    );
+    let deduped_count = sel.deduplicated_urls;
+    let hits = candidates_to_serp_hits(&sel.candidates, result_limit);
+    let discovered_domains = sel.discovered_domains;
+    let total_discovered_domains = sel.total_discovered_domains;
+
+    let progress_hits: Vec<SearchHit> = hits
+        .iter()
+        .map(|h| SearchHit {
+            url: h.url.clone(),
+            title: h.title.clone(),
+            snippet: h.snippet.clone(),
+            engine: h.engines.join(","),
+            rrf_score: h.rrf_score,
+            found_by_families: h.found_by_families,
+        })
+        .collect();
+    emit(
+        &progress,
+        Progress::Sources {
+            results: progress_hits,
+        },
+    )
+    .await;
+
+    SerpSearchResponse {
+        query: trimmed,
+        mode: mode.as_str().to_string(),
+        tier: profile.tier.to_string(),
+        domain: domain_val.as_str().to_string(),
+        intent: format!("{:?}", intel.intent),
+        is_time_sensitive: intel.is_time_sensitive,
+        sub_queries: query_variations,
+        elapsed_seconds: start.elapsed().as_secs_f64(),
+        engine_stats: EngineStats {
+            engines_queried: engine_list,
+            total_raw_results: total_raw,
+            deduplicated_urls: deduped_count,
+        },
+        results: hits,
+        discovered_domains,
+        total_discovered_domains,
+    }
 }
 
 /// Everything known about one candidate URL before it is scraped.
@@ -128,6 +463,587 @@ struct Candidate {
     published: Option<chrono::DateTime<chrono::Utc>>,
     /// Text supplied by the engine itself (paper abstracts).
     full_text: Option<String>,
+}
+
+/// Append the dynamic current year for time-sensitive non-evergreen searches
+/// when the query does not already name a year.
+fn apply_recency_hint(
+    effective_query: &str,
+    intel: &query_intel::QueryIntelligence,
+    mode: modes::Mode,
+) -> String {
+    if intel.is_time_sensitive && !matches!(mode, modes::Mode::Study | modes::Mode::Academic) {
+        let q_lower = effective_query.to_lowercase();
+        let current_year = chrono::Utc::now().year();
+        let has_year =
+            ((current_year - 15)..=(current_year + 10)).any(|y| q_lower.contains(&y.to_string()));
+        if !has_year {
+            return format!("{} {}", effective_query, current_year);
+        }
+    }
+    effective_query.to_string()
+}
+
+/// Compute weighted cross-query fusion scores when multiple sub-queries ran.
+fn compute_fused_scores(
+    tagged: &[(usize, Vec<RawSearchResult>)],
+    query_variations: &[String],
+) -> Option<HashMap<String, f64>> {
+    if query_variations.len() <= 1 {
+        return None;
+    }
+    // Regroup per sub-query and fuse with the ORIGINAL weighted 2x. The
+    // original is `query_variations[0]` — it already carries any site:
+    // filter, so comparing against the bare query would never match and
+    // the 2x weight would silently never apply.
+    let mut grouped: Vec<Vec<RawSearchResult>> = vec![Vec::new(); query_variations.len()];
+    for (idx, batch) in tagged {
+        if let Some(slot) = grouped.get_mut(*idx) {
+            slot.extend(batch.iter().cloned());
+        }
+    }
+    let per_query: Vec<(String, Vec<RawSearchResult>)> =
+        query_variations.iter().cloned().zip(grouped).collect();
+    Some(ranking::cross_query_scores(
+        &per_query,
+        &query_variations[0],
+    ))
+}
+
+/// Maximum targeted `site:` queries emitted for `include_domains`.
+const MAX_TARGETED_DOMAIN_QUERIES: usize = 5;
+/// Maximum distinct domains packaged in `discovered_domains`.
+const MAX_DISCOVERED_DOMAINS: usize = 15;
+
+/// Build clean `site:{domain}` queries for `include_domains` (only dispatched to
+/// site-capable engines so JSON API engines never search literal `site:` strings).
+fn build_targeted_domain_queries(
+    effective_query: &str,
+    domain_filter: &DomainFilter,
+    has_mode_site_filter: bool,
+) -> Vec<String> {
+    if has_mode_site_filter || domain_filter.include.is_empty() {
+        return Vec::new();
+    }
+    let q = effective_query.trim();
+    if q.is_empty() || q.to_lowercase().contains("site:") {
+        return Vec::new();
+    }
+    domain_filter
+        .include
+        .iter()
+        .take(MAX_TARGETED_DOMAIN_QUERIES)
+        .map(|d| format!("{q} site:{d}"))
+        .collect()
+}
+
+/// Dispatch the primary mode roster concurrently with targeted `site:` queries
+/// for `include_domains` (on site-capable engines only).
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_with_domain_targets(
+    engine_instances: &[std::sync::Arc<dyn engines::SearchEngine>],
+    query_variations: &[String],
+    effective_query: &str,
+    domain_filter: &DomainFilter,
+    has_mode_site_filter: bool,
+    plain_fetcher: &Fetcher,
+    stealth_fetcher: &Fetcher,
+    stealth_engine_set: &std::collections::HashSet<String>,
+    stealth_mode: &str,
+    proxy_pool: &ProxyPoolManager,
+    engine_semaphore: &Arc<Semaphore>,
+    jitter_min: u64,
+    jitter_max: u64,
+    engine_concurrency: usize,
+    deadline: Duration,
+    page_budget: usize,
+    early_exit: Option<(usize, usize)>,
+) -> (Vec<(usize, Vec<RawSearchResult>)>, Vec<String>) {
+    let targeted_queries =
+        build_targeted_domain_queries(effective_query, domain_filter, has_mode_site_filter);
+
+    if targeted_queries.is_empty() {
+        let tagged = dispatch_engines(
+            engine_instances,
+            query_variations,
+            plain_fetcher,
+            stealth_fetcher,
+            stealth_engine_set,
+            stealth_mode,
+            proxy_pool,
+            engine_semaphore,
+            jitter_min,
+            jitter_max,
+            engine_concurrency,
+            deadline,
+            page_budget,
+            early_exit,
+        )
+        .await;
+        return (tagged, query_variations.to_vec());
+    }
+
+    // Build site-capable engine instances for Track B (ensuring targeted `site:`
+    // queries work even in study/academic modes whose rosters are API-heavy).
+    // If primary site-capable engines have been quarantined mid-session (e.g.
+    // Bing soft-block + DDG 202), automatically top up from fallback site-capable
+    // engines so strict/targeted searches stay resilient.
+    let mut site_engine_names = engines::filter_healthy(modes::site_capable_engines());
+    if site_engine_names.len() < 3 {
+        for backup in engines::filter_healthy(modes::site_capable_fallback_engines()) {
+            if !site_engine_names.contains(&backup) {
+                site_engine_names.push(backup);
+            }
+        }
+    }
+    let site_engine_instances = engines::get_engines(&site_engine_names);
+
+    // When `strict_domains` is ON, skip throwaway unscoped web queries so we do
+    // not double requests to rate-limited engines (Brave/DDG/Bing) for hits we
+    // would immediately discard. Keep Wikipedia/arXiv API engines on the bare
+    // query only if those domains are explicitly included.
+    if domain_filter.is_strict_active() {
+        let mut specialized_names: Vec<String> = Vec::new();
+        if domain_filter
+            .include
+            .iter()
+            .any(|d| d == "wikipedia.org" || d.ends_with(".wikipedia.org"))
+        {
+            specialized_names.push("wikipedia".to_string());
+        }
+        if domain_filter
+            .include
+            .iter()
+            .any(|d| d == "arxiv.org" || d.ends_with(".arxiv.org"))
+        {
+            specialized_names.push("arxiv".to_string());
+        }
+
+        let strict_pages = page_budget.clamp(1, 2);
+        let (mut tagged, mut all_queries) = if specialized_names.is_empty() {
+            let targeted_tagged = dispatch_engines(
+                &site_engine_instances,
+                &targeted_queries,
+                plain_fetcher,
+                stealth_fetcher,
+                stealth_engine_set,
+                stealth_mode,
+                proxy_pool,
+                engine_semaphore,
+                jitter_min,
+                jitter_max,
+                engine_concurrency,
+                deadline,
+                strict_pages,
+                None,
+            )
+            .await;
+            (targeted_tagged, targeted_queries)
+        } else {
+            let spec_instances = engines::get_engines(&engines::filter_healthy(specialized_names));
+            let bare_queries = vec![effective_query.to_string()];
+            let (mut targeted_tagged, spec_tagged) = tokio::join!(
+                dispatch_engines(
+                    &site_engine_instances,
+                    &targeted_queries,
+                    plain_fetcher,
+                    stealth_fetcher,
+                    stealth_engine_set,
+                    stealth_mode,
+                    proxy_pool,
+                    engine_semaphore,
+                    jitter_min,
+                    jitter_max,
+                    engine_concurrency,
+                    deadline,
+                    strict_pages,
+                    None,
+                ),
+                dispatch_engines(
+                    &spec_instances,
+                    &bare_queries,
+                    plain_fetcher,
+                    stealth_fetcher,
+                    stealth_engine_set,
+                    stealth_mode,
+                    proxy_pool,
+                    engine_semaphore,
+                    jitter_min,
+                    jitter_max,
+                    engine_concurrency,
+                    deadline,
+                    1,
+                    None,
+                )
+            );
+            let offset = targeted_queries.len();
+            for (idx, batch) in spec_tagged {
+                targeted_tagged.push((offset + idx, batch));
+            }
+            let mut combined = targeted_queries;
+            combined.extend(bare_queries);
+            (targeted_tagged, combined)
+        };
+
+        // Targeted `site:` batches must only retain results that actually match
+        // `include_domains` (dropping any engine soft-block spam that ignored `site:`).
+        for (_, batch) in &mut tagged {
+            batch.retain(|r| {
+                !domain_filter.is_excluded(&r.url) && domain_filter.is_included(&r.url)
+            });
+        }
+
+        // Resilience fallback: if all targeted `site:` queries produced zero
+        // URLs matching `include_domains` (e.g., transient Brave HTTP 429 burst
+        // while Bing/DDG are quarantined), retry once with plain-text domain
+        // queries (`"{query} {domain}"`) across the mode's healthy engines
+        // (including API engines like Marginalia). Strict filtering still
+        // guarantees zero domain leakage.
+        let has_included_hit = tagged.iter().any(|(_, batch)| !batch.is_empty());
+        if !has_included_hit && !engine_instances.is_empty() {
+            let fallback_queries: Vec<String> = domain_filter
+                .include
+                .iter()
+                .take(3)
+                .map(|d| format!("{} {d}", effective_query.trim()))
+                .collect();
+            if !fallback_queries.is_empty() {
+                let fallback_tagged = dispatch_engines(
+                    engine_instances,
+                    &fallback_queries,
+                    plain_fetcher,
+                    stealth_fetcher,
+                    stealth_engine_set,
+                    stealth_mode,
+                    proxy_pool,
+                    engine_semaphore,
+                    jitter_min,
+                    jitter_max,
+                    engine_concurrency,
+                    deadline.min(Duration::from_millis(2_500)),
+                    1,
+                    None,
+                )
+                .await;
+                let offset = all_queries.len();
+                for (idx, mut batch) in fallback_tagged {
+                    batch.retain(|r| {
+                        !domain_filter.is_excluded(&r.url) && domain_filter.is_included(&r.url)
+                    });
+                    if !batch.is_empty() {
+                        tagged.push((offset + idx, batch));
+                    }
+                }
+                all_queries.extend(fallback_queries);
+            }
+        }
+
+        return (tagged, all_queries);
+    }
+
+    let (mut base_tagged, targeted_tagged) = tokio::join!(
+        dispatch_engines(
+            engine_instances,
+            query_variations,
+            plain_fetcher,
+            stealth_fetcher,
+            stealth_engine_set,
+            stealth_mode,
+            proxy_pool,
+            engine_semaphore,
+            jitter_min,
+            jitter_max,
+            engine_concurrency,
+            deadline,
+            page_budget,
+            // Do not early-exit generic dispatch while targeted domain tasks run.
+            None,
+        ),
+        dispatch_engines(
+            &site_engine_instances,
+            &targeted_queries,
+            plain_fetcher,
+            stealth_fetcher,
+            stealth_engine_set,
+            stealth_mode,
+            proxy_pool,
+            engine_semaphore,
+            jitter_min,
+            jitter_max,
+            engine_concurrency,
+            deadline,
+            1,
+            None,
+        )
+    );
+
+    let offset = query_variations.len();
+    for (idx, mut batch) in targeted_tagged {
+        // Track B ran explicit `site:` queries; drop any engine soft-block junk
+        // that does not actually belong to `include_domains`.
+        batch.retain(|r| !domain_filter.is_excluded(&r.url) && domain_filter.is_included(&r.url));
+        if !batch.is_empty() {
+            base_tagged.push((offset + idx, batch));
+        }
+    }
+
+    let mut all_queries = query_variations.to_vec();
+    all_queries.extend(targeted_queries);
+    (base_tagged, all_queries)
+}
+
+/// Summarize distinct domains discovered across the full post-exclusion sorted
+/// candidate pool (before `max_urls` / `max_results` truncation).
+fn summarize_discovered_domains(
+    sorted_candidates: &[Candidate],
+    max_domains: usize,
+) -> (Vec<DiscoveredDomain>, usize) {
+    let mut index_by_domain: HashMap<String, usize> = HashMap::new();
+    let mut domains: Vec<DiscoveredDomain> = Vec::new();
+
+    for c in sorted_candidates {
+        let dom = url_utils::display_domain(&c.url);
+        if dom.is_empty() {
+            continue;
+        }
+        if let Some(&pos) = index_by_domain.get(&dom) {
+            let entry = &mut domains[pos];
+            entry.result_count += 1;
+            if c.families.len() > entry.max_families {
+                entry.max_families = c.families.len();
+            }
+            if c.rrf > entry.top_rrf_score {
+                entry.top_rrf_score = c.rrf;
+            }
+        } else {
+            index_by_domain.insert(dom.clone(), domains.len());
+            domains.push(DiscoveredDomain {
+                domain: dom,
+                result_count: 1,
+                max_families: c.families.len(),
+                top_rrf_score: c.rrf,
+                top_url: c.url.clone(),
+                top_title: crate::util::truncate_chars(c.title.trim(), 120).to_string(),
+            });
+        }
+    }
+
+    let total = domains.len();
+    domains.truncate(max_domains);
+    (domains, total)
+}
+
+/// Output of [`fuse_and_select_candidates`], preserving true pre-truncation
+/// deduplicated URL and discovered-domain counts alongside the truncated pool.
+struct CandidateSelection {
+    rrf_scores: HashMap<String, f64>,
+    candidates: Vec<Candidate>,
+    deduplicated_urls: usize,
+    discovered_domains: Vec<DiscoveredDomain>,
+    total_discovered_domains: usize,
+}
+
+/// Collapse raw engine results by canonical URL, apply domain exclusion/inclusion
+/// rules, compute cross-family RRF consensus and pre-scrape triage, build the
+/// compact `discovered_domains` rollup, and truncate to `max_urls`.
+#[allow(clippy::too_many_arguments)]
+fn fuse_and_select_candidates(
+    all_results: &[RawSearchResult],
+    fused_scores: Option<HashMap<String, f64>>,
+    raw_query: &str,
+    effective_query: &str,
+    intel: &query_intel::QueryIntelligence,
+    profile: &modes::ModeProfile,
+    max_urls: usize,
+    domain_filter: &DomainFilter,
+) -> CandidateSelection {
+    let rrf_scores = fused_scores.unwrap_or_else(|| ranking::compute_rrf_scores(all_results));
+
+    let mut by_url: HashMap<String, Candidate> = HashMap::new();
+    for item in all_results {
+        if domain_filter.is_excluded(&item.url) {
+            continue;
+        }
+        let key = url_utils::canonical_key(&item.url);
+        let c = by_url.entry(key).or_insert_with(|| Candidate {
+            url: item.url.clone(),
+            title: item.title.clone(),
+            snippet: item.snippet.clone(),
+            engines: Vec::new(),
+            families: Vec::new(),
+            rrf: 0.0,
+            published: item.published,
+            full_text: None,
+        });
+        if c.snippet.len() < item.snippet.len() {
+            c.snippet = item.snippet.clone();
+        }
+        if c.title.is_empty() {
+            c.title = item.title.clone();
+        }
+        if c.published.is_none() {
+            c.published = item.published;
+        }
+        if c.full_text.is_none() {
+            c.full_text = item.full_text.clone();
+        }
+        if !c.engines.contains(&item.engine) {
+            c.engines.push(item.engine.clone());
+        }
+        let fam = engines::engine_family(&item.engine);
+        if !c.families.contains(&fam) {
+            c.families.push(fam);
+        }
+    }
+
+    let site_mode = profile.site_filter.is_some();
+    let mut ranked: Vec<Candidate> = by_url
+        .into_iter()
+        .filter_map(|(key, mut c)| {
+            // Site-filtered modes and explicitly included domains bypass the
+            // general skip list.
+            let bypass_skip = site_mode || domain_filter.is_included(&c.url);
+            if !bypass_skip && url_utils::should_skip(&c.url) {
+                return None;
+            }
+            c.rrf = rrf_scores.get(&key).copied().unwrap_or(0.0);
+            Some(c)
+        })
+        .collect();
+
+    // Selection score = consensus × mode/domain source preference + triage.
+    let triage_terms = ranking::query_terms(&format!("{} {}", raw_query, effective_query));
+    let selection_score = |c: &Candidate| -> f64 {
+        pre_scrape_triage_score(
+            c,
+            raw_query,
+            &triage_terms,
+            intel,
+            profile.mode,
+            profile.domain,
+        )
+    };
+    ranked.sort_by(|a, b| {
+        selection_score(b)
+            .partial_cmp(&selection_score(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.families.len().cmp(&a.families.len()))
+    });
+
+    // When strict domain restriction is active, enforce it BEFORE summarizing
+    // `discovered_domains` and counting `deduplicated_urls` so external/spam
+    // domains can never leak into `discovered_domains` or `content[0].text`.
+    if domain_filter.is_strict_active() {
+        ranked.retain(|c| domain_filter.is_included(&c.url));
+    }
+
+    let deduplicated_urls = ranked.len();
+    let (discovered_domains, total_discovered_domains) =
+        summarize_discovered_domains(&ranked, MAX_DISCOVERED_DOMAINS);
+
+    if domain_filter.is_strict_active() {
+        ranked.truncate(max_urls);
+    } else if !domain_filter.include.is_empty() && max_urls > 0 {
+        // Balanced soft priority (`strict_domains: false`): prioritize included
+        // domains at the top (round-robin across included domains, capped at
+        // half the budget so SearchWala's organic consensus answers stay intact),
+        // then fill remaining slots with organic consensus results and any
+        // leftover included hits if organic runs short.
+        let mut by_inc_domain: Vec<std::collections::VecDeque<Candidate>> =
+            (0..domain_filter.include.len())
+                .map(|_| std::collections::VecDeque::new())
+                .collect();
+        let mut organic: Vec<Candidate> = Vec::new();
+        for c in ranked {
+            if let Some(pos) = domain_filter
+                .include
+                .iter()
+                .position(|d| url_utils::host_matches_domain(&c.url, d))
+            {
+                by_inc_domain[pos].push_back(c);
+            } else {
+                organic.push(c);
+            }
+        }
+        // Order included domain buckets by their best candidate's score so the
+        // strongest matching included domain always takes rank #1.
+        by_inc_domain.sort_by(|a, b| {
+            let sa = a.front().map(&selection_score).unwrap_or(f64::NEG_INFINITY);
+            let sb = b.front().map(&selection_score).unwrap_or(f64::NEG_INFINITY);
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let priority_cap = (max_urls / 2).max(1);
+        let mut prioritized: Vec<Candidate> = Vec::with_capacity(max_urls);
+        let mut overflow_included: Vec<Candidate> = Vec::new();
+        loop {
+            let mut progressed = false;
+            for bucket in &mut by_inc_domain {
+                if let Some(cand) = bucket.pop_front() {
+                    progressed = true;
+                    if prioritized.len() < priority_cap {
+                        prioritized.push(cand);
+                    } else {
+                        overflow_included.push(cand);
+                    }
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
+
+        for cand in organic {
+            if prioritized.len() >= max_urls {
+                break;
+            }
+            prioritized.push(cand);
+        }
+        for cand in overflow_included {
+            if prioritized.len() >= max_urls {
+                break;
+            }
+            prioritized.push(cand);
+        }
+        ranked = prioritized;
+    } else {
+        ranked.truncate(max_urls);
+    }
+
+    CandidateSelection {
+        rrf_scores,
+        candidates: ranked,
+        deduplicated_urls,
+        discovered_domains,
+        total_discovered_domains,
+    }
+}
+
+/// Project ranked candidates into [`SerpHit`] items for SERP-only callers.
+fn candidates_to_serp_hits(candidates: &[Candidate], limit: usize) -> Vec<SerpHit> {
+    candidates
+        .iter()
+        .take(limit)
+        .enumerate()
+        .map(|(i, c)| {
+            let abstract_text = c
+                .full_text
+                .as_deref()
+                .filter(|t| crate::util::char_len(t) >= 80)
+                .map(|t| crate::util::truncate_chars(t.trim(), 2_000).to_string());
+            SerpHit {
+                rank: i + 1,
+                url: c.url.clone(),
+                title: c.title.clone(),
+                snippet: crate::util::truncate_chars(&c.snippet, 400).to_string(),
+                engines: c.engines.clone(),
+                found_by_families: c.families.len(),
+                rrf_score: c.rrf,
+                published: c.published,
+                abstract_text,
+            }
+        })
+        .collect()
 }
 
 /// The page title to show and cite.
@@ -341,15 +1257,7 @@ pub async fn execute_search_full(
 
     // ── Recency hint for engines (resolved dynamically via chrono::Utc::now().year()) ──
     // Skipped for Study and Academic: those topics are evergreen.
-    if intel.is_time_sensitive && !matches!(mode, modes::Mode::Study | modes::Mode::Academic) {
-        let q_lower = effective_query.to_lowercase();
-        let current_year = chrono::Utc::now().year();
-        let has_year =
-            ((current_year - 15)..=(current_year + 10)).any(|y| q_lower.contains(&y.to_string()));
-        if !has_year {
-            effective_query = format!("{} {}", effective_query, current_year);
-        }
-    }
+    effective_query = apply_recency_hint(&effective_query, &intel, mode);
 
     // ── Sub-queries ──
     let sub_query_cap = if semantic_plan.is_some() && !matches!(mode, modes::Mode::Fast) {
@@ -443,9 +1351,12 @@ pub async fn execute_search_full(
     let engine_semaphore = Arc::new(Semaphore::new(engine_concurrency));
 
     let stage_start = std::time::Instant::now();
-    let tagged = dispatch_engines(
+    let (tagged, all_queries) = dispatch_with_domain_targets(
         &engine_instances,
         &query_variations,
+        &effective_query,
+        &params.domain_filter,
+        profile.site_filter.is_some(),
         &plain_fetcher,
         &stealth_fetcher,
         &stealth_engine_set,
@@ -463,26 +1374,7 @@ pub async fn execute_search_full(
 
     // Multi-query modes score each page by weighted fusion across sub-queries;
     // the raw results are kept either way so engine/family lists stay exact.
-    let fused_scores: Option<HashMap<String, f64>> = if query_variations.len() <= 1 {
-        None
-    } else {
-        // Regroup per sub-query and fuse with the ORIGINAL weighted 2x. The
-        // original is `query_variations[0]` — it already carries any site:
-        // filter, so comparing against the bare query would never match and
-        // the 2x weight would silently never apply.
-        let mut grouped: Vec<Vec<RawSearchResult>> = vec![Vec::new(); query_variations.len()];
-        for (idx, batch) in &tagged {
-            if let Some(slot) = grouped.get_mut(*idx) {
-                slot.extend(batch.iter().cloned());
-            }
-        }
-        let per_query: Vec<(String, Vec<RawSearchResult>)> =
-            query_variations.iter().cloned().zip(grouped).collect();
-        Some(ranking::cross_query_scores(
-            &per_query,
-            &query_variations[0],
-        ))
-    };
+    let fused_scores = compute_fused_scores(&tagged, &all_queries);
     let mut all_results: Vec<RawSearchResult> = tagged.into_iter().flat_map(|(_, v)| v).collect();
 
     if profile.site_filter.is_some() {
@@ -514,77 +1406,23 @@ pub async fn execute_search_full(
 
     // ── Consensus ranking + source selection ──
     let stage_start = std::time::Instant::now();
-    let rrf_scores = fused_scores.unwrap_or_else(|| ranking::compute_rrf_scores(&all_results));
-    let rrf_ms = stage_start.elapsed().as_millis();
     let total_raw = all_results.len();
-
-    let mut by_url: HashMap<String, Candidate> = HashMap::new();
-    for item in &all_results {
-        let key = url_utils::canonical_key(&item.url);
-        let c = by_url.entry(key).or_insert_with(|| Candidate {
-            url: item.url.clone(),
-            title: item.title.clone(),
-            snippet: item.snippet.clone(),
-            engines: Vec::new(),
-            families: Vec::new(),
-            rrf: 0.0,
-            published: item.published,
-            full_text: None,
-        });
-        if c.snippet.len() < item.snippet.len() {
-            c.snippet = item.snippet.clone();
-        }
-        if c.title.is_empty() {
-            c.title = item.title.clone();
-        }
-        if c.published.is_none() {
-            c.published = item.published;
-        }
-        if c.full_text.is_none() {
-            c.full_text = item.full_text.clone();
-        }
-        if !c.engines.contains(&item.engine) {
-            c.engines.push(item.engine.clone());
-        }
-        let fam = engines::engine_family(&item.engine);
-        if !c.families.contains(&fam) {
-            c.families.push(fam);
-        }
-    }
-
-    let site_mode = profile.site_filter.is_some();
-    let mut ranked: Vec<Candidate> = by_url
-        .into_iter()
-        .filter_map(|(key, mut c)| {
-            // Site-filtered modes must keep their own domain even if it is on
-            // the general skip list.
-            if !site_mode && url_utils::should_skip(&c.url) {
-                return None;
-            }
-            c.rrf = rrf_scores.get(&key).copied().unwrap_or(0.0);
-            Some(c)
-        })
-        .collect();
-    // Selection score = consensus × mode/domain source preference.
-    //
-    // Pure RRF rewards being found by many indices, which a scholarly paper —
-    // present in OpenAlex alone — can never be. Measured in Academic mode:
-    // OpenAlex returned 40 papers per sub-query (18-21 with abstracts), yet
-    // Wikipedia filled the top 11 slots and only 3 abstracts were used. The
-    // same preferences already applied to chunk ranking; they now decide which
-    // pages are read, too.
-    let triage_terms = ranking::query_terms(&format!("{} {}", query, effective_query));
-    let selection_score = |c: &Candidate| -> f64 {
-        pre_scrape_triage_score(c, &query, &triage_terms, &intel, mode, domain)
-    };
-    ranked.sort_by(|a, b| {
-        selection_score(b)
-            .partial_cmp(&selection_score(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| b.families.len().cmp(&a.families.len()))
-    });
-    ranked.truncate(profile.max_urls);
-    let deduped_count = ranked.len();
+    let sel = fuse_and_select_candidates(
+        &all_results,
+        fused_scores,
+        &query,
+        &effective_query,
+        &intel,
+        &profile,
+        profile.max_urls,
+        &params.domain_filter,
+    );
+    let rrf_ms = stage_start.elapsed().as_millis();
+    let rrf_scores = sel.rrf_scores;
+    let ranked = sel.candidates;
+    let discovered_domains = sel.discovered_domains;
+    let total_discovered_domains = sel.total_discovered_domains;
+    let deduped_count = sel.deduplicated_urls;
 
     let search_results: Vec<SearchHit> = ranked
         .iter()
@@ -608,7 +1446,7 @@ pub async fn execute_search_full(
     // ── Scrape ──
     let concurrency = config::concurrency().min(40);
     let semaphore = Arc::new(Semaphore::new(concurrency));
-    let scrape_client = build_scrape_client();
+    let scrape_client = shared_scrape_client().clone();
     let scrape_max_bytes = config::max_html_bytes();
     let scrape_timeout = profile.scrape_timeout;
     let snippet_fallback = profile.snippet_fallback;
@@ -849,6 +1687,7 @@ pub async fn execute_search_full(
     // query, dispatch a targeted corrective query and merge the new sources.
     if !matches!(mode, modes::Mode::Fast)
         && profile.site_filter.is_none()
+        && !params.domain_filter.is_strict_active()
         && !evidence_is_sufficient(&results, &intel)
     {
         if let Some(corrective_q) = build_corrective_query(&intel, &query_variations) {
@@ -898,7 +1737,11 @@ pub async fn execute_search_full(
                 let mut corr_candidates: Vec<Candidate> = Vec::new();
                 for item in corr_raw {
                     let key = url_utils::canonical_key(&item.url);
-                    if !seen_urls.insert(key.clone()) || url_utils::should_skip(&item.url) {
+                    if !params.domain_filter.allows_url(&item.url)
+                        || !seen_urls.insert(key.clone())
+                        || (!params.domain_filter.is_included(&item.url)
+                            && url_utils::should_skip(&item.url))
+                    {
                         continue;
                     }
                     corr_candidates.push(Candidate {
@@ -1121,6 +1964,8 @@ pub async fn execute_search_full(
         chars_extracted: scraped_chars,
         results,
         search_results,
+        discovered_domains,
+        total_discovered_domains,
         copilot_query: copilot_out,
         llm_answer: llm_result.llm_answer,
         llm_error: llm_result.llm_error,
@@ -1429,8 +2274,31 @@ async fn dispatch_engines(
 }
 
 // =============================================================================
-// Scrape Pipeline — with retry on 403/429/503
+// Scrape & Single-URL Extraction Pipeline — with SSRF guard & retry on 403/429/503
 // =============================================================================
+
+/// Shared lazily-initialized scrape client (SSRF-guarded, pooled across calls).
+static SCRAPE_CLIENT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(build_scrape_client);
+
+/// Access the shared SSRF-guarded scrape client.
+pub fn shared_scrape_client() -> &'static reqwest::Client {
+    &SCRAPE_CLIENT
+}
+
+/// Fetch and extract readable content + metadata from a single public HTTP(S) URL.
+///
+/// Enforces SearchWala's full SSRF policy (`scrape_url_allowed`,
+/// `PublicOnlyResolver`, per-hop redirect checks), `old.reddit.com` rewrite,
+/// YouTube fast path, charset-aware decoding, bot-wall screening, Readability +
+/// conditional Trafilatura + JSON-LD + Deep Reader + optional AMP fallback, and
+/// the 6-hour in-memory page cache.
+pub async fn fetch_and_extract_url(
+    url: &str,
+    opts: &FetchExtractOptions,
+) -> Result<ExtractedPage, ExtractError> {
+    fetch_and_extract_with_client(shared_scrape_client(), url, opts, true, false).await
+}
 
 async fn scrape_url(
     client: &reqwest::Client,
@@ -1439,185 +2307,335 @@ async fn scrape_url(
     max_bytes: usize,
     mode: modes::Mode,
 ) -> Option<crate::extractor::Extracted> {
-    // First attempt
-    match scrape_url_inner(client, url, timeout, max_bytes, mode).await {
-        ScrapeResult::Ok(e) => Some(e),
-        ScrapeResult::Blocked => {
-            // ── Retry with fresh browser profile after delay ──
-            let delay = config::random_jitter_ms(200, 500);
-            tokio::time::sleep(Duration::from_millis(delay)).await;
-            tracing::debug!("Retry after block: {}", url);
-            match scrape_url_inner(client, url, timeout, max_bytes, mode).await {
-                ScrapeResult::Ok(e) => Some(e),
-                _ => None,
-            }
-        }
-        ScrapeResult::Skip => None,
-    }
+    let opts = FetchExtractOptions {
+        timeout,
+        max_bytes,
+        allow_amp_fallback: mode != modes::Mode::Fast,
+        // `execute_search_full` handles page cache lookup/insert before acquiring
+        // the scrape semaphore so cache hits never consume a scrape slot.
+        use_cache: false,
+        allow_plain_text: false,
+    };
+    fetch_and_extract_with_client(client, url, &opts, true, mode == modes::Mode::YouTube)
+        .await
+        .ok()
+        .map(|p| p.extracted)
 }
 
-enum ScrapeResult {
-    Ok(crate::extractor::Extracted),
-    Blocked,
-    Skip,
-}
-
-async fn scrape_url_inner(
+async fn fetch_and_extract_with_client(
     client: &reqwest::Client,
-    url: &str,
-    timeout: Duration,
-    max_bytes: usize,
-    mode: modes::Mode,
-) -> ScrapeResult {
+    raw_url: &str,
+    opts: &FetchExtractOptions,
+    enforce_ssrf: bool,
+    youtube_mode: bool,
+) -> Result<ExtractedPage, ExtractError> {
+    let start = std::time::Instant::now();
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return Err(ExtractError::InvalidUrl("URL cannot be empty".into()));
+    }
+    let parsed_raw = url::Url::parse(trimmed)
+        .map_err(|e| ExtractError::InvalidUrl(format!("failed to parse URL: {e}")))?;
+
+    // Check scheme & SSRF before rewriting or checking cache.
+    if !matches!(parsed_raw.scheme(), "http" | "https") {
+        return Err(ExtractError::BlockedBySsrf(format!(
+            "scheme {:?} is not allowed",
+            parsed_raw.scheme()
+        )));
+    }
+
     // New Reddit is a JavaScript shell; old.reddit serves real HTML. Applied in
     // every mode, since Reddit threads surface in ordinary searches too.
-    let target_url = reddit_to_old(url);
-    if !url::Url::parse(&target_url).is_ok_and(|u| crate::ssrf::scrape_url_allowed(&u)) {
+    let target_url = reddit_to_old(trimmed);
+    let parsed_target = url::Url::parse(&target_url)
+        .map_err(|e| ExtractError::InvalidUrl(format!("invalid rewritten URL: {e}")))?;
+    if enforce_ssrf && !crate::ssrf::scrape_url_allowed(&parsed_target) {
         tracing::warn!("Refusing to scrape non-public URL: {}", target_url);
-        return ScrapeResult::Skip;
+        return Err(ExtractError::BlockedBySsrf(format!(
+            "non-public host rejected: {}",
+            parsed_target.host_str().unwrap_or("<unknown>")
+        )));
     }
 
+    if opts.use_cache {
+        if let Some(cached) = crate::cache_layer::get_page(&target_url).await {
+            let extracted = (*cached).clone();
+            let char_count = crate::util::char_len(&extracted.text);
+            return Ok(ExtractedPage {
+                url: trimmed.to_string(),
+                final_url: target_url,
+                extracted,
+                char_count,
+                cached: true,
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            });
+        }
+    }
+
+    let attempt =
+        fetch_and_extract_attempt(client, &target_url, opts, enforce_ssrf, youtube_mode).await;
+    let (final_url, extracted) = match attempt {
+        Ok(ok) => ok,
+        Err(ExtractError::AntiBotBlocked { .. }) => {
+            // ── Retry once with fresh browser profile after jitter ──
+            let delay = config::random_jitter_ms(200, 500);
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            tracing::debug!("Retry after block: {}", target_url);
+            fetch_and_extract_attempt(client, &target_url, opts, enforce_ssrf, youtube_mode).await?
+        }
+        Err(err) => return Err(err),
+    };
+
+    if opts.use_cache {
+        crate::cache_layer::put_page(&target_url, extracted.clone()).await;
+    }
+
+    let char_count = crate::util::char_len(&extracted.text);
+    Ok(ExtractedPage {
+        url: trimmed.to_string(),
+        final_url,
+        extracted,
+        char_count,
+        cached: false,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    })
+}
+
+async fn fetch_and_extract_attempt(
+    client: &reqwest::Client,
+    target_url: &str,
+    opts: &FetchExtractOptions,
+    enforce_ssrf: bool,
+    youtube_mode: bool,
+) -> Result<(String, crate::extractor::Extracted), ExtractError> {
     // Accept-Encoding is NOT set by hand: reqwest advertises exactly what it
     // can decode (the Phase-1 zstd fix), and a manual header would override it.
-    let mut req = client.get(&target_url).header(
+    let mut req = client.get(target_url).header(
         "Accept",
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     );
 
-    req = config::apply_browser_headers(req, &target_url);
+    req = config::apply_browser_headers(req, target_url);
 
-    if !timeout.is_zero() {
-        req = req.timeout(timeout);
+    if !opts.timeout.is_zero() {
+        req = req.timeout(opts.timeout);
     }
 
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!("Fetch failed {}: {}", target_url, e);
-            return ScrapeResult::Skip;
+            if e.is_timeout() {
+                return Err(ExtractError::Timeout);
+            }
+            let msg = e.to_string();
+            if msg.contains("no public address") {
+                return Err(ExtractError::BlockedBySsrf(
+                    "host resolved to a non-public IP address".into(),
+                ));
+            }
+            return Err(ExtractError::NetworkError(msg));
         }
     };
 
-    // ── Detect anti-bot blocks and retry ──
     let status = resp.status().as_u16();
+    // ── Detect anti-bot blocks and retry ──
     if status == 403 || status == 429 || status == 503 {
         tracing::debug!("Blocked (HTTP {}) at {}", status, target_url);
-        return ScrapeResult::Blocked;
+        return Err(ExtractError::AntiBotBlocked { status });
     }
 
-    if let Some(ct) = resp.headers().get("content-type") {
-        let ct_str = ct.to_str().unwrap_or("");
-        if !ct_str.contains("text/html") && !ct_str.contains("application/xhtml") {
-            return ScrapeResult::Skip;
+    // Redirect stopped by `scrape_redirect_policy` when targeting a non-public host.
+    if resp.status().is_redirection() {
+        if let Some(loc) = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+        {
+            if let Ok(resolved) = resp.url().join(loc) {
+                if !crate::ssrf::scrape_url_allowed(&resolved) {
+                    return Err(ExtractError::BlockedBySsrf(format!(
+                        "redirect target rejected: {}",
+                        resolved.host_str().unwrap_or("<unknown>")
+                    )));
+                }
+            }
         }
+        return Err(ExtractError::HttpStatus { status });
     }
 
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(_) => return ScrapeResult::Skip,
-    };
+    if !resp.status().is_success() {
+        return Err(ExtractError::HttpStatus { status });
+    }
+
+    let final_url = resp.url().to_string();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|ct| ct.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let is_plain_text = content_type.contains("text/plain")
+        || content_type.contains("text/markdown")
+        || content_type.contains("text/x-markdown");
+    let is_html = content_type.is_empty()
+        || content_type.contains("text/html")
+        || content_type.contains("application/xhtml");
+
+    if !is_html && !(opts.allow_plain_text && is_plain_text) {
+        return Err(ExtractError::UnsupportedContentType(content_type));
+    }
+
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| ExtractError::NetworkError(e.to_string()))?;
 
     // Charset-aware decode (v8.0). `from_utf8_lossy` mangled every
     // windows-1252 / ISO-8859-1 / GBK / Shift_JIS page into replacement chars.
-    let html_bytes = &bytes[..bytes.len().min(max_bytes)];
-    let html = crate::fetcher::decode_body(html_bytes);
+    let capped_bytes = &bytes[..bytes.len().min(opts.max_bytes)];
+    let body = crate::fetcher::decode_body(capped_bytes);
+
+    if !is_html && is_plain_text {
+        let trimmed = body.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(ExtractError::UnusableContent { chars: 0 });
+        }
+        let title = plain_text_title(&trimmed, &final_url);
+        return Ok((
+            final_url,
+            crate::extractor::Extracted {
+                title,
+                text: trimmed,
+                confidence: 0.95,
+                source: "plain-text",
+                ..Default::default()
+            },
+        ));
+    }
 
     // Bot walls served with HTTP 200 (Reddit's "Welcome to Reddit" CAPTCHA,
     // Cloudflare interstitials). v8.0 only screened SERPs, so these pages were
     // extracted and handed to the LLM as sources.
-    if crate::engines::health::looks_like_blocked_page(&html) {
+    if crate::engines::health::looks_like_blocked_page(&body) {
         tracing::debug!("Blocked/interstitial page at {}", target_url);
-        return ScrapeResult::Blocked;
+        return Err(ExtractError::AntiBotBlocked { status: 200 });
     }
 
     // ── Single-pass DOM extraction: title + text in one parse ──
     // v5.0 fix: eliminates the double Html::parse_document() bottleneck
-    if mode == modes::Mode::YouTube || target_url.contains("youtube.com/watch") {
+    if youtube_mode || target_url.contains("youtube.com/watch") {
         // YouTube fast path: try JSON-LD first (no DOM parse needed)
-        if let Some(desc) = extract_youtube_json_ld(&html) {
-            return ScrapeResult::Ok(crate::extractor::Extracted {
-                title: extractor::extract_title_from_html(&html),
-                text: desc,
-                confidence: 0.6,
-                source: "youtube",
-                ..Default::default()
-            });
+        if let Some(desc) = extract_youtube_json_ld(&body) {
+            return Ok((
+                final_url,
+                crate::extractor::Extracted {
+                    title: extractor::extract_title_from_html(&body),
+                    text: desc,
+                    confidence: 0.6,
+                    source: "youtube",
+                    ..Default::default()
+                },
+            ));
         }
         // Fallback: single DOM parse for both meta desc + title
-        let doc = Html::parse_document(&html);
+        let doc = Html::parse_document(&body);
         let title = extractor::extract_title_from_doc_pub(&doc);
         if let Some(desc) = extractor::extract_youtube_meta(&doc) {
-            return ScrapeResult::Ok(crate::extractor::Extracted {
-                title,
-                text: desc,
-                confidence: 0.6,
-                source: "youtube",
-                ..Default::default()
-            });
+            return Ok((
+                final_url,
+                crate::extractor::Extracted {
+                    title,
+                    text: desc,
+                    confidence: 0.6,
+                    source: "youtube",
+                    ..Default::default()
+                },
+            ));
         }
     }
 
-    // Normal pages: trafilatura + conditional Readability (v8.0 P1-4).
-    // Extraction is CPU-bound (trafilatura ~40 ms/page, 140 ms on a large
-    // Wikipedia article). Running it inline blocked tokio worker threads and
-    // stalled every other in-flight fetch; the blocking pool is the right home.
-    // The AMP variant is server-rendered with minimal markup, so it often
-    // reads where the canonical page (a JS shell, a consent wall) does not.
-    // One extra fetch, never in Fast mode.
-    let amp = if mode == modes::Mode::Fast {
-        None
+    // Normal pages: Readability + conditional Trafilatura + JSON-LD + Deep Reader.
+    // Extraction is CPU-bound; run on Tokio's blocking pool so it cannot stall
+    // network I/O. AMP fallback runs when canonical extraction is thin.
+    let amp = if opts.allow_amp_fallback {
+        crate::deep_reader::amp_url(&body, &final_url)
     } else {
-        crate::deep_reader::amp_url(&html, &target_url)
+        None
     };
-    let page_url = target_url.clone();
-    let extracted =
-        match tokio::task::spawn_blocking(move || extractor::extract(&html, &page_url)).await {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::debug!("extraction task failed for {}: {}", target_url, e);
-                return ScrapeResult::Skip;
-            }
-        };
+    let page_url = final_url.clone();
+    let extracted = tokio::task::spawn_blocking(move || extractor::extract(&body, &page_url))
+        .await
+        .map_err(|e| ExtractError::NetworkError(format!("extraction task failed: {e}")))?;
+
     if !extractor::is_usable(&extracted) {
         if let Some(amp_url) = amp {
-            if let Some(mut e) = fetch_and_extract(client, &amp_url, timeout, max_bytes).await {
+            if let Some(mut e) = fetch_amp_fallback(client, &amp_url, opts, enforce_ssrf).await {
                 tracing::debug!(
                     "AMP fallback read {} chars for {}",
                     e.text.len(),
                     target_url
                 );
                 e.source = "amp";
-                return ScrapeResult::Ok(e);
+                return Ok((amp_url, e));
             }
         }
-        return ScrapeResult::Skip;
+        let chars = crate::util::char_len(&extracted.text);
+        return Err(ExtractError::UnusableContent { chars });
     }
-    ScrapeResult::Ok(extracted)
+    Ok((final_url, extracted))
+}
+
+/// Infer a readable title for a plain-text or Markdown document.
+fn plain_text_title(text: &str, url: &str) -> String {
+    if let Some(first) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
+        if let Some(heading) = first.strip_prefix("# ") {
+            let h = heading.trim();
+            if !h.is_empty() {
+                return crate::util::truncate_chars(h, 160).to_string();
+            }
+        }
+    }
+    if let Ok(u) = url::Url::parse(url) {
+        if let Some(seg) = u
+            .path_segments()
+            .and_then(|mut s| s.next_back())
+            .filter(|s| !s.is_empty())
+        {
+            return seg.to_string();
+        }
+        if let Some(host) = u.host_str() {
+            return host.to_string();
+        }
+    }
+    String::new()
 }
 
 /// Plain fetch + extract for a secondary URL (the AMP variant). No retries.
-async fn fetch_and_extract(
+async fn fetch_amp_fallback(
     client: &reqwest::Client,
     url: &str,
-    timeout: Duration,
-    max_bytes: usize,
+    opts: &FetchExtractOptions,
+    enforce_ssrf: bool,
 ) -> Option<crate::extractor::Extracted> {
-    if !url::Url::parse(url).is_ok_and(|u| crate::ssrf::scrape_url_allowed(&u)) {
+    if enforce_ssrf && !url::Url::parse(url).is_ok_and(|u| crate::ssrf::scrape_url_allowed(&u)) {
         return None;
     }
     let mut req = client
         .get(url)
         .header("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8");
     req = config::apply_browser_headers(req, url);
-    if !timeout.is_zero() {
-        req = req.timeout(timeout);
+    if !opts.timeout.is_zero() {
+        req = req.timeout(opts.timeout);
     }
     let resp = req.send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
     let bytes = resp.bytes().await.ok()?;
-    let html = crate::fetcher::decode_body(&bytes[..bytes.len().min(max_bytes)]);
+    let html = crate::fetcher::decode_body(&bytes[..bytes.len().min(opts.max_bytes)]);
     if crate::engines::health::looks_like_blocked_page(&html) {
         return None;
     }
@@ -1715,6 +2733,7 @@ fn build_scrape_client() -> reqwest::Client {
         .gzip(true)
         .brotli(true)
         .deflate(true)
+        .zstd(true)
         .build()
         .expect("Failed to build scrape HTTP client")
 }
@@ -2255,6 +3274,681 @@ mod stage1_sufficiency_tests {
         assert!(
             s_official > s_wiki * 3.0,
             "official ({s_official}) must beat off-topic wiki ({s_wiki})"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mcp_foundation_tests {
+    use super::*;
+    use axum::{
+        http::{header, StatusCode},
+        response::IntoResponse,
+        routing::get,
+        Router,
+    };
+
+    fn long_article_html(title: &str, tag: &str) -> String {
+        let body: String = (0..6)
+            .map(|i| {
+                format!(
+                    "<p>{tag} paragraph {i}: SearchWala extracts structured prose cleanly from \
+                     real-world HTML documents without relying on third-party SDKs or cloud APIs.</p>"
+                )
+            })
+            .collect();
+        format!(
+            "<!DOCTYPE html><html lang=\"en\"><head><title>{title}</title></head>\
+             <body><article><h1>{title}</h1>{body}</article></body></html>"
+        )
+    }
+
+    async fn spawn_mock_site() -> String {
+        let app = Router::new()
+            .route(
+                "/article",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                        long_article_html("Rust MCP Architecture", "ARTICLE"),
+                    )
+                }),
+            )
+            .route(
+                "/llms.txt",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+                        "# SearchWala Docs\n\nSearchWala exposes consensus search and deep extraction over MCP.",
+                    )
+                }),
+            )
+            .route(
+                "/file.pdf",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "application/pdf")],
+                        b"%PDF-1.7 binary payload".as_slice(),
+                    )
+                }),
+            )
+            .route(
+                "/blocked-403",
+                get(|| async { (StatusCode::FORBIDDEN, "Forbidden") }),
+            )
+            .route(
+                "/captcha-200",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/html")],
+                        "<html><head><title>Just a moment...</title></head><body>Checking your browser before accessing</body></html>",
+                    )
+                }),
+            )
+            .route(
+                "/missing",
+                get(|| async { (StatusCode::NOT_FOUND, "Not found") }),
+            )
+            .route(
+                "/thin-with-amp",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/html")],
+                        "<html><head><title>Thin</title><link rel=\"amphtml\" href=\"/amp/story\"></head><body><p>Short teaser.</p></body></html>",
+                    )
+                }),
+            )
+            .route(
+                "/amp/story",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/html")],
+                        long_article_html("AMP Full Story", "AMPBODY"),
+                    )
+                }),
+            )
+            .route(
+                "/thin-only",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/html")],
+                        "<html><head><title>Tiny</title></head><body><p>Hi</p></body></html>",
+                    )
+                }),
+            )
+            .route(
+                "/redirect-imds",
+                get(|| async {
+                    (
+                        StatusCode::FOUND,
+                        [(header::LOCATION, "http://169.254.169.254/latest/meta-data/")],
+                    )
+                        .into_response()
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local mock listener");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{}", addr)
+    }
+
+    fn local_test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(crate::ssrf::scrape_redirect_policy(5))
+            .build()
+            .expect("test reqwest client")
+    }
+
+    #[tokio::test]
+    async fn search_serp_only_handles_empty_query_offline() {
+        let resp = search_serp_only(
+            "   ",
+            Some("fast"),
+            Some("tech"),
+            Some(10),
+            &DomainFilter::default(),
+            None,
+        )
+        .await;
+        assert!(resp.query.is_empty());
+        assert_eq!(resp.mode, "fast");
+        assert_eq!(resp.domain, "tech");
+        assert!(resp.results.is_empty());
+        assert!(resp.discovered_domains.is_empty());
+        assert_eq!(resp.total_discovered_domains, 0);
+        assert_eq!(resp.engine_stats.total_raw_results, 0);
+    }
+
+    #[test]
+    fn fuse_and_select_candidates_dedups_and_preserves_abstracts() {
+        let raw = vec![
+            RawSearchResult {
+                url: "https://arxiv.org/abs/2601.12345".into(),
+                title: "Consensus Meta-Search".into(),
+                snippet: "Short snippet".into(),
+                engine: "arxiv".into(),
+                rank_position: 1,
+                published: None,
+                full_text: Some(
+                    "This paper evaluates cross-family Reciprocal Rank Fusion across independent \
+                     web and scholarly indexes with measurable nDCG improvements."
+                        .into(),
+                ),
+            },
+            RawSearchResult {
+                url: "https://www.arxiv.org/abs/2601.12345?utm_source=test".into(),
+                title: "Consensus Meta-Search".into(),
+                snippet: "Longer consensus snippet from Brave".into(),
+                engine: "brave".into(),
+                rank_position: 2,
+                published: None,
+                full_text: None,
+            },
+            RawSearchResult {
+                url: "https://facebook.com/skipped-post".into(),
+                title: "Should be skipped".into(),
+                snippet: "Skipped domain".into(),
+                engine: "bing".into(),
+                rank_position: 1,
+                published: None,
+                full_text: None,
+            },
+        ];
+
+        let query = "consensus meta-search";
+        let intel = query_intel::analyze_query(query);
+        let profile = modes::resolve(modes::Mode::Academic, modes::Domain::Science, &intel, None);
+        let sel = fuse_and_select_candidates(
+            &raw,
+            None,
+            query,
+            query,
+            &intel,
+            &profile,
+            10,
+            &DomainFilter::default(),
+        );
+        let ranked = sel.candidates;
+        let discovered = sel.discovered_domains;
+        let total_domains = sel.total_discovered_domains;
+        assert_eq!(
+            ranked.len(),
+            1,
+            "www/utm variant must collapse and facebook skipped"
+        );
+        assert_eq!(sel.deduplicated_urls, 1);
+        assert_eq!(ranked[0].families.len(), 2, "arxiv + brave are 2 families");
+        assert_eq!(total_domains, 1);
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].domain, "arxiv.org");
+        assert_eq!(discovered[0].max_families, 2);
+
+        let hits = candidates_to_serp_hits(&ranked, 5);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].rank, 1);
+        assert_eq!(hits[0].found_by_families, 2);
+        assert_eq!(hits[0].snippet, "Longer consensus snippet from Brave");
+        assert!(
+            hits[0]
+                .abstract_text
+                .as_deref()
+                .is_some_and(|a| a.contains("Reciprocal Rank Fusion")),
+            "engine-supplied abstract must be preserved"
+        );
+    }
+
+    #[test]
+    fn domain_filter_supports_soft_priority_strict_restriction_exclusion_and_discovered_rollup() {
+        let raw = vec![
+            RawSearchResult {
+                url: "https://en.wikipedia.org/wiki/Rust_(programming_language)".into(),
+                title: "Rust programming language".into(),
+                snippet: "Rust async and memory safety overview.".into(),
+                engine: "wikipedia".into(),
+                rank_position: 1,
+                published: None,
+                full_text: None,
+            },
+            RawSearchResult {
+                url: "https://en.wikipedia.org/wiki/Rust_(programming_language)".into(),
+                title: "Rust programming language".into(),
+                snippet: "Rust async overview from Bing.".into(),
+                engine: "bing".into(),
+                rank_position: 1,
+                published: None,
+                full_text: None,
+            },
+            RawSearchResult {
+                url: "https://docs.rs/tokio/latest/tokio/macro.select.html".into(),
+                title: "tokio::select cancellation safety".into(),
+                snippet: "Detailed docs on tokio select cancellation safety.".into(),
+                engine: "brave".into(),
+                rank_position: 4,
+                published: None,
+                full_text: None,
+            },
+            RawSearchResult {
+                url: "https://docs.rs/tokio/latest/tokio/task/index.html".into(),
+                title: "tokio::task".into(),
+                snippet: "Tokio async tasks documentation.".into(),
+                engine: "bing".into(),
+                rank_position: 6,
+                published: None,
+                full_text: None,
+            },
+            RawSearchResult {
+                url: "https://noisy-blog.example/rust-select".into(),
+                title: "Noisy blog post".into(),
+                snippet: "Low quality scraped tutorial.".into(),
+                engine: "bing".into(),
+                rank_position: 2,
+                published: None,
+                full_text: None,
+            },
+            RawSearchResult {
+                url: "https://www.amazon.com/dp/B0RUSTBOOK".into(),
+                title: "Programming Rust Book".into(),
+                snippet: "Rust async programming book.".into(),
+                engine: "bing".into(),
+                rank_position: 5,
+                published: None,
+                full_text: None,
+            },
+        ];
+
+        let query = "rust async tokio select cancellation safety";
+        let intel = query_intel::analyze_query(query);
+        let profile = modes::resolve(modes::Mode::Auto, modes::Domain::Tech, &intel, None);
+
+        // 1. Soft mode (strict=false, default): docs.rs + amazon.com prioritized & bypass SKIP_DOMAINS;
+        // noisy-blog.example excluded; organic wikipedia result preserved.
+        let soft_filter = DomainFilter {
+            include: vec!["docs.rs".into(), "amazon.com".into()],
+            exclude: vec!["noisy-blog.example".into()],
+            strict: false,
+        };
+        let soft_sel = fuse_and_select_candidates(
+            &raw,
+            None,
+            query,
+            query,
+            &intel,
+            &profile,
+            10,
+            &soft_filter,
+        );
+        let soft_ranked = soft_sel.candidates;
+        let soft_discovered = soft_sel.discovered_domains;
+        let soft_total = soft_sel.total_discovered_domains;
+        assert!(
+            soft_ranked
+                .iter()
+                .all(|c| !c.url.contains("noisy-blog.example")),
+            "excluded domain must never survive triage"
+        );
+        assert!(
+            soft_discovered
+                .iter()
+                .all(|d| d.domain != "noisy-blog.example"),
+            "excluded domain must not appear in discovered_domains"
+        );
+        assert!(
+            soft_ranked[0].url.contains("docs.rs"),
+            "included domain must be prioritized at top: {:?}",
+            soft_ranked.iter().map(|c| &c.url).collect::<Vec<_>>()
+        );
+        assert!(
+            soft_ranked.iter().any(|c| c.url.contains("wikipedia.org")),
+            "soft mode (strict=false) must keep SearchWala's organic consensus results intact"
+        );
+        assert!(
+            soft_ranked.iter().any(|c| c.url.contains("amazon.com")),
+            "explicit include_domains must bypass SKIP_DOMAINS"
+        );
+        assert_eq!(soft_total, 3, "docs.rs + amazon.com + en.wikipedia.org");
+        let docs_entry = soft_discovered
+            .iter()
+            .find(|d| d.domain == "docs.rs")
+            .unwrap();
+        assert_eq!(docs_entry.result_count, 2);
+
+        // 2. Strict mode (strict=true): ONLY docs.rs returned in BOTH candidates
+        // AND discovered_domains (external/spam domains must never leak).
+        let strict_filter = DomainFilter {
+            include: vec!["docs.rs".into()],
+            exclude: vec!["noisy-blog.example".into()],
+            strict: true,
+        };
+        let strict_sel = fuse_and_select_candidates(
+            &raw,
+            None,
+            query,
+            query,
+            &intel,
+            &profile,
+            10,
+            &strict_filter,
+        );
+        let strict_ranked = strict_sel.candidates;
+        let strict_discovered = strict_sel.discovered_domains;
+        assert_eq!(strict_ranked.len(), 2);
+        assert_eq!(strict_sel.deduplicated_urls, 2);
+        assert!(strict_ranked.iter().all(|c| c.url.contains("docs.rs")));
+        assert!(
+            strict_discovered.iter().all(|d| d.domain == "docs.rs"),
+            "strict mode must not leak non-included domains into discovered_domains: {strict_discovered:?}"
+        );
+
+        // 3. Balanced soft priority: when many included hits compete with organic
+        // consensus results under strict=false, included domains take top priority
+        // slots (round-robin across included domains, capped at half the budget)
+        // while keeping SearchWala's organic consensus answers intact.
+        let mut crowded_raw = Vec::new();
+        for i in 1..=6 {
+            crowded_raw.push(RawSearchResult {
+                url: format!("https://docs.rs/tokio/item-{i}"),
+                title: format!("Tokio docs item {i}"),
+                snippet: "Rust tokio select cancellation safety".into(),
+                engine: "brave".into(),
+                rank_position: i,
+                published: None,
+                full_text: None,
+            });
+            crowded_raw.push(RawSearchResult {
+                url: format!("https://tokio.rs/tutorial/item-{i}"),
+                title: format!("Tokio tutorial item {i}"),
+                snippet: "Rust tokio select cancellation safety".into(),
+                engine: "bing".into(),
+                rank_position: i,
+                published: None,
+                full_text: None,
+            });
+            crowded_raw.push(RawSearchResult {
+                url: format!("https://organic{i}.example/rust-select"),
+                title: format!("Organic rust guide {i}"),
+                snippet: "Rust tokio select cancellation safety".into(),
+                engine: "duckduckgo".into(),
+                rank_position: i,
+                published: None,
+                full_text: None,
+            });
+        }
+        let balanced_filter = DomainFilter {
+            include: vec!["docs.rs".into(), "tokio.rs".into()],
+            exclude: vec![],
+            strict: false,
+        };
+        let balanced_sel = fuse_and_select_candidates(
+            &crowded_raw,
+            None,
+            query,
+            query,
+            &intel,
+            &profile,
+            10,
+            &balanced_filter,
+        );
+        let balanced = balanced_sel.candidates;
+        assert_eq!(
+            balanced_sel.deduplicated_urls, 18,
+            "deduplicated_urls must reflect pre-truncation pool (18), not truncated cap (10)"
+        );
+        assert_eq!(balanced.len(), 10);
+        let inc_cnt = balanced
+            .iter()
+            .filter(|c| balanced_filter.is_included(&c.url))
+            .count();
+        let org_cnt = balanced.len() - inc_cnt;
+        assert_eq!(
+            inc_cnt, 5,
+            "priority slots capped at half of max_urls (5/10)"
+        );
+        assert_eq!(org_cnt, 5, "organic consensus answers keep 5/10 slots");
+        assert!(balanced[..5]
+            .iter()
+            .all(|c| balanced_filter.is_included(&c.url)));
+        assert!(balanced[..5].iter().any(|c| c.url.contains("docs.rs")));
+        assert!(balanced[..5].iter().any(|c| c.url.contains("tokio.rs")));
+
+        // 4. Targeted site: query generation caps cleanly and avoids double site:.
+        let tq = build_targeted_domain_queries(query, &soft_filter, false);
+        assert_eq!(
+            tq,
+            vec![
+                format!("{query} site:docs.rs"),
+                format!("{query} site:amazon.com")
+            ]
+        );
+        assert!(build_targeted_domain_queries(query, &soft_filter, true).is_empty());
+        assert!(build_targeted_domain_queries("foo site:bar.com", &soft_filter, false).is_empty());
+    }
+
+    #[test]
+    fn apply_recency_hint_skips_evergreen_modes_and_existing_years() {
+        let mut intel = query_intel::analyze_query("latest rust release");
+        intel.is_time_sensitive = true;
+        let cur_year = chrono::Utc::now().year().to_string();
+
+        let auto_q = apply_recency_hint("latest rust release", &intel, modes::Mode::Auto);
+        assert!(auto_q.contains(&cur_year));
+
+        let study_q = apply_recency_hint("latest rust release", &intel, modes::Mode::Study);
+        assert_eq!(study_q, "latest rust release");
+
+        let explicit = format!("rust release {cur_year}");
+        assert_eq!(
+            apply_recency_hint(&explicit, &intel, modes::Mode::Auto),
+            explicit
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_and_extract_url_blocks_invalid_and_ssrf_targets() {
+        let opts = FetchExtractOptions::default();
+
+        assert!(matches!(
+            fetch_and_extract_url("", &opts).await,
+            Err(ExtractError::InvalidUrl(_))
+        ));
+        assert!(matches!(
+            fetch_and_extract_url("not a url", &opts).await,
+            Err(ExtractError::InvalidUrl(_))
+        ));
+
+        for blocked in [
+            "http://127.0.0.1:8000/api/chats",
+            "http://localhost:8000/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]:8000/",
+            "http://10.0.0.1/",
+            "file:///etc/passwd",
+            "ftp://example.com/file",
+        ] {
+            let res = fetch_and_extract_url(blocked, &opts).await;
+            assert!(
+                matches!(res, Err(ExtractError::BlockedBySsrf(_))),
+                "expected BlockedBySsrf for {blocked}, got {res:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_and_extract_url_serves_from_page_cache_without_network() {
+        let url = "https://cached-offline-check.example/docs/guide";
+        crate::cache_layer::put_page(
+            url,
+            crate::extractor::Extracted {
+                title: "Cached Guide".into(),
+                text: "Cached article body served purely from Moka without network I/O.".into(),
+                confidence: 0.92,
+                source: "readability",
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let page = fetch_and_extract_url(url, &FetchExtractOptions::default())
+            .await
+            .expect("should hit cache");
+        assert!(page.cached);
+        assert_eq!(page.extracted.title, "Cached Guide");
+        assert!(page.extracted.text.contains("purely from Moka"));
+    }
+
+    #[tokio::test]
+    async fn fetch_and_extract_local_mock_server_end_to_end() {
+        let base = spawn_mock_site().await;
+
+        // 1. Production entrypoint MUST block the local 127.0.0.1 mock server via SSRF guard.
+        let prod_res =
+            fetch_and_extract_url(&format!("{base}/article"), &FetchExtractOptions::default())
+                .await;
+        assert!(
+            matches!(prod_res, Err(ExtractError::BlockedBySsrf(_))),
+            "production fetch_and_extract_url must reject loopback: {prod_res:?}"
+        );
+
+        let client = local_test_client();
+        let opts = FetchExtractOptions {
+            use_cache: true,
+            ..Default::default()
+        };
+
+        // 2. HTML article extraction + cache miss then cache hit.
+        let art_url = format!("{base}/article");
+        let page = fetch_and_extract_with_client(&client, &art_url, &opts, false, false)
+            .await
+            .expect("article extraction");
+        assert!(!page.cached);
+        assert_eq!(page.extracted.title, "Rust MCP Architecture");
+        assert!(page.extracted.text.contains("ARTICLE paragraph 5"));
+        assert!(page.char_count > 300);
+
+        let cached = fetch_and_extract_with_client(&client, &art_url, &opts, false, false)
+            .await
+            .expect("cached article");
+        assert!(cached.cached);
+
+        let bypassed = fetch_and_extract_with_client(
+            &client,
+            &art_url,
+            &FetchExtractOptions {
+                use_cache: false,
+                ..opts.clone()
+            },
+            false,
+            false,
+        )
+        .await
+        .expect("bypassed cache");
+        assert!(!bypassed.cached);
+
+        // 3. Markdown/plain-text extraction with H1 title inference.
+        let md = fetch_and_extract_with_client(
+            &client,
+            &format!("{base}/llms.txt"),
+            &opts,
+            false,
+            false,
+        )
+        .await
+        .expect("markdown extraction");
+        assert_eq!(md.extracted.source, "plain-text");
+        assert_eq!(md.extracted.title, "SearchWala Docs");
+        assert!(md.extracted.text.contains("consensus search"));
+
+        // 4. Binary content-type rejected cleanly.
+        let pdf = fetch_and_extract_with_client(
+            &client,
+            &format!("{base}/file.pdf"),
+            &opts,
+            false,
+            false,
+        )
+        .await;
+        assert!(
+            matches!(pdf, Err(ExtractError::UnsupportedContentType(ref ct)) if ct.contains("application/pdf")),
+            "expected UnsupportedContentType, got {pdf:?}"
+        );
+
+        // 5. Anti-bot 403 and HTTP 200 Cloudflare interstitial.
+        let f403 = fetch_and_extract_with_client(
+            &client,
+            &format!("{base}/blocked-403"),
+            &opts,
+            false,
+            false,
+        )
+        .await;
+        assert_eq!(
+            f403.unwrap_err(),
+            ExtractError::AntiBotBlocked { status: 403 }
+        );
+
+        let cap = fetch_and_extract_with_client(
+            &client,
+            &format!("{base}/captcha-200"),
+            &opts,
+            false,
+            false,
+        )
+        .await;
+        assert_eq!(
+            cap.unwrap_err(),
+            ExtractError::AntiBotBlocked { status: 200 }
+        );
+
+        // 6. HTTP 404 status error.
+        let miss =
+            fetch_and_extract_with_client(&client, &format!("{base}/missing"), &opts, false, false)
+                .await;
+        assert_eq!(miss.unwrap_err(), ExtractError::HttpStatus { status: 404 });
+
+        // 7. Thin canonical HTML + AMP fallback recovers full story.
+        let amp = fetch_and_extract_with_client(
+            &client,
+            &format!("{base}/thin-with-amp"),
+            &opts,
+            false,
+            false,
+        )
+        .await
+        .expect("AMP fallback should recover full body");
+        assert_eq!(amp.extracted.source, "amp");
+        assert!(amp.extracted.text.contains("AMPBODY paragraph 5"));
+
+        // 8. Thin page with no AMP returns UnusableContent.
+        let thin = fetch_and_extract_with_client(
+            &client,
+            &format!("{base}/thin-only"),
+            &opts,
+            false,
+            false,
+        )
+        .await;
+        assert!(
+            matches!(thin, Err(ExtractError::UnusableContent { .. })),
+            "expected UnusableContent, got {thin:?}"
+        );
+
+        // 9. Redirect to cloud metadata IP is caught and reported as BlockedBySsrf.
+        let redir = fetch_and_extract_with_client(
+            &client,
+            &format!("{base}/redirect-imds"),
+            &opts,
+            false,
+            false,
+        )
+        .await;
+        assert!(
+            matches!(redir, Err(ExtractError::BlockedBySsrf(_))),
+            "redirect to IMDS must return BlockedBySsrf, got {redir:?}"
         );
     }
 }

@@ -394,9 +394,24 @@ fn on_topic_flags(query: &str, results: &[RawSearchResult]) -> Option<Vec<bool>>
                 let url = urlencoding::decode(&r.url)
                     .map(|u| u.into_owned())
                     .unwrap_or_default();
-                let text = format!("{} {} {}", r.title, r.snippet, url).to_lowercase();
+                let url_no_scheme = url
+                    .strip_prefix("https://")
+                    .or_else(|| url.strip_prefix("http://"))
+                    .unwrap_or(&url);
+                let text = format!("{} {} {}", r.title, r.snippet, url_no_scheme).to_lowercase();
+                let words: Vec<&str> = text
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .filter(|w| !w.is_empty())
+                    .collect();
                 let hits: Vec<usize> = (0..terms.len())
-                    .filter(|&i| text.contains(terms[i].as_str()))
+                    .filter(|&i| {
+                        let t = terms[i].as_str();
+                        if t.len() <= 3 {
+                            words.contains(&t)
+                        } else {
+                            text.contains(t)
+                        }
+                    })
                     .collect();
                 hits.len() >= 2
                     || hits.iter().any(|&i| i > 0)
@@ -502,6 +517,30 @@ mod tests {
             screen_serp("bing", "mRNA", &mut junk.clone()),
             SerpVerdict::Blocked
         );
+    }
+
+    #[test]
+    fn soft_block_ignores_http_url_scheme_on_http_queries() {
+        // Regression: a query containing "HTTP" must not let unrelated spam URLs
+        // pass screening solely because their scheme starts with "https://".
+        let mut spam: Vec<RawSearchResult> = (0..5)
+            .map(|i| {
+                res(
+                    &format!("Unrelated spam page {i}"),
+                    "Completely off-topic filler snippet",
+                    &format!("https://spam{i}.example/local-videos"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            screen_serp(
+                "bing",
+                "Streamable HTTP Mcp-Session-Id site:modelcontextprotocol.io",
+                &mut spam
+            ),
+            SerpVerdict::Blocked
+        );
+        assert!(spam.is_empty());
     }
 
     #[test]

@@ -15,7 +15,7 @@ agree on, and answers with citations you can click, using any LLM or none.
 
 [![Release](https://img.shields.io/github/v/release/SandeepAi369/SearchWala?label=release&color=blue)](https://github.com/SandeepAi369/SearchWala/releases/latest)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?logo=rust)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-323_passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-359_passing-brightgreen)](#development)
 [![License](https://img.shields.io/badge/license-Apache%202.0-purple)](./LICENSE)
 [![Author](https://img.shields.io/badge/author-SandeepCH-0A7CFF?logo=github)](https://github.com/SandeepAi369)
 [![Stars](https://img.shields.io/github/stars/SandeepAi369/SearchWala?style=social)](https://github.com/SandeepAi369/SearchWala/stargazers)
@@ -39,6 +39,7 @@ agree on, and answers with citations you can click, using any LLM or none.
   (or any number, or none). Search engines never see your history.
 - **Listen to any answer.** A natural neural voice reads answers aloud, in
   Hindi or English.
+- **Built-in MCP server (zero dependencies).** Plug SearchWala into Claude, Cursor, VS Code, Antigravity, Gemini CLI, or Codex with one command (`searchwala mcp`) or Streamable HTTP (`/mcp`)—giving any AI agent multi-engine consensus search, domain-level drill-down, and on-demand webpage extraction with zero API keys.
 - **Private by default.** One binary on `127.0.0.1`. No account, no telemetry,
   and search needs no API key. Your LLM key stays in your browser.
 
@@ -156,6 +157,28 @@ curl -X POST localhost:8000/search -H 'Content-Type: application/json' \
   -d '{"query":"how does mRNA vaccine technology work","focus_mode":"study"}'
 ```
 
+## Built-in MCP Server (Zero Dependencies)
+
+SearchWala ships a native, zero-dependency **Model Context Protocol (MCP)** server in the same single Rust binary—**no search API key, no LLM API key, and no extra runtime required.** Connect Claude Desktop, Claude Code, Cursor, VS Code Copilot, Antigravity, Windsurf, Gemini CLI, or Codex over `stdio` with one entry:
+
+```json
+{
+  "mcpServers": {
+    "searchwala": {
+      "command": "/path/to/searchwala",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Or connect over **Streamable HTTP** at `http://127.0.0.1:8000/mcp` (mounted automatically on `searchwala` / `searchwala serve`, or headless via `searchwala mcp --http`).
+
+- **On-Demand Webpage Scraping & Focused Extraction (`extract_url`):** Any connected AI agent can directly scrape and extract clean readable text, Markdown, and metadata from any specific public webpage (SSRF-guarded, 6-hour cache)—or pass an optional `query` to return only the top BM25+/MMR-ranked passages relevant to that question, keeping context lean.
+- **Full Multi-Source & Domain Control (`include_domains`, `exclude_domains`, `strict_domains`, `discovered_domains`):** `search_web` and `search_passages` gather consensus across 17+ independent engines and return a clean list of all discovered domains (`discovered_domains`). Agents can answer directly from SearchWala's consensus, drop noisy sites before scraping (`exclude_domains`), prioritize preferred domains while keeping organic answers intact (`strict_domains: false`, default), or drill strictly into chosen domains (`strict_domains: true`).
+
+Also exposes `search_status` and three read-only `searchwala://` resources (`modes`, `engines`, `cache`). See **[docs/MCP.md](docs/MCP.md)** for full schemas, SSE progress streaming, and configs for every client.
+
 ## Security
 
 SearchWala relays your LLM key and fetches URLs from search results, so both
@@ -177,6 +200,7 @@ branch. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
+- **[MCP Server Guide](docs/MCP.md):** connect AI agents via `searchwala mcp` (stdio) or `/mcp` (Streamable HTTP), tool schemas, domain filtering, and client configs
 - **[Full reference](docs/REFERENCE.md):** all 17 engines, the stealth TLS
   layer, extraction benchmarks, ranking, every API endpoint and every setting
 - **[Engineering log](docs/IMPLEMENTATION_BLUEPRINT.md):** the v7 → v8.2
@@ -185,7 +209,7 @@ branch. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 ## Development
 
 ```bash
-cargo test --release                          # 323 unit tests
+cargo test --release                          # 359 tests
 cargo run --release --bin intent_probe        # intent accuracy: 50/50
 cargo run --release --bin eval -- --limit 20 --focus fast   # retrieval quality
 cargo run --release --bin highlight_probe     # quick answers on 45 saved real queries

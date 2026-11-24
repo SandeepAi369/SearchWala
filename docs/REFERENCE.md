@@ -335,6 +335,7 @@ first start and then removed.
 |---|---|
 | `POST /search` | Search, extract, and synthesize when `llm` is given. Nothing is saved unless the body has `"save": true` (the web UI sends it; scripts don't). Body: `query`, `focus_mode` (`fast` / `auto` / `deep` / `study` / `academic` / `reddit` / `youtube`), optional `domain`, `max_results` (clamped to the mode's range), `llm` `{provider, api_key, model, base_url?, timeout_ms?}` |
 | `POST /search/stream` | The same pipeline as Server-Sent Events: `plan`, `engines`, `sources`, `extracted`, `highlight`, `synthesizing`, then `result` (the full response) and `done` |
+| `POST /mcp` · `DELETE /mcp` | Model Context Protocol (Streamable HTTP) exposing `search_web`, `search_passages`, `extract_url`, `search_status`, and `searchwala://` resources (disable via `--no-mcp`, or run headless via `searchwala mcp --http`). See [MCP.md](MCP.md) |
 | `POST /search/auto-llm`, `POST /search/research-llm` | legacy aliases (`research-llm` forces Deep) |
 | `GET /health` · `GET /health/engines` · `GET /health/cache` | liveness, per-engine verdicts, cache hit ratios |
 | `GET /config` | version, engine roster, and every mode's profile |
@@ -376,6 +377,7 @@ All optional; the modes choose sensible budgets on their own.
 | `SEARXNG_BASE_URL` | unset | federate a self-hosted SearXNG |
 | `MARGINALIA_API_KEY` | `public` | a dedicated Marginalia key |
 | `SEARCHWALA_DATA_DIR` | `~/.searchwala` | where the conversation database (`searchwala.db`) lives |
+| `MCP_STRICT_DOMAINS` | `0` (`false`) | `1` sets `strict_domains` default to `true` for MCP searches |
 | `DUMP_SERP_DIR` | unset | save zero-result engine responses for parser debugging |
 
 ---
@@ -428,7 +430,8 @@ with `-D warnings`.
 
 ```
 src/
-  main.rs             axum server, routes, SSE stream, TTS
+  main.rs             CLI router (serve / mcp), axum server, routes, SSE stream, TTS
+  mcp/                zero-dependency MCP server: protocol, tools, stdio, Streamable HTTP
   modes.rs            Mode × Domain → ModeProfile (every per-mode budget)
   search.rs           orchestration: dispatch → select → scrape → rank → answer
   synthesis.rs        per-mode prompts, Deep map-reduce, LLM query planning
