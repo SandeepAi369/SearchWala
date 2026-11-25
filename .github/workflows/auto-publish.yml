@@ -1,0 +1,164 @@
+name: Auto Publish Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish crates.io, GitHub Release & MCP Registry
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Cargo.toml version and sync server.json
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, tomllib
+
+          tag = os.environ["TAG_NAME"].strip()
+          if not re.fullmatch(r"v\d+\.\d+\.\d+(?:[+-][0-9A-Za-z.-]+)?", tag):
+              raise SystemExit(f"Tag {tag!r} is not a valid semver tag (expected vX.Y.Z).")
+
+          tag_version = tag[1:]
+          cargo = tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))
+          cargo_version = cargo["package"]["version"]
+
+          if cargo_version != tag_version:
+              raise SystemExit(
+                  f"Version mismatch: tag is {tag} ({tag_version}) "
+                  f"but Cargo.toml package.version is {cargo_version}."
+              )
+
+          server_path = pathlib.Path("server.json")
+          server = json.loads(server_path.read_text(encoding="utf-8"))
+          changed = False
+
+          if server.get("version") != tag_version:
+              print(f"Syncing server.json version: {server.get('version')} -> {tag_version}")
+              server["version"] = tag_version
+              changed = True
+
+          for pkg in server.get("packages", []):
+              if pkg.get("identifier") == "searchwala" and pkg.get("version") != tag_version:
+                  print(f"Syncing server.json package version: {pkg.get('version')} -> {tag_version}")
+                  pkg["version"] = tag_version
+                  changed = True
+
+          if changed:
+              server_path.write_text(json.dumps(server, indent=2) + "\n", encoding="utf-8")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"RELEASE_TAG={tag}\n")
+              env_file.write(f"RELEASE_VERSION={tag_version}\n")
+              env_file.write(f"SERVER_JSON_SYNCED={'true' if changed else 'false'}\n")
+
+          print(f"Verified Cargo.toml and server.json match {tag} ({tag_version}).")
+          PY
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-publish-
+
+      # wreq builds BoringSSL from source during cargo publish verification.
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake perl libclang-dev pkg-config
+
+      - name: Publish crate to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN secret is not configured."
+            exit 1
+          fi
+
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -A "SearchWala-Release-Workflow/1.0 (https://github.com/SandeepAi369/SearchWala)" \
+            "https://crates.io/api/v1/crates/searchwala/${RELEASE_VERSION}")
+
+          if [ "${STATUS}" = "200" ]; then
+            echo "searchwala v${RELEASE_VERSION} is already published on crates.io; skipping cargo publish."
+          else
+            if [ "${SERVER_JSON_SYNCED}" = "true" ]; then
+              cargo publish --locked --allow-dirty
+            else
+              cargo publish --locked
+            fi
+
+            echo "Waiting for crates.io to index searchwala v${RELEASE_VERSION}..."
+            for _ in $(seq 1 18); do
+              IDX_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                -A "SearchWala-Release-Workflow/1.0 (https://github.com/SandeepAi369/SearchWala)" \
+                "https://crates.io/api/v1/crates/searchwala/${RELEASE_VERSION}")
+              if [ "${IDX_STATUS}" = "200" ]; then
+                echo "crates.io indexed searchwala v${RELEASE_VERSION}."
+                break
+              fi
+              sleep 5
+            done
+          fi
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: SearchWala ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install mcp-publisher (pinned with SHA-256)
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.16
+          MCP_PUBLISHER_SHA256: 6e2f799550cf843c6fd3350498d56cc49be3dc0af1e6237eb0e6435c7a9d5c05
+        run: |
+          set -euo pipefail
+          TARBALL="mcp-publisher_linux_amd64.tar.gz"
+          curl -fsSL \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/${TARBALL}" \
+            -o "/tmp/${TARBALL}"
+          echo "${MCP_PUBLISHER_SHA256}  /tmp/${TARBALL}" | sha256sum -c -
+          tar -xzf "/tmp/${TARBALL}" -C /tmp mcp-publisher
+          sudo install -m 0755 /tmp/mcp-publisher /usr/local/bin/mcp-publisher
+          mcp-publisher --version
+
+      - name: Publish to Official MCP Registry via GitHub OIDC
+        run: |
+          set -euo pipefail
+          mcp-publisher login github-oidc
+          mcp-publisher publish server.json

@@ -9,6 +9,7 @@ on:
       - "**.md"
       - "docs/**"
       - "assets/**"
+      - ".github/**"
   workflow_dispatch:
 
 permissions:
