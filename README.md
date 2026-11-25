@@ -15,6 +15,7 @@ any LLM or none.
 [![Dependabot](https://img.shields.io/badge/dependabot-enabled-025E8C?logo=dependabot&logoColor=white)](.github/dependabot.yml)
 
 [![Crates.io](https://img.shields.io/crates/v/searchwala?color=orange&logo=rust)](https://crates.io/crates/searchwala)
+[![Glama MCP Server](https://glama.ai/mcp/servers/SandeepAi369/SearchWala/badges/score.svg)](https://glama.ai/mcp/servers/SandeepAi369/SearchWala)
 [![Release](https://img.shields.io/github/v/release/SandeepAi369/SearchWala?label=release&color=blue)](https://github.com/SandeepAi369/SearchWala/releases/latest)
 [![Rust](https://img.shields.io/badge/rust-100%25-orange?logo=rust)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-360_passing-brightgreen)](#development)
@@ -214,6 +215,7 @@ branch. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 - **[MCP Server Guide](docs/MCP.md):** connect AI agents via `searchwala mcp` (stdio) or `/mcp` (Streamable HTTP), tool schemas, domain filtering, and client configs
 - **MCP Registry:** `mcp-name: io.github.SandeepAi369/searchwala`
+- **Glama Directory:** [glama.ai/mcp/servers/SandeepAi369/SearchWala](https://glama.ai/mcp/servers/SandeepAi369/SearchWala)
 - **[Full reference](docs/REFERENCE.md):** all 19 engines, the stealth TLS
   layer, extraction benchmarks, ranking, every API endpoint and every setting
 - **[Engineering log](docs/IMPLEMENTATION_BLUEPRINT.md):** the v7 → v8.3
