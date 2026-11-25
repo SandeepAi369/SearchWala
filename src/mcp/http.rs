@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::{
-    extract::State,
+    extract::{rejection::JsonRejection, DefaultBodyLimit, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -116,6 +116,7 @@ pub fn mcp_routes(server: McpServer, bind_host: impl Into<String>) -> Router {
                 .post(mcp_post_handler)
                 .delete(mcp_delete_handler),
         )
+        .layer(DefaultBodyLimit::max(256 * 1024))
         .with_state(state)
 }
 
@@ -276,13 +277,13 @@ async fn mcp_delete_handler(State(state): State<McpHttpState>, headers: HeaderMa
 async fn mcp_post_handler(
     State(state): State<McpHttpState>,
     headers: HeaderMap,
-    body: String,
+    payload: Result<Json<IncomingMessage>, JsonRejection>,
 ) -> Response {
     if let Err(e) = check_loopback_security(&headers, &state.bind_host) {
         return e.into_response();
     }
 
-    let msg: IncomingMessage = match serde_json::from_str(&body) {
+    let Json(msg) = match payload {
         Ok(m) => m,
         Err(e) => {
             let err_resp = JsonRpcResponse::err(None, ERR_PARSE, format!("JSON parse error: {e}"));

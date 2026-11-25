@@ -8,7 +8,7 @@
 # Builder and runtime must be the same Debian release: a binary linked
 # against trixie's glibc 2.41 exits at once on bookworm (glibc 2.36). The
 # untagged rust:1-slim moved to trixie and broke exactly that.
-FROM rust:1-slim-trixie AS builder
+FROM rust:1-slim-trixie@sha256:3b199fd6db7d709274df56565b8f4003f9e30d7bfcff9d53148c86053b7855e2 AS builder
 
 WORKDIR /app
 
@@ -37,7 +37,7 @@ COPY benchmarks/ benchmarks/
 RUN touch src/main.rs src/lib.rs && cargo build --release --bin searchwala
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl \

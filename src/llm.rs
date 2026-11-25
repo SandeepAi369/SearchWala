@@ -2105,6 +2105,7 @@ pub(crate) fn build_intent_prompts(
          1. VERIFY AUTHORITY & ENTRY DATE: Check each source's [Official Primary Source] / [Official Vendor Source] tag, published date, and any [Entry Date: YYYY-MM-DD] first.\n\
          2. ENFORCE TEMPORAL SCOPE: Anchor 'latest' or 'past few days' claims strictly to the requested recent window; omit older historical entries from months earlier rather than using them as padding.\n\
          3. SYNTHESIZE WITH CLEAR FLOW: Keep Auto-mode responses balanced and reader-friendly (~160-300 words, or up to ~380 words with a table for comparisons). Use ONLY the provided sources and cite claims inline with [n]. Always follow a smooth 3-part narrative flow: (a) a clean heading or brief opening framing the core answer and context, (b) well-organized bullet points with inline [n] citations, and (c) a brief, natural concluding wrap-up paragraph tying everything together without robotic labels like 'Summary:' or 'Conclusion:'. Never append a trailing 'Sources Used' or raw URL list.{lang}",
+        intent_instruction = intent_instruction,
         cat = intel.semantic_category,
         intent = intel.intent,
         lang = LANGUAGE_RULE
