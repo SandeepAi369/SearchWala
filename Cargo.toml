@@ -9,7 +9,7 @@ readme = "README.md"
 repository = "https://github.com/SandeepAi369/SearchWala"
 keywords = ["mcp", "ai-search", "ai-agents", "web-scraper", "self-hosted"]
 categories = ["command-line-utilities", "web-programming"]
-exclude = ["patches/", "assets/"]
+exclude = ["patches/", "assets/", "AGENTS.md", "CLAUDE.md", ".local/"]
 
 [lib]
 name = "searchwala"
