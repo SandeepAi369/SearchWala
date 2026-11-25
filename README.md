@@ -194,7 +194,7 @@ Also exposes `search_status` and three read-only `searchwala://` resources (`mod
 
 ## Proxies (Optional)
 
-SearchWala queries multiple search engines simultaneously. At higher volumes, some engines may enforce rate limits or serve CAPTCHAs—routing requests through rotating residential proxies helps keep results flowing smoothly.
+For normal, day-to-day individual usage, SearchWala works completely fine out of the box without any proxies. However, if you run automated pipelines or high-volume queries, some search engines may enforce rate limits or serve CAPTCHAs—routing requests through rotating residential proxies helps keep results flowing smoothly.
 
 > [!TIP]
 > **Recommended Option: [Proxy-Seller](https://proxy-seller.com/?partner=EA74508F54AF4173)** *(Residential, ISP & Datacenter Proxies)*
