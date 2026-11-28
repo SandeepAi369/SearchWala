@@ -201,7 +201,7 @@ For normal, day-to-day individual usage, SearchWala works completely fine out of
 >
 > Use this promo code at checkout for **10% off**:
 > ```text
-> BNJVZZ_514621
+> SEARCHWALA
 > ```
 > *Affiliate Disclosure: This is an affiliate link—using it supports SearchWala's open-source development at no extra cost to you.*
 
